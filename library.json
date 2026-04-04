@@ -1,0 +1,48 @@
+{
+  "name": "TCA9548A",
+  "version": "1.0.0",
+  "description": "Production-grade TCA9548A 8-channel I2C switch driver.",
+  "keywords": [
+    "tca9548a",
+    "i2c",
+    "switch",
+    "multiplexer",
+    "mux",
+    "bus",
+    "esp32",
+    "arduino",
+    "platformio"
+  ],
+  "authors": [
+    {
+      "name": "Thymos Solution s.r.o",
+      "email": "info@thymos.cz",
+      "url": "https://www.thymos.cz"
+    },
+    {
+      "name": "Jan Havelka",
+      "email": "info@thymos.cz",
+      "url": "https://www.thymos.cz",
+      "maintainer": true
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/janhavelka/TCA9548A.git"
+  },
+  "license": "MIT",
+  "homepage": "https://www.thymos.cz",
+  "frameworks": [
+    "arduino"
+  ],
+  "platforms": [
+    "espressif32"
+  ],
+  "headers": [
+    "TCA9548A/TCA9548A.h"
+  ],
+  "build": {
+    "includeDir": "include",
+    "srcDir": "src"
+  }
+}
