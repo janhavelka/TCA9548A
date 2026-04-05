@@ -103,12 +103,32 @@ void printMask(uint8_t mask) {
   Serial.println("]");
 }
 
+void printEnabledChannels(uint8_t mask) {
+  Serial.print("  Enabled channels: ");
+  if (mask == TCA9548A::cmd::NO_CHANNELS) {
+    Serial.println("none");
+    return;
+  }
+
+  bool first = true;
+  for (uint8_t i = 0; i < TCA9548A::cmd::NUM_CHANNELS; ++i) {
+    if ((mask & (1U << i)) == 0) {
+      continue;
+    }
+    if (!first) {
+      Serial.print(", ");
+    }
+    Serial.print(i);
+    first = false;
+  }
+  Serial.println();
+}
+
 void printVersionInfo() {
   Serial.printf("%s=== Version Info ===%s\n", LOG_COLOR_CYAN, LOG_COLOR_RESET);
-  Serial.printf("  Library: TCA9548A v%u.%u.%u (code %u)\n",
-                TCA9548A::VERSION_MAJOR, TCA9548A::VERSION_MINOR,
-                TCA9548A::VERSION_PATCH, TCA9548A::VERSION_CODE);
-  Serial.printf("  Build:   %s %s\n", __DATE__, __TIME__);
+  Serial.printf("  Library: %s\n", TCA9548A::VERSION);
+  Serial.printf("  Library build: %s\n", TCA9548A::VERSION_FULL);
+  Serial.printf("  Example build: %s %s\n", __DATE__, __TIME__);
 #ifdef ARDUINO
   Serial.printf("  Arduino: %d\n", ARDUINO);
 #endif
@@ -140,17 +160,41 @@ void printDriverHealth() {
   Serial.printf("  Last error:         %lu ms\n", static_cast<unsigned long>(device.lastErrorMs()));
   Serial.printf("  Last error code:    %s\n", errToStr(device.lastError().code));
   Serial.printf("  Last known mask:    0x%02X\n", device.lastKnownMask());
+  printEnabledChannels(device.lastKnownMask());
   Serial.printf("  Address:            0x%02X\n", gConfig.i2cAddress);
 }
 
 void printConfig() {
+  TCA9548A::SettingsSnapshot snap;
+  (void)device.getSettings(snap);
+
   Serial.printf("%s=== Configuration ===%s\n", LOG_COLOR_CYAN, LOG_COLOR_RESET);
+  Serial.printf("  Initialized:        %s\n", log_bool_str(snap.initialized));
+  Serial.printf("  Driver state:       %s\n", stateToStr(snap.state));
   Serial.printf("  I2C address:        0x%02X\n", gConfig.i2cAddress);
   Serial.printf("  I2C timeout:        %lu ms\n", static_cast<unsigned long>(gConfig.i2cTimeoutMs));
   Serial.printf("  Offline threshold:  %u\n", gConfig.offlineThreshold);
   Serial.printf("  Recover backoff:    %lu ms\n", static_cast<unsigned long>(gConfig.recoverBackoffMs));
-  Serial.printf("  Hard reset:         %s\n", gConfig.hardReset ? "configured" : "none");
+  Serial.printf("  nowMs hook:         %s\n", log_bool_str(snap.hasNowMsHook));
+  Serial.printf("  Hard reset:         %s\n", snap.hasHardReset ? "configured" : "none");
   Serial.printf("  Use hard reset:     %s\n", log_bool_str(gConfig.recoverUseHardReset));
+  printMask(snap.lastKnownMask);
+  printEnabledChannels(snap.lastKnownMask);
+}
+
+void printRegisterDump() {
+  Serial.printf("%s=== Register Dump ===%s\n", LOG_COLOR_CYAN, LOG_COLOR_RESET);
+  uint8_t mask = 0;
+  TCA9548A::Status st = device.readControlRegister(mask);
+  if (!st.ok()) {
+    Serial.print("read control register: ");
+    printStatus(st);
+    return;
+  }
+
+  Serial.printf("  [0x%02X] CONTROL: 0x%02X\n", TCA9548A::cmd::CONTROL_REG, mask);
+  printMask(mask);
+  printEnabledChannels(mask);
 }
 
 void printHelp() {
@@ -171,10 +215,13 @@ void printHelp() {
   helpSection("Channel Control");
   helpItem("select <0-7>", "Select single channel (disables others)");
   helpItem("mask <hex>", "Set channel bitmask (e.g., mask 0F)");
+  helpItem("on / all", "Enable all channels (write 0xFF)");
   helpItem("enable <0-7>", "Enable one channel (preserves others)");
   helpItem("disable <0-7>", "Disable one channel (preserves others)");
   helpItem("off", "Disable all channels (write 0x00)");
-  helpItem("read", "Read current channel mask from device");
+  helpItem("read / dump", "Read current control register and decode channels");
+  helpItem("read reg / rreg", "Alias for read");
+  helpItem("write reg <hex> / wreg <hex>", "Alias for mask <hex>");
   helpItem("check <0-7>", "Check if a specific channel is enabled");
   helpItem("scanch <0-7>", "Select channel then scan downstream bus");
 
@@ -184,9 +231,11 @@ void printHelp() {
   helpItem("addr <hex>", "Change device address and reinitialize");
 
   helpSection("Diagnostics");
-  helpItem("drv", "Show driver state and health");
+  helpItem("drv / health", "Show driver state and health");
+  helpItem("state", "Show compact state/online summary");
   helpItem("probe", "Probe device (no health tracking)");
   helpItem("recover", "Manual recovery attempt");
+  helpItem("reset / hardreset", "Pulse RESET pin if configured");
   helpItem("cfg / settings", "Print active configuration");
   helpItem("verbose [0|1]", "Enable/disable verbose output");
   helpItem("stress [N]", "Run N channel-sweep cycles");
@@ -486,6 +535,20 @@ void runSelfTest() {
   reportCheck("recover", st.ok(), st.ok() ? "" : errToStr(st.code));
   reportCheck("isOnline", device.isOnline(), "");
 
+  // Optional hard reset
+  if (gConfig.hardReset != nullptr) {
+    st = device.hardReset();
+    reportCheck("hardReset", st.ok(), st.ok() ? "" : errToStr(st.code));
+    if (st.ok()) {
+      uint8_t m = 0xFF;
+      st = device.readControlRegister(m);
+      reportCheck("verify reset mask 0x00", st.ok() && m == 0x00, "");
+      (void)device.setChannelMask(origMask);
+    }
+  } else {
+    reportSkip("hardReset", "callback not configured");
+  }
+
   // Restore original mask
   device.setChannelMask(origMask);
   (void)reportSkip; // suppress unused warning
@@ -534,7 +597,17 @@ void processCommand(const String& cmd) {
     printStatus(st);
     return;
   }
-  if (cmd == "drv") {
+  if (cmd == "reset" || cmd == "hardreset") {
+    TCA9548A::Status st = device.hardReset();
+    Serial.print("hardreset: ");
+    printStatus(st);
+    if (st.ok()) {
+      printMask(device.lastKnownMask());
+      printEnabledChannels(device.lastKnownMask());
+    }
+    return;
+  }
+  if (cmd == "drv" || cmd == "health") {
     printDriverHealth();
     return;
   }
@@ -565,7 +638,20 @@ void processCommand(const String& cmd) {
     TCA9548A::Status st = device.setChannelMask(m);
     Serial.printf("mask(0x%02X): ", m);
     printStatus(st);
-    if (st.ok()) { printMask(m); }
+    if (st.ok()) {
+      printMask(m);
+      printEnabledChannels(m);
+    }
+    return;
+  }
+  if (cmd == "on" || cmd == "all") {
+    TCA9548A::Status st = device.setChannelMask(TCA9548A::cmd::ALL_CHANNELS);
+    Serial.print("all: ");
+    printStatus(st);
+    if (st.ok()) {
+      printMask(TCA9548A::cmd::ALL_CHANNELS);
+      printEnabledChannels(TCA9548A::cmd::ALL_CHANNELS);
+    }
     return;
   }
   if (cmd.startsWith("enable ")) {
@@ -590,12 +676,37 @@ void processCommand(const String& cmd) {
     printStatus(st);
     return;
   }
-  if (cmd == "read") {
+  if (cmd == "read" || cmd == "dump" || cmd == "read reg" || cmd == "rreg") {
     uint8_t mask = 0;
-    TCA9548A::Status st = device.readChannelMask(mask);
+    TCA9548A::Status st = device.readControlRegister(mask);
     Serial.print("read: ");
     printStatus(st);
-    if (st.ok()) { printMask(mask); }
+    if (st.ok()) {
+      printMask(mask);
+      printEnabledChannels(mask);
+    }
+    return;
+  }
+  if (cmd.startsWith("write reg ")) {
+    uint8_t mask = static_cast<uint8_t>(strtoul(cmd.c_str() + 10, nullptr, 16));
+    TCA9548A::Status st = device.writeControlRegister(mask);
+    Serial.printf("write reg(0x%02X): ", mask);
+    printStatus(st);
+    if (st.ok()) {
+      printMask(mask);
+      printEnabledChannels(mask);
+    }
+    return;
+  }
+  if (cmd.startsWith("wreg ")) {
+    uint8_t mask = static_cast<uint8_t>(strtoul(cmd.c_str() + 5, nullptr, 16));
+    TCA9548A::Status st = device.writeControlRegister(mask);
+    Serial.printf("wreg(0x%02X): ", mask);
+    printStatus(st);
+    if (st.ok()) {
+      printMask(mask);
+      printEnabledChannels(mask);
+    }
     return;
   }
   if (cmd.startsWith("check ")) {
@@ -608,10 +719,6 @@ void processCommand(const String& cmd) {
       Serial.printf("  Channel %d: %s%s%s\n", ch,
                     onOffColor(enabled), enabled ? "ENABLED" : "DISABLED", LOG_COLOR_RESET);
     }
-    return;
-  }
-  if (cmd == "health") {
-    printDriverHealth();
     return;
   }
   if (cmd == "state") {

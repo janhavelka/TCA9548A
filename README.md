@@ -1,37 +1,40 @@
 # TCA9548A Driver Library
 
-Production-grade TCA9548A 8-channel I2C switch/multiplexer driver for ESP32-S2 / ESP32-S3
-(Arduino framework, PlatformIO).
+Production-grade TCA9548A 8-channel I2C switch driver for ESP32-S2 / ESP32-S3
+using Arduino and PlatformIO.
 
 ## Features
 
-- **Injected I2C transport** - no Wire dependency in library code
-- **8-channel control** - select single, multiple, or all channels
-- **Health monitoring** - automatic state tracking (READY/DEGRADED/OFFLINE)
-- **Deterministic behavior** - no unbounded loops, no heap allocations
-- **Hardware reset support** - optional RESET pin callback
-- **Address configurability** - 0x70–0x77 via A0–A2 pins
-- **Managed synchronous lifecycle** - blocking I2C ops with cooperative `tick()`
+- Injected I2C transport with no `Wire` dependency in library code
+- 8-channel control with single-channel, multi-channel, and all-off/all-on flows
+- Health monitoring with `READY`, `DEGRADED`, and `OFFLINE` driver states
+- Deterministic managed-synchronous lifecycle: `begin()`, `tick()`, `end()`
+- Optional active-low RESET pin callback with explicit `hardReset()` support
+- Runtime settings snapshot API (`getSettings()`) for diagnostics and examples
+- Direct control-register aliases: `readControlRegister()` / `writeControlRegister()`
+- Address configurability across `0x70`-`0x77`
 
 ## Hardware
 
-**TCA9548A** specifications:
-- 8-channel bidirectional I2C switch/multiplexer
-- I2C interface (addresses: 0x70–0x77 via A0–A2 pins)
-- Supply voltage: 1.65V–5.5V
-- Low on-resistance: ~4 Ω (typical)
-- Active-low hardware RESET input
-- Supports 0–400 kHz I2C clock
+TCA9548A highlights:
 
-**Typical wiring (ESP32):**
-```
+- 8-channel bidirectional I2C/SMBus pass-FET switch
+- Single volatile 8-bit control register, no register-address byte
+- Active-low RESET input
+- I2C Standard-Mode and Fast-Mode support (`0`-`400 kHz`)
+- Supply range: `1.65 V`-`5.5 V`
+- POR/RESET default: `0x00` (all channels off)
+
+Typical ESP32 wiring:
+
+```text
 TCA9548A   ESP32
 --------   -----
 SDA    ->  GPIO8 (or custom)
 SCL    ->  GPIO9 (or custom)
 VCC    ->  3.3V
 GND    ->  GND
-RESET  ->  GPIO (optional, or pull to VCC)
+RESET  ->  GPIO (optional, or pull up to VCC)
 A0-A2  ->  GND / VCC (address select)
 ```
 
@@ -55,234 +58,242 @@ Copy `include/TCA9548A/` and `src/` into your project.
 ```cpp
 #include <Wire.h>
 #include "TCA9548A/TCA9548A.h"
-#include "common/I2cTransport.h"
 
 TCA9548A::TCA9548A mux;
 
+TCA9548A::Status myI2cWrite(uint8_t addr, const uint8_t* data, size_t len,
+                            uint32_t timeoutMs, void* user);
+TCA9548A::Status myI2cWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
+                                uint8_t* rxData, size_t rxLen,
+                                uint32_t timeoutMs, void* user);
+
 void setup() {
   Serial.begin(115200);
-  transport::initWire(8, 9, 400000, 50);
+  Wire.begin(8, 9);
+  Wire.setClock(400000);
+  Wire.setTimeOut(50);
 
   TCA9548A::Config cfg;
-  cfg.i2cWrite = transport::wireWrite;
-  cfg.i2cWriteRead = transport::wireWriteRead;
+  cfg.i2cWrite = myI2cWrite;
+  cfg.i2cWriteRead = myI2cWriteRead;
   cfg.i2cUser = &Wire;
   cfg.i2cAddress = 0x70;
 
-  auto status = mux.begin(cfg);
-  if (!status.ok()) {
-    Serial.printf("Init failed: %s\n", status.msg);
+  TCA9548A::Status st = mux.begin(cfg);
+  if (!st.ok()) {
+    Serial.printf("Init failed: %s\n", st.msg);
     return;
   }
-  Serial.println("TCA9548A initialized!");
+
+  if (mux.selectChannel(0).ok()) {
+    // ... talk to a downstream device on channel 0 ...
+  }
+
+  mux.setChannelMask(0x05);  // channels 0 and 2
+  mux.disableAll();
 }
 
 void loop() {
   mux.tick(millis());
-
-  // Select channel 0 to talk to a downstream device
-  if (mux.selectChannel(0).ok()) {
-    // ... communicate with device on channel 0 ...
-  }
-
-  // Enable multiple channels simultaneously
-  mux.setChannelMask(0x05);  // channels 0 and 2
-
-  // Disable all channels when done
-  mux.disableAll();
 }
 ```
 
-The example adapter maps Arduino `Wire` failures to specific `I2C_*` status codes and keeps
-bus timeout ownership in `transport::initWire()`. If you do not inject `Config::nowMs`, the
-driver falls back to `millis()` on Arduino/native-test builds.
+The repository also ships an example-only Arduino adapter in
+`examples/common/I2cTransport.h`, but that helper is not part of the public
+library API. If `Config::nowMs` is not provided, the driver falls back to
+`millis()` on Arduino/native-test builds.
 
 ## Versioning
 
-The library version is defined in [library.json](library.json). A pre-build script automatically generates `include/TCA9548A/Version.h` with version constants.
+The library version is defined in [library.json](library.json). `Version.h` is
+auto-generated during build.
 
-**Print version in your code:**
 ```cpp
 #include "TCA9548A/Version.h"
 
-Serial.println(TCA9548A::VERSION);           // "1.0.0"
-Serial.println(TCA9548A::VERSION_CODE);      // 10000
+Serial.println(TCA9548A::VERSION);
+Serial.println(TCA9548A::VERSION_CODE);
+Serial.println(TCA9548A::VERSION_FULL);
 ```
 
-**Update version:** Edit `library.json` only. `Version.h` is auto-generated on every build.
+Update version metadata in `library.json` only.
 
-## Transport Contract (Required)
+## Transport Contract
 
-Your I2C callbacks **must** return specific `Err` codes so the driver can make correct decisions:
+Transport callbacks must map failures into library `Err` values:
 
-- `Err::I2C_NACK_ADDR` - address NACK (device not responding)
-- `Err::I2C_NACK_DATA` - data NACK
-- `Err::I2C_TIMEOUT` - timeout
-- `Err::I2C_BUS` - bus/arbitration error
-- `Err::I2C_ERROR` - unspecified I2C failure
+- `Err::I2C_NACK_ADDR`
+- `Err::I2C_NACK_DATA`
+- `Err::I2C_TIMEOUT`
+- `Err::I2C_BUS`
+- `Err::I2C_ERROR`
 
-If your transport cannot distinguish these cases, return `Err::I2C_ERROR` and set `Status::detail` to the best available code.
+If your transport cannot distinguish cases, return `Err::I2C_ERROR` and place
+the best available detail code in `Status::detail`.
 
-### TCA9548A I2C Protocol Notes
+## TCA9548A Protocol Notes
 
-- **No register address**: The TCA9548A has a single control register with no address byte. Write one byte directly; read returns the control register.
-- **Last byte wins**: On multi-byte write, only the last byte is stored in the control register.
-- **Channel takes effect after STOP**: The selected channels become active after the I2C STOP condition.
+- The chip exposes one 8-bit control register and does not use a register-address byte.
+- Bit `N` enables downstream channel `N`.
+- Any combination of channels may be enabled simultaneously.
+- On multi-byte writes, only the last byte is latched.
+- Channel changes take effect only after the I2C `STOP` condition.
+- POR and RESET return the control register to `0x00`.
 
 ## Error Handling
 
-All library functions return `Status` struct:
+All fallible APIs return:
 
 ```cpp
 struct Status {
-  Err code;           // Error category (OK, I2C_ERROR, TIMEOUT, ...)
-  int32_t detail;     // I2C error code or vendor detail
-  const char* msg;    // Static error message (never heap-allocated)
+  Err code;
+  int32_t detail;
+  const char* msg;
 
-  bool ok() const;    // Returns true if code == Err::OK
+  bool ok() const;
 };
 ```
 
-**Error codes:**
-- `OK` - Operation successful
-- `NOT_INITIALIZED` - Call `begin()` first
-- `INVALID_CONFIG` - Missing transport callbacks or invalid parameters
-- `INVALID_PARAM` - Channel number > 7
-- `DEVICE_NOT_FOUND` - No ACK from device at configured address
-- `I2C_NACK_ADDR` / `I2C_NACK_DATA` / `I2C_TIMEOUT` / `I2C_BUS` / `I2C_ERROR` - Transport failures
+Important error codes:
 
-**Example error handling:**
-```cpp
-TCA9548A::Status st = mux.selectChannel(3);
-if (!st.ok()) {
-  Serial.printf("Error: %s (code=%d, detail=%d)\n",
-                st.msg, static_cast<int>(st.code), st.detail);
-}
-```
+- `OK`
+- `NOT_INITIALIZED`
+- `INVALID_CONFIG`
+- `INVALID_PARAM`
+- `DEVICE_NOT_FOUND`
+- `UNSUPPORTED`
+- `I2C_NACK_ADDR`
+- `I2C_NACK_DATA`
+- `I2C_TIMEOUT`
+- `I2C_BUS`
+- `I2C_ERROR`
 
 ## Health Monitoring
 
-The driver tracks I2C communication health:
+The driver tracks communication health:
 
 ```cpp
-// Check state
 if (mux.state() == TCA9548A::DriverState::OFFLINE) {
-  Serial.println("MUX offline!");
-  mux.recover();  // Try to reconnect
+  mux.recover();
 }
 
-// Get statistics
-Serial.printf("Failures: %u consecutive, %lu total\n",
+Serial.printf("failures=%u total=%lu\n",
               mux.consecutiveFailures(),
               static_cast<unsigned long>(mux.totalFailures()));
 ```
 
-### Driver States
+Driver states:
 
 | State | Description |
 |-------|-------------|
 | `UNINIT` | `begin()` not called or `end()` called |
 | `READY` | Operational, no recent failures |
-| `DEGRADED` | 1+ failures, below offline threshold |
-| `OFFLINE` | Too many consecutive failures |
+| `DEGRADED` | One or more failures below the offline threshold |
+| `OFFLINE` | Consecutive failures reached the offline threshold |
 
 ## API Reference
 
 ### Lifecycle
 
-- `Status begin(const Config& config)` - Initialize driver
-- `void tick(uint32_t nowMs)` - Cooperative update (no-op for TCA9548A)
-- `void end()` - Shutdown driver
+- `Status begin(const Config& config)` - initialize driver and verify presence
+- `void tick(uint32_t nowMs)` - reserved no-op for TCA9548A
+- `void end()` - shut down driver and clear runtime state
 
 ### Diagnostics
 
-- `Status probe()` - Check device presence (no health tracking)
-- `Status recover()` - Attempt recovery from DEGRADED/OFFLINE
+- `Status probe()` - check presence without health tracking
+- `Status recover()` - recover communication and restore the last known mux mask
+- `Status hardReset()` - pulse RESET if configured, then verify the device responds
 
 ### Channel Control
 
-| Method | Description |
-|--------|-------------|
-| `selectChannel(ch)` | Enable one channel (0–7), disable all others |
-| `setChannelMask(mask)` | Write raw bitmask to control register |
-| `enableChannels(mask)` | Enable additional channels (OR with current) |
-| `disableChannels(mask)` | Disable specific channels (AND NOT with current) |
-| `disableAll()` | Write 0x00 to control register |
-| `readChannelMask(mask)` | Read current control register value |
-| `isChannelEnabled(ch, enabled)` | Check if a specific channel is enabled |
+- `Status selectChannel(uint8_t channel)` - enable one channel and disable others
+- `Status setChannelMask(uint8_t mask)` - write raw mask
+- `Status writeControlRegister(uint8_t mask)` - alias for `setChannelMask()`
+- `Status enableChannels(uint8_t mask)` - OR mask into the current state
+- `Status disableChannels(uint8_t mask)` - clear mask bits from the current state
+- `Status disableAll()` - write `0x00`
+- `Status readChannelMask(uint8_t& mask)` - read current mask
+- `Status readControlRegister(uint8_t& mask)` - alias for `readChannelMask()`
+- `Status isChannelEnabled(uint8_t channel, bool& enabled)` - query one channel
 
-### State
+### State And Health
 
-- `DriverState state()` - Current driver state
-- `bool isOnline()` - True if READY or DEGRADED
-
-### Health
-
-- `uint32_t lastOkMs()` - Timestamp of last success
-- `uint32_t lastErrorMs()` - Timestamp of last failure
-- `Status lastError()` - Most recent error
-- `uint8_t consecutiveFailures()` - Failures since last success
-- `uint32_t totalFailures()` - Lifetime failure count
-- `uint32_t totalSuccess()` - Lifetime success count
-- `uint8_t lastKnownMask()` - Cached channel mask from last successful I2C op
+- `DriverState state() const`
+- `bool isInitialized() const`
+- `bool isOnline() const`
+- `const Config& getConfig() const`
+- `Status getSettings(SettingsSnapshot& out) const`
+- `uint32_t lastOkMs() const`
+- `uint32_t lastErrorMs() const`
+- `Status lastError() const`
+- `uint8_t consecutiveFailures() const`
+- `uint32_t totalFailures() const`
+- `uint32_t totalSuccess() const`
+- `uint8_t lastKnownMask() const`
 
 ## Recovery
 
-`recover()` attempts to restore communication:
+`recover()` does not run automatically inside `tick()`. The application decides
+when to retry. On each recovery attempt the driver:
 
-1. Optional hard reset via `hardReset` callback (if `recoverUseHardReset` is true)
-2. Tracked probe to verify device presence
+1. Enforces `recoverBackoffMs`
+2. Optionally pulses RESET if `recoverUseHardReset` is enabled
+3. Verifies the device responds again
+4. Restores the last known channel mask if the mux returned in the reset/default state
 
-Recovery uses `recoverBackoffMs` to avoid bus thrashing and does **not** run automatically inside `tick()`—the application controls retry strategy.
+## Notes
+
+- The TCA9548A is a pure bus switch. It has no interrupts, ADC/DAC features, sensor readings, or persistent registers.
+- Supported bus speeds are Standard-Mode and Fast-Mode only (`<= 400 kHz`).
+- For voltage translation, `VCC` must be at or below the lowest translated bus voltage.
+- Enabled channels accumulate downstream capacitance toward the `400 pF` I2C budget.
+- TI application notes call current-source buffers such as `TCA9509` / `TCA9800` incompatible in series with this switch.
+- The library intentionally does not promise general-call support, repeated-start channel activation, or dynamic A0/A1/A2 re-sampling because those behaviors are not documented clearly enough by TI.
 
 ## Behavioral Contracts
 
-**Threading Model:** Single-threaded by default. No FreeRTOS tasks created. Not ISR-safe.
+1. Threading model: single-threaded by default; not ISR-safe.
+2. Timing model: `tick()` is bounded and currently a no-op; public I2C operations are blocking and bounded by the transport timeout.
+3. Resource ownership: bus, pins, and timebase remain application-owned via `Config`.
+4. Memory behavior: no heap allocation in steady-state library operation.
+5. Error handling: all fallible APIs return `Status`; no exceptions and no silent failures.
 
-**Timing:** `tick()` is a no-op (returns immediately). All other API calls perform synchronous I2C transactions bounded by `i2cTimeoutMs` (default 50 ms). Recovery backoff enforced via `recoverBackoffMs` (default 100 ms). No unbounded loops.
-
-**Resource Ownership:** I2C transport and optional RESET pin passed via `Config`. No hardcoded pins or resources.
-
-**Memory:** All allocation in `begin()`. Zero allocations in `tick()` and normal operations.
-
-**Error Handling:** All errors returned as `Status`. No silent failures.
-
-## Build
+## Validation
 
 ```bash
-# Build for ESP32-S3
 pio run -e esp32s3dev
-
-# Upload and monitor
-pio run -e esp32s3dev -t upload
-pio device monitor -e esp32s3dev
-
-# Run native tests (requires host gcc)
+pio run -e esp32s2dev
 pio test -e native
 ```
 
 ## Examples
 
-- `01_basic_bringup_cli/` - Interactive CLI for testing all channel operations
+- `examples/01_basic_bringup_cli/`
+  - `read` / `dump`, `read reg` / `rreg`, `write reg` / `wreg`
+  - `select`, `mask`, `on`, `off`, `enable`, `disable`, `check`, `scanch`
+  - `drv` / `health`, `state`, `probe`, `recover`, `reset`, `cfg`, `selftest`
 
-### Example Helpers (`examples/common/`)
+### Example Helpers
 
-Not part of the library. These simulate project-level glue and keep examples self-contained:
+`examples/common/` is example-only glue and is not part of the public library API.
 
 | File | Purpose |
 |------|---------|
-| `BoardConfig.h` | Pin definitions and Wire init for supported boards |
-| `BuildConfig.h` | Compile-time `LOG_LEVEL` configuration |
-| `Log.h` | Serial logging macros (`LOGE`/`LOGW`/`LOGI`/`LOGD`/`LOGT`/`LOGV`) |
-| `I2cTransport.h` | Wire-based I2C transport adapter (`wireWrite`, `wireWriteRead`, `initWire`) |
-| `I2cScanner.h` | I2C bus scanner with table output and bus recovery |
-| `BusDiag.h` | Bus diagnostics wrapper (scan + probe) |
-| `CliShell.h` | Serial command-line shell with line editing |
-| `HealthView.h` | Compact health status display |
+| `BoardConfig.h` | Board-specific pin defaults and `Wire` setup |
+| `BuildConfig.h` | Compile-time log-level configuration |
+| `Log.h` | Serial logging helpers |
+| `I2cTransport.h` | Wire-backed example transport adapter |
+| `TransportAdapter.h` | Alias wrapper matching the family helper layout |
+| `I2cScanner.h` | I2C bus scanner utility |
+| `BusDiag.h` | Bus diagnostics wrapper |
+| `CliShell.h` | Serial line reader helper |
+| `CommandHandler.h` | Small bounded-buffer command helpers |
+| `HealthView.h` | Compact health display helper |
 
 ## Project Structure
 
-```
+```text
 include/TCA9548A/       - Public API headers (Doxygen documented)
   CommandTable.h        - Register constants and bit masks
   Status.h              - Error types
@@ -293,7 +304,7 @@ src/
   TCA9548A.cpp          - Implementation
 examples/
   01_basic_bringup_cli/ - Interactive CLI example
-  common/               - Example-only helpers (Log.h, BoardConfig.h, I2cTransport.h, etc.)
+  common/               - Example-only helpers
 platformio.ini          - Build environments
 library.json            - PlatformIO metadata
 README.md               - This file
@@ -303,17 +314,18 @@ AGENTS.md               - Coding guidelines
 
 ## Documentation
 
-- [CHANGELOG.md](CHANGELOG.md) - full release history
+- [CHANGELOG.md](CHANGELOG.md) - release history
 - [AGENTS.md](AGENTS.md) - engineering guidelines
 - [docs/IDF_PORT.md](docs/IDF_PORT.md) - ESP-IDF portability guidance
+- [TCA9548A_i2c_switch_implementation_manual.md](TCA9548A_i2c_switch_implementation_manual.md) - extracted datasheet/app-note behavior used for implementation review
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## References
 

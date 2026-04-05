@@ -39,6 +39,9 @@ inline Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
   if (wire == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "Wire instance is null");
   }
+  if (data == nullptr || len == 0) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid write buffer");
+  }
 
   wire->beginTransmission(addr);
   size_t written = wire->write(data, len);
@@ -46,7 +49,7 @@ inline Status wireWrite(uint8_t addr, const uint8_t* data, size_t len,
 
   if (result != 0) {
     switch (result) {
-      case 1: return Status::Error(Err::INVALID_PARAM, "I2C write too long", result);
+      case 1: return Status::Error(Err::I2C_ERROR, "I2C write too long", result);
       case 2: return Status::Error(Err::I2C_NACK_ADDR, "I2C NACK addr", result);
       case 3: return Status::Error(Err::I2C_NACK_DATA, "I2C NACK data", result);
       case 4: return Status::Error(Err::I2C_BUS, "I2C bus error", result);
@@ -78,16 +81,25 @@ inline Status wireWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
   if (wire == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "Wire instance is null");
   }
+  if (txLen > 0 && txData == nullptr) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid write buffer");
+  }
+  if (rxLen > 0 && rxData == nullptr) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid read buffer");
+  }
 
-  // Write phase (if any)
-  if (txLen > 0 && txData != nullptr) {
+  // TCA9548A has no register-pointer phase. For tx+rx flows we intentionally
+  // end the write with STOP, then perform a fresh read transaction.
+  if (txLen > 0) {
     wire->beginTransmission(addr);
     wire->write(txData, txLen);
     uint8_t result = wire->endTransmission(true);
     if (result != 0) {
       switch (result) {
+        case 1: return Status::Error(Err::I2C_ERROR, "I2C write too long", result);
         case 2: return Status::Error(Err::I2C_NACK_ADDR, "I2C NACK addr", result);
         case 3: return Status::Error(Err::I2C_NACK_DATA, "I2C NACK data", result);
+        case 4: return Status::Error(Err::I2C_BUS, "I2C bus error", result);
         case 5: return Status::Error(Err::I2C_TIMEOUT, "I2C timeout", result);
         default: return Status::Error(Err::I2C_ERROR, "I2C write failed", result);
       }

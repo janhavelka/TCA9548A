@@ -4,9 +4,10 @@
 
 #include <cstddef>
 #include <cstdint>
-#include "TCA9548A/Status.h"
-#include "TCA9548A/Config.h"
+
 #include "TCA9548A/CommandTable.h"
+#include "TCA9548A/Config.h"
+#include "TCA9548A/Status.h"
 #include "TCA9548A/Version.h"
 
 namespace TCA9548A {
@@ -17,6 +18,20 @@ enum class DriverState : uint8_t {
   READY,     ///< Operational, consecutiveFailures == 0
   DEGRADED,  ///< 1 <= consecutiveFailures < offlineThreshold
   OFFLINE    ///< consecutiveFailures >= offlineThreshold
+};
+
+/// Snapshot of current driver settings/state without performing I2C.
+struct SettingsSnapshot {
+  bool initialized = false;                  ///< True after begin() succeeds
+  DriverState state = DriverState::UNINIT;   ///< Current driver state
+  uint8_t i2cAddress = cmd::DEFAULT_ADDRESS; ///< Active 7-bit device address
+  uint32_t i2cTimeoutMs = 0;                 ///< Active transport timeout
+  uint8_t offlineThreshold = 0;              ///< Consecutive failures before OFFLINE
+  uint32_t recoverBackoffMs = 0;             ///< Minimum ms between recover() attempts
+  bool hasNowMsHook = false;                 ///< True when Config::nowMs is provided
+  bool hasHardReset = false;                 ///< True when Config::hardReset is provided
+  bool recoverUseHardReset = false;          ///< True when recover() may use hard reset
+  uint8_t lastKnownMask = cmd::NO_CHANNELS;  ///< Cached control-register value
 };
 
 /// TCA9548A driver class
@@ -50,12 +65,17 @@ public:
   /// @return Status::Ok() if device now responsive, error otherwise
   Status recover();
 
+  /// Assert the optional RESET pin and verify the device responds again.
+  /// The TCA9548A should return with all channels disabled (0x00).
+  /// @return Status::Ok() on success, UNSUPPORTED if no hard-reset callback exists
+  Status hardReset();
+
   // =========================================================================
   // Channel Control
   // =========================================================================
 
-  /// Select a single channel (0–7), disabling all others
-  /// @param channel Channel number (0–7)
+  /// Select a single channel (0-7), disabling all others
+  /// @param channel Channel number (0-7)
   /// @return Status::Ok() on success, INVALID_PARAM if channel > 7
   Status selectChannel(uint8_t channel);
 
@@ -63,6 +83,10 @@ public:
   /// @param mask Bitmask where bit N enables channel N
   /// @return Status::Ok() on success
   Status setChannelMask(uint8_t mask);
+
+  /// Write the control register directly.
+  /// Alias for setChannelMask() to match register-oriented sibling libraries.
+  Status writeControlRegister(uint8_t mask) { return setChannelMask(mask); }
 
   /// Enable one or more channels without changing others
   /// @param mask Bitmask of channels to enable (ORed with current state)
@@ -83,8 +107,12 @@ public:
   /// @return Status::Ok() on success
   Status readChannelMask(uint8_t& mask);
 
+  /// Read the control register directly.
+  /// Alias for readChannelMask() to match register-oriented sibling libraries.
+  Status readControlRegister(uint8_t& mask) { return readChannelMask(mask); }
+
   /// Check if a specific channel is currently enabled
-  /// @param channel Channel number (0–7)
+  /// @param channel Channel number (0-7)
   /// @param[out] enabled True if channel is enabled
   /// @return Status::Ok() on success, INVALID_PARAM if channel > 7
   Status isChannelEnabled(uint8_t channel, bool& enabled);
@@ -96,11 +124,20 @@ public:
   /// Get current driver state
   DriverState state() const { return _driverState; }
 
+  /// Check if begin() has completed successfully
+  bool isInitialized() const { return _initialized; }
+
   /// Check if driver is ready for operations
   bool isOnline() const {
     return _driverState == DriverState::READY ||
            _driverState == DriverState::DEGRADED;
   }
+
+  /// Get a copy of the active configuration
+  const Config& getConfig() const { return _config; }
+
+  /// Get a snapshot of current configuration/runtime state (no I2C)
+  Status getSettings(SettingsSnapshot& out) const;
 
   // =========================================================================
   // Health Tracking
@@ -188,7 +225,7 @@ private:
   bool _lastRecoverValid = false;
 
   // Cached channel state
-  uint8_t _lastKnownMask = 0;
+  uint8_t _lastKnownMask = cmd::NO_CHANNELS;
 };
 
 } // namespace TCA9548A

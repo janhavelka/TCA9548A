@@ -8,6 +8,9 @@
 #include <cstdint>
 #include <cstddef>
 
+#include "Arduino.h"
+#include "Wire.h"
+
 #include "TCA9548A/TCA9548A.h"
 #include "TCA9548A/CommandTable.h"
 
@@ -48,6 +51,10 @@ struct FakeTransport {
 };
 
 FakeTransport gFake;
+
+uint32_t fakeNowMs(void*) {
+  return gMillis;
+}
 
 TCA9548A::Status fakeWrite(uint8_t addr, const uint8_t* data, size_t len,
                             uint32_t timeoutMs, void* user) {
@@ -169,6 +176,16 @@ void test_begin_accepts_all_valid_addresses() {
   }
 }
 
+void test_begin_caches_existing_control_mask() {
+  gFake.reset();
+  gFake.readValue = 0xA5;
+
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Status st = dev.begin(makeConfig());
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_HEX8(0xA5, dev.lastKnownMask());
+}
+
 // ============================================================================
 // Lifecycle Tests
 // ============================================================================
@@ -214,6 +231,36 @@ void test_end_disables_all_channels() {
   dev.end();
   // end() should have written 0x00 (best-effort)
   TEST_ASSERT_EQUAL(0x00, gFake.lastWrittenValue);
+}
+
+void test_get_settings_snapshot() {
+  gFake.reset();
+  gMillis = 77;
+
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig(0x75);
+  cfg.nowMs = fakeNowMs;
+  cfg.offlineThreshold = 4;
+  cfg.recoverBackoffMs = 321;
+  dev.begin(cfg);
+  dev.setChannelMask(0x12);
+
+  TCA9548A::SettingsSnapshot snap;
+  TCA9548A::Status st = dev.getSettings(snap);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(snap.initialized);
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::READY),
+                    static_cast<int>(snap.state));
+  TEST_ASSERT_EQUAL_HEX8(0x75, snap.i2cAddress);
+  TEST_ASSERT_EQUAL(50u, snap.i2cTimeoutMs);
+  TEST_ASSERT_EQUAL(4, snap.offlineThreshold);
+  TEST_ASSERT_EQUAL(321u, snap.recoverBackoffMs);
+  TEST_ASSERT_TRUE(snap.hasNowMsHook);
+  TEST_ASSERT_FALSE(snap.hasHardReset);
+  TEST_ASSERT_TRUE(snap.recoverUseHardReset);
+  TEST_ASSERT_EQUAL_HEX8(0x12, snap.lastKnownMask);
+  TEST_ASSERT_TRUE(dev.isInitialized());
+  TEST_ASSERT_EQUAL_HEX8(0x75, dev.getConfig().i2cAddress);
 }
 
 // ============================================================================
@@ -356,7 +403,9 @@ void test_operations_reject_when_not_initialized() {
   TEST_ASSERT_EQUAL(TCA9548A::Err::NOT_INITIALIZED, dev.disableAll().code);
   TEST_ASSERT_EQUAL(TCA9548A::Err::NOT_INITIALIZED, dev.readChannelMask(mask).code);
   TEST_ASSERT_EQUAL(TCA9548A::Err::NOT_INITIALIZED, dev.isChannelEnabled(0, enabled).code);
+  TEST_ASSERT_EQUAL(TCA9548A::Err::NOT_INITIALIZED, dev.probe().code);
   TEST_ASSERT_EQUAL(TCA9548A::Err::NOT_INITIALIZED, dev.recover().code);
+  TEST_ASSERT_EQUAL(TCA9548A::Err::NOT_INITIALIZED, dev.hardReset().code);
 }
 
 // ============================================================================
@@ -472,6 +521,16 @@ void test_probe_success() {
   TEST_ASSERT_TRUE(st.ok());
 }
 
+void test_probe_maps_device_not_found() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+  dev.begin(makeConfig());
+
+  gFake.readResult = TCA9548A::Err::I2C_NACK_ADDR;
+  TCA9548A::Status st = dev.probe();
+  TEST_ASSERT_EQUAL(TCA9548A::Err::DEVICE_NOT_FOUND, st.code);
+}
+
 // ============================================================================
 // Recovery Tests
 // ============================================================================
@@ -539,19 +598,99 @@ void test_recover_with_hard_reset() {
   TEST_ASSERT_TRUE(resetCalled);
 }
 
+void test_recover_restores_last_known_mask_after_reset() {
+  gFake.reset();
+
+  auto resetFn = [](void* user) -> TCA9548A::Status {
+    (void)user;
+    gFake.readValue = 0x00;
+    return TCA9548A::Status::Ok();
+  };
+
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.hardReset = resetFn;
+  dev.begin(cfg);
+  TEST_ASSERT_TRUE(dev.setChannelMask(0x24).ok());
+
+  gFake.readValue = 0x00;
+  TCA9548A::Status st = dev.recover();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_HEX8(0x24, gFake.readValue);
+  TEST_ASSERT_EQUAL_HEX8(0x24, dev.lastKnownMask());
+}
+
+void test_recover_backoff_enforced() {
+  gFake.reset();
+  gMillis = 100;
+
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.nowMs = fakeNowMs;
+  cfg.recoverBackoffMs = 50;
+  dev.begin(cfg);
+
+  TEST_ASSERT_TRUE(dev.recover().ok());
+  TEST_ASSERT_EQUAL(TCA9548A::Err::TIMEOUT, dev.recover().code);
+
+  gMillis = 151;
+  TEST_ASSERT_TRUE(dev.recover().ok());
+}
+
+void test_hard_reset_requires_callback() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+  dev.begin(makeConfig());
+  TEST_ASSERT_EQUAL(TCA9548A::Err::UNSUPPORTED, dev.hardReset().code);
+}
+
+void test_hard_reset_reads_back_control_register() {
+  gFake.reset();
+
+  auto resetFn = [](void* user) -> TCA9548A::Status {
+    (void)user;
+    gFake.readValue = 0x00;
+    return TCA9548A::Status::Ok();
+  };
+
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.hardReset = resetFn;
+  dev.begin(cfg);
+  dev.setChannelMask(0x7F);
+
+  TCA9548A::Status st = dev.hardReset();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_HEX8(0x00, dev.lastKnownMask());
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::READY),
+                    static_cast<int>(dev.state()));
+}
+
 // ============================================================================
 // Command Table Tests
 // ============================================================================
 
 void test_command_table_constants() {
+  TEST_ASSERT_EQUAL(0x70, TCA9548A::cmd::DEFAULT_ADDRESS);
   TEST_ASSERT_EQUAL(0x70, TCA9548A::cmd::I2C_ADDR_MIN);
   TEST_ASSERT_EQUAL(0x77, TCA9548A::cmd::I2C_ADDR_MAX);
+  TEST_ASSERT_EQUAL(8, TCA9548A::cmd::NUM_ADDRESSES);
+  TEST_ASSERT_EQUAL(0x07, TCA9548A::cmd::ADDRESS_PIN_MASK);
+  TEST_ASSERT_EQUAL(0x00, TCA9548A::cmd::CONTROL_REG);
   TEST_ASSERT_EQUAL(0x00, TCA9548A::cmd::CONTROL_REG_DEFAULT);
   TEST_ASSERT_EQUAL(8, TCA9548A::cmd::NUM_CHANNELS);
+  TEST_ASSERT_EQUAL(0, TCA9548A::cmd::FIRST_CHANNEL);
+  TEST_ASSERT_EQUAL(7, TCA9548A::cmd::LAST_CHANNEL);
+  TEST_ASSERT_EQUAL(8, TCA9548A::cmd::MAX_DEVICES_PER_BUS);
   TEST_ASSERT_EQUAL(0x01, TCA9548A::cmd::CH0);
   TEST_ASSERT_EQUAL(0x80, TCA9548A::cmd::CH7);
   TEST_ASSERT_EQUAL(0xFF, TCA9548A::cmd::ALL_CHANNELS);
   TEST_ASSERT_EQUAL(0x00, TCA9548A::cmd::NO_CHANNELS);
+  TEST_ASSERT_EQUAL(100000u, TCA9548A::cmd::I2C_STANDARD_MODE_HZ);
+  TEST_ASSERT_EQUAL(400000u, TCA9548A::cmd::I2C_FAST_MODE_HZ);
+  TEST_ASSERT_EQUAL(400u, TCA9548A::cmd::MAX_BUS_CAPACITANCE_PF);
+  TEST_ASSERT_EQUAL(6u, TCA9548A::cmd::RESET_MIN_LOW_NS);
+  TEST_ASSERT_EQUAL(500u, TCA9548A::cmd::RESET_SDA_RELEASE_MAX_NS);
 }
 
 void test_channel_bit_values() {
@@ -629,10 +768,14 @@ void test_disable_channels_noop_when_already_clear() {
 // ============================================================================
 
 void test_version_constants() {
-  TEST_ASSERT_EQUAL(1, TCA9548A::VERSION_MAJOR);
-  TEST_ASSERT_EQUAL(0, TCA9548A::VERSION_MINOR);
-  TEST_ASSERT_EQUAL(0, TCA9548A::VERSION_PATCH);
-  TEST_ASSERT_EQUAL(10000u, TCA9548A::VERSION_CODE);
+  TEST_ASSERT_EQUAL(
+      static_cast<uint32_t>(TCA9548A::VERSION_MAJOR) * 10000u +
+          static_cast<uint32_t>(TCA9548A::VERSION_MINOR) * 100u +
+          static_cast<uint32_t>(TCA9548A::VERSION_PATCH),
+      TCA9548A::VERSION_CODE);
+  TEST_ASSERT_EQUAL(TCA9548A::VERSION_CODE,
+                    static_cast<uint32_t>(TCA9548A::VERSION_INT));
+  TEST_ASSERT_NOT_NULL(TCA9548A::VERSION);
 }
 
 // ============================================================================
@@ -663,12 +806,14 @@ int main() {
   RUN_TEST(test_begin_rejects_zero_timeout);
   RUN_TEST(test_begin_rejects_huge_timeout);
   RUN_TEST(test_begin_accepts_all_valid_addresses);
+  RUN_TEST(test_begin_caches_existing_control_mask);
 
   // Lifecycle
   RUN_TEST(test_begin_success);
   RUN_TEST(test_begin_device_not_found);
   RUN_TEST(test_end_resets_state);
   RUN_TEST(test_end_disables_all_channels);
+  RUN_TEST(test_get_settings_snapshot);
 
   // Channel control
   RUN_TEST(test_select_channel_0);
@@ -696,10 +841,15 @@ int main() {
   // Probe
   RUN_TEST(test_probe_does_not_affect_health);
   RUN_TEST(test_probe_success);
+  RUN_TEST(test_probe_maps_device_not_found);
 
   // Recovery
   RUN_TEST(test_recover_success);
   RUN_TEST(test_recover_with_hard_reset);
+  RUN_TEST(test_recover_restores_last_known_mask_after_reset);
+  RUN_TEST(test_recover_backoff_enforced);
+  RUN_TEST(test_hard_reset_requires_callback);
+  RUN_TEST(test_hard_reset_reads_back_control_register);
 
   // Command table
   RUN_TEST(test_command_table_constants);

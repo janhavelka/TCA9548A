@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `SettingsSnapshot`, `getSettings()`, `isInitialized()`, and `getConfig()` for repo-family runtime/config inspection
+- Explicit `hardReset()` API and direct control-register aliases (`readControlRegister()` / `writeControlRegister()`)
+- Missing example helper files `examples/common/CommandHandler.h` and `examples/common/TransportAdapter.h`
+
+### Changed
+- `recover()` now restores the last known channel mask after a successful probe/reset
+- `probe()` now reports `NOT_INITIALIZED` before `begin()` and normalizes transport absence to `DEVICE_NOT_FOUND`
+- The CLI example now exposes `read/dump`, `read reg` / `rreg`, `write reg` / `wreg`, `on/all`, `reset/hardreset`, and help entries for `health` / `state`
+- The example `Wire` transport now validates buffers and maps transport failures into health-tracked I2C error codes consistently
+- README now documents the internal implementation manual, protocol limits, recovery semantics, and the example/public boundary more clearly
+
+### Fixed
+- Native tests now include the Arduino/Wire stubs required by the `native` PlatformIO environment
+- Native coverage now exercises settings snapshots, explicit hard reset, probe normalization, and recover backoff behavior
+
 ## [1.0.0] - 2026-07-07
 
 ### Added

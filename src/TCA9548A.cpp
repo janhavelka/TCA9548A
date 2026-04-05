@@ -6,7 +6,6 @@
 #include "TCA9548A/TCA9548A.h"
 
 #include <Arduino.h>
-#include <cstring>
 #include <limits>
 
 namespace TCA9548A {
@@ -15,7 +14,7 @@ namespace {
 static constexpr uint32_t MAX_I2C_TIMEOUT_MS = 60000;
 static constexpr uint32_t MAX_RECOVER_BACKOFF_MS = 600000;
 
-static uint32_t _nowMs(const Config& cfg) {
+static uint32_t configNowMs(const Config& cfg) {
   return (cfg.nowMs != nullptr) ? cfg.nowMs(cfg.timeUser) : millis();
 }
 
@@ -29,11 +28,11 @@ static bool isI2cFailure(Err code) {
          code == Err::I2C_BUS;
 }
 
-static bool _timeElapsed(uint32_t now, uint32_t target) {
+static bool timeElapsed(uint32_t now, uint32_t target) {
   return static_cast<int32_t>(now - target) >= 0;
 }
 
-}  // namespace
+} // namespace
 
 // ============================================================================
 // Lifecycle
@@ -42,7 +41,6 @@ static bool _timeElapsed(uint32_t now, uint32_t target) {
 Status TCA9548A::begin(const Config& config) {
   _initialized = false;
   _driverState = DriverState::UNINIT;
-
   _lastOkMs = 0;
   _lastErrorMs = 0;
   _lastError = Status::Ok();
@@ -51,9 +49,8 @@ Status TCA9548A::begin(const Config& config) {
   _totalSuccess = 0;
   _lastRecoverMs = 0;
   _lastRecoverValid = false;
-  _lastKnownMask = 0;
+  _lastKnownMask = cmd::NO_CHANNELS;
 
-  // Validate config
   if (config.i2cWrite == nullptr || config.i2cWriteRead == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C callbacks not set");
   }
@@ -64,7 +61,8 @@ Status TCA9548A::begin(const Config& config) {
     return Status::Error(Err::INVALID_CONFIG, "I2C timeout too large");
   }
   if (!isValidAddress(config.i2cAddress)) {
-    return Status::Error(Err::INVALID_CONFIG, "Invalid I2C address (must be 0x70-0x77)");
+    return Status::Error(Err::INVALID_CONFIG,
+                         "Invalid I2C address (must be 0x70-0x77)");
   }
   if (config.recoverBackoffMs > MAX_RECOVER_BACKOFF_MS) {
     return Status::Error(Err::INVALID_CONFIG, "Recover backoff too large");
@@ -75,13 +73,12 @@ Status TCA9548A::begin(const Config& config) {
     _config.offlineThreshold = 1;
   }
 
-  // Verify device presence by reading control register.
-  // After POR/RESET the value should be 0x00, but we only require ACK.
-  uint8_t regValue = 0;
+  uint8_t regValue = cmd::NO_CHANNELS;
   Status st = _readControlRegRaw(regValue);
   if (!st.ok()) {
     if (isI2cFailure(st.code)) {
-      return Status::Error(Err::DEVICE_NOT_FOUND, "TCA9548A not found on bus", st.detail);
+      return Status::Error(Err::DEVICE_NOT_FOUND, "TCA9548A not found on bus",
+                           st.detail);
     }
     return st;
   }
@@ -89,27 +86,24 @@ Status TCA9548A::begin(const Config& config) {
   _lastKnownMask = regValue;
   _initialized = true;
   _driverState = DriverState::READY;
-  _lastOkMs = _nowMs(_config);
-
+  _lastOkMs = configNowMs(_config);
   return Status::Ok();
 }
 
 void TCA9548A::tick(uint32_t nowMs) {
   (void)nowMs;
-  // TCA9548A has no pending I/O or state machines.
-  // tick() is a no-op but provided for API uniformity.
+  // TCA9548A has no pending I/O or state machine work.
 }
 
 void TCA9548A::end() {
   if (_initialized) {
-    // Best-effort: disable all channels before shutdown
-    uint8_t zero = cmd::NO_CHANNELS;
+    const uint8_t zero = cmd::NO_CHANNELS;
     (void)_i2cWriteRaw(&zero, sizeof(zero));
   }
 
   _initialized = false;
   _driverState = DriverState::UNINIT;
-  _lastKnownMask = 0;
+  _lastKnownMask = cmd::NO_CHANNELS;
 }
 
 // ============================================================================
@@ -117,9 +111,17 @@ void TCA9548A::end() {
 // ============================================================================
 
 Status TCA9548A::probe() {
-  // probe() uses raw (untracked) I2C — diagnostic only, no health tracking.
-  uint8_t regValue = 0;
-  return _readControlRegRaw(regValue);
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+
+  uint8_t regValue = cmd::NO_CHANNELS;
+  Status st = _readControlRegRaw(regValue);
+  if (!st.ok() && isI2cFailure(st.code)) {
+    return Status::Error(Err::DEVICE_NOT_FOUND, "TCA9548A not found on bus",
+                         st.detail);
+  }
+  return st;
 }
 
 Status TCA9548A::recover() {
@@ -127,42 +129,84 @@ Status TCA9548A::recover() {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  // Enforce backoff
   if (_lastRecoverValid && _config.recoverBackoffMs > 0) {
-    const uint32_t now = _nowMs(_config);
-    if (!_timeElapsed(now, _lastRecoverMs + _config.recoverBackoffMs)) {
+    const uint32_t now = configNowMs(_config);
+    if (!timeElapsed(now, _lastRecoverMs + _config.recoverBackoffMs)) {
       return Status::Error(Err::TIMEOUT, "Recover backoff active");
     }
   }
 
-  _lastRecoverMs = _nowMs(_config);
+  const uint8_t desiredMask = _lastKnownMask;
+  _lastRecoverMs = configNowMs(_config);
   _lastRecoverValid = true;
 
-  // Step 1: Try hard reset if available and enabled
   if (_config.recoverUseHardReset && _config.hardReset != nullptr) {
-    Status rstSt = _config.hardReset(_config.i2cUser);
+    Status rstSt = hardReset();
     if (rstSt.ok()) {
-      // After reset, control register should be 0x00.
-      // Probe to verify device is back.
-      uint8_t regValue = 0;
-      Status probeSt = _readControlReg(regValue);
-      if (probeSt.ok()) {
-        _lastKnownMask = regValue;
+      if (desiredMask == cmd::NO_CHANNELS) {
         return Status::Ok();
       }
+
+      Status restoreSt = _writeControlReg(desiredMask);
+      if (restoreSt.ok()) {
+        _lastKnownMask = desiredMask;
+      }
+      return restoreSt;
     }
   }
 
-  // Step 2: Simple probe — just read the control register (tracked).
-  // This will update health on success.
-  uint8_t regValue = 0;
+  uint8_t regValue = cmd::NO_CHANNELS;
   Status st = _readControlReg(regValue);
-  if (st.ok()) {
+  if (!st.ok()) {
+    return st;
+  }
+
+  if (regValue == desiredMask) {
     _lastKnownMask = regValue;
     return Status::Ok();
   }
 
+  st = _writeControlReg(desiredMask);
+  if (st.ok()) {
+    _lastKnownMask = desiredMask;
+  }
   return st;
+}
+
+Status TCA9548A::hardReset() {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (_config.hardReset == nullptr) {
+    return Status::Error(Err::UNSUPPORTED,
+                         "hardReset callback not configured");
+  }
+
+  Status rstSt = _config.hardReset(_config.i2cUser);
+  if (!rstSt.ok()) {
+    return rstSt;
+  }
+
+  uint8_t regValue = cmd::NO_CHANNELS;
+  Status st = _readControlReg(regValue);
+  if (st.ok()) {
+    _lastKnownMask = regValue;
+  }
+  return st;
+}
+
+Status TCA9548A::getSettings(SettingsSnapshot& out) const {
+  out.initialized = _initialized;
+  out.state = _driverState;
+  out.i2cAddress = _config.i2cAddress;
+  out.i2cTimeoutMs = _config.i2cTimeoutMs;
+  out.offlineThreshold = _config.offlineThreshold;
+  out.recoverBackoffMs = _config.recoverBackoffMs;
+  out.hasNowMsHook = (_config.nowMs != nullptr);
+  out.hasHardReset = (_config.hardReset != nullptr);
+  out.recoverUseHardReset = _config.recoverUseHardReset;
+  out.lastKnownMask = _lastKnownMask;
+  return Status::Ok();
 }
 
 // ============================================================================
@@ -177,8 +221,7 @@ Status TCA9548A::selectChannel(uint8_t channel) {
     return Status::Error(Err::INVALID_PARAM, "Channel must be 0-7");
   }
 
-  const uint8_t mask = static_cast<uint8_t>(1U << channel);
-  return _writeControlReg(mask);
+  return _writeControlReg(static_cast<uint8_t>(1U << channel));
 }
 
 Status TCA9548A::setChannelMask(uint8_t mask) {
@@ -194,16 +237,14 @@ Status TCA9548A::enableChannels(uint8_t mask) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  // Read current state
-  uint8_t current = 0;
+  uint8_t current = cmd::NO_CHANNELS;
   Status st = _readControlReg(current);
   if (!st.ok()) {
     return st;
   }
 
-  const uint8_t newMask = current | mask;
+  const uint8_t newMask = static_cast<uint8_t>(current | mask);
   if (newMask == current) {
-    // Already enabled — no write needed
     return Status::Ok();
   }
 
@@ -215,8 +256,7 @@ Status TCA9548A::disableChannels(uint8_t mask) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
 
-  // Read current state
-  uint8_t current = 0;
+  uint8_t current = cmd::NO_CHANNELS;
   Status st = _readControlReg(current);
   if (!st.ok()) {
     return st;
@@ -224,7 +264,6 @@ Status TCA9548A::disableChannels(uint8_t mask) {
 
   const uint8_t newMask = static_cast<uint8_t>(current & ~mask);
   if (newMask == current) {
-    // Already disabled — no write needed
     return Status::Ok();
   }
 
@@ -259,7 +298,7 @@ Status TCA9548A::isChannelEnabled(uint8_t channel, bool& enabled) {
     return Status::Error(Err::INVALID_PARAM, "Channel must be 0-7");
   }
 
-  uint8_t mask = 0;
+  uint8_t mask = cmd::NO_CHANNELS;
   Status st = _readControlReg(mask);
   if (st.ok()) {
     _lastKnownMask = mask;
@@ -269,7 +308,7 @@ Status TCA9548A::isChannelEnabled(uint8_t channel, bool& enabled) {
 }
 
 // ============================================================================
-// Transport Wrappers — RAW (no health tracking)
+// Transport Wrappers - RAW (no health tracking)
 // ============================================================================
 
 Status TCA9548A::_i2cWriteRaw(const uint8_t* buf, size_t len) {
@@ -279,24 +318,29 @@ Status TCA9548A::_i2cWriteRaw(const uint8_t* buf, size_t len) {
   if (buf == nullptr || len == 0) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
+
   return _config.i2cWrite(_config.i2cAddress, buf, len, _config.i2cTimeoutMs,
                           _config.i2cUser);
 }
 
 Status TCA9548A::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
-                                   uint8_t* rxBuf, size_t rxLen) {
+                                  uint8_t* rxBuf, size_t rxLen) {
   if (_config.i2cWriteRead == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C write-read not set");
+  }
+  if (txLen > 0 && txBuf == nullptr) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
   if (rxLen > 0 && rxBuf == nullptr) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
+
   return _config.i2cWriteRead(_config.i2cAddress, txBuf, txLen, rxBuf, rxLen,
-                               _config.i2cTimeoutMs, _config.i2cUser);
+                              _config.i2cTimeoutMs, _config.i2cUser);
 }
 
 // ============================================================================
-// Transport Wrappers — TRACKED (update health)
+// Transport Wrappers - TRACKED (update health)
 // ============================================================================
 
 Status TCA9548A::_i2cWriteTracked(const uint8_t* buf, size_t len) {
@@ -312,7 +356,10 @@ Status TCA9548A::_i2cWriteTracked(const uint8_t* buf, size_t len) {
 }
 
 Status TCA9548A::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
-                                       uint8_t* rxBuf, size_t rxLen) {
+                                      uint8_t* rxBuf, size_t rxLen) {
+  if (txLen > 0 && txBuf == nullptr) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
+  }
   if (rxLen > 0 && rxBuf == nullptr) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
@@ -329,7 +376,7 @@ Status TCA9548A::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
 // ============================================================================
 
 Status TCA9548A::_updateHealth(const Status& st) {
-  const uint32_t now = _nowMs(_config);
+  const uint32_t now = configNowMs(_config);
   const uint32_t maxU32 = std::numeric_limits<uint32_t>::max();
   const uint8_t maxU8 = std::numeric_limits<uint8_t>::max();
 
@@ -385,8 +432,7 @@ Status TCA9548A::_writeControlReg(uint8_t value) {
 }
 
 Status TCA9548A::_readControlReg(uint8_t& value) {
-  // TCA9548A has no register address — a read returns the control register directly.
-  uint8_t buf[cmd::CONTROL_REG_LEN] = {0};
+  uint8_t buf[cmd::CONTROL_REG_LEN] = {cmd::NO_CHANNELS};
   Status st = _i2cWriteReadTracked(nullptr, 0, buf, sizeof(buf));
   if (st.ok()) {
     value = buf[0];
@@ -396,7 +442,7 @@ Status TCA9548A::_readControlReg(uint8_t& value) {
 }
 
 Status TCA9548A::_readControlRegRaw(uint8_t& value) {
-  uint8_t buf[cmd::CONTROL_REG_LEN] = {0};
+  uint8_t buf[cmd::CONTROL_REG_LEN] = {cmd::NO_CHANNELS};
   Status st = _i2cWriteReadRaw(nullptr, 0, buf, sizeof(buf));
   if (st.ok()) {
     value = buf[0];
@@ -404,4 +450,4 @@ Status TCA9548A::_readControlRegRaw(uint8_t& value) {
   return st;
 }
 
-}  // namespace TCA9548A
+} // namespace TCA9548A
