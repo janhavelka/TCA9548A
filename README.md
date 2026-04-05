@@ -151,6 +151,9 @@ struct Status {
   const char* msg;
 
   bool ok() const;
+  bool is(Err expected) const;
+  bool inProgress() const;
+  explicit operator bool() const;
 };
 ```
 
@@ -167,6 +170,8 @@ Important error codes:
 - `I2C_TIMEOUT`
 - `I2C_BUS`
 - `I2C_ERROR`
+- `BUSY`
+- `IN_PROGRESS`
 
 ## Health Monitoring
 
@@ -215,6 +220,8 @@ Driver states:
 - `Status disableAll()` - write `0x00`
 - `Status readChannelMask(uint8_t& mask)` - read current mask
 - `Status readControlRegister(uint8_t& mask)` - alias for `readChannelMask()`
+- `Status readRegister(uint8_t reg, uint8_t& value)` - read register by address (must be `CONTROL_REG`)
+- `Status writeRegister(uint8_t reg, uint8_t value)` - write register by address (must be `CONTROL_REG`)
 - `Status isChannelEnabled(uint8_t channel, bool& enabled)` - query one channel
 
 ### State And Health

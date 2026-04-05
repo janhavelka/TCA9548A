@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - `SettingsSnapshot`, `getSettings()`, `isInitialized()`, and `getConfig()` for repo-family runtime/config inspection
 - Explicit `hardReset()` API and direct control-register aliases (`readControlRegister()` / `writeControlRegister()`)
+- `readRegister()` and `writeRegister()` register-address-based access methods for sibling-library uniformity
+- `Status::is(Err)` method for type-safe error code comparison
+- `Status::inProgress()` method for in-progress checks
+- `Status::operator bool()` explicit conversion for concise success checks
+- `Err::BUSY` and `Err::IN_PROGRESS` error codes
 - Missing example helper files `examples/common/CommandHandler.h` and `examples/common/TransportAdapter.h`
 
 ### Changed
