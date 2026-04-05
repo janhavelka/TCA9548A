@@ -107,9 +107,21 @@ public:
   /// @return Status::Ok() on success
   Status readChannelMask(uint8_t& mask);
 
+  /// Read the control register by register address.
+  /// @param reg Register address (must be `cmd::CONTROL_REG`)
+  /// @param[out] value Current control-register value
+  /// @return Status::Ok() on success, INVALID_PARAM if reg is invalid
+  Status readRegister(uint8_t reg, uint8_t& value);
+
   /// Read the control register directly.
   /// Alias for readChannelMask() to match register-oriented sibling libraries.
   Status readControlRegister(uint8_t& mask) { return readChannelMask(mask); }
+
+  /// Write the control register by register address.
+  /// @param reg Register address (must be `cmd::CONTROL_REG`)
+  /// @param value New control-register value
+  /// @return Status::Ok() on success, INVALID_PARAM if reg is invalid
+  Status writeRegister(uint8_t reg, uint8_t value);
 
   /// Check if a specific channel is currently enabled
   /// @param channel Channel number (0-7)

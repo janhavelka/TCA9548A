@@ -118,6 +118,18 @@ void test_status_error() {
   TEST_ASSERT_EQUAL(42, st.detail);
 }
 
+void test_status_helpers() {
+  TCA9548A::Status st = TCA9548A::Status::Error(TCA9548A::Err::I2C_ERROR, "fail", 7);
+  TEST_ASSERT_TRUE(st.is(TCA9548A::Err::I2C_ERROR));
+  TEST_ASSERT_FALSE(st.is(TCA9548A::Err::TIMEOUT));
+  TEST_ASSERT_FALSE(static_cast<bool>(st));
+  TEST_ASSERT_FALSE(st.inProgress());
+
+  TCA9548A::Status inProgress{TCA9548A::Err::IN_PROGRESS, 0, "queued"};
+  TEST_ASSERT_TRUE(inProgress.inProgress());
+  TEST_ASSERT_TRUE(static_cast<bool>(TCA9548A::Status::Ok()));
+}
+
 // ============================================================================
 // Configuration Tests
 // ============================================================================
@@ -331,6 +343,26 @@ void test_read_channel_mask() {
   TCA9548A::Status st = dev.readChannelMask(mask);
   TEST_ASSERT_TRUE(st.ok());
   TEST_ASSERT_EQUAL(0xA5, mask);
+}
+
+void test_register_helpers() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+  dev.begin(makeConfig());
+
+  uint8_t value = 0;
+  TCA9548A::Status st = dev.writeRegister(TCA9548A::cmd::CONTROL_REG, 0x3C);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_HEX8(0x3C, dev.lastKnownMask());
+
+  st = dev.readRegister(TCA9548A::cmd::CONTROL_REG, value);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL_HEX8(0x3C, value);
+
+  st = dev.readRegister(0x01, value);
+  TEST_ASSERT_EQUAL(TCA9548A::Err::INVALID_PARAM, st.code);
+  st = dev.writeRegister(0x01, 0xAA);
+  TEST_ASSERT_EQUAL(TCA9548A::Err::INVALID_PARAM, st.code);
 }
 
 void test_enable_channels() {

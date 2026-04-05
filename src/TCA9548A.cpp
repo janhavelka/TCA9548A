@@ -290,6 +290,13 @@ Status TCA9548A::readChannelMask(uint8_t& mask) {
   return st;
 }
 
+Status TCA9548A::readRegister(uint8_t reg, uint8_t& value) {
+  if (reg != cmd::CONTROL_REG) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid register address");
+  }
+  return readChannelMask(value);
+}
+
 Status TCA9548A::isChannelEnabled(uint8_t channel, bool& enabled) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
@@ -305,6 +312,13 @@ Status TCA9548A::isChannelEnabled(uint8_t channel, bool& enabled) {
     enabled = (mask & (1U << channel)) != 0;
   }
   return st;
+}
+
+Status TCA9548A::writeRegister(uint8_t reg, uint8_t value) {
+  if (reg != cmd::CONTROL_REG) {
+    return Status::Error(Err::INVALID_PARAM, "Invalid register address");
+  }
+  return setChannelMask(value);
 }
 
 // ============================================================================

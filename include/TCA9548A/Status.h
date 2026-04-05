@@ -19,7 +19,9 @@ enum class Err : uint8_t {
   I2C_NACK_ADDR,          ///< I2C NACK on address
   I2C_NACK_DATA,          ///< I2C NACK on data
   I2C_TIMEOUT,            ///< I2C transaction timeout
-  I2C_BUS                 ///< I2C bus error (SDA stuck, arbitration, etc.)
+  I2C_BUS,                ///< I2C bus error (SDA stuck, arbitration, etc.)
+  BUSY,                   ///< Operation deferred because device is busy
+  IN_PROGRESS             ///< Operation scheduled; call tick() to complete
 };
 
 /// Status structure returned by all fallible operations
@@ -33,6 +35,15 @@ struct Status {
 
   /// @return true if operation succeeded
   constexpr bool ok() const { return code == Err::OK; }
+
+  /// @return true if status matches the requested error code
+  constexpr bool is(Err expected) const { return code == expected; }
+
+  /// @return true if operation is still in progress
+  constexpr bool inProgress() const { return code == Err::IN_PROGRESS; }
+
+  /// @return true if operation succeeded
+  explicit constexpr operator bool() const { return ok(); }
 
   /// Create a success status
   static constexpr Status Ok() { return Status{Err::OK, 0, "OK"}; }
