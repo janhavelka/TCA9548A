@@ -24,6 +24,7 @@ TCA9548A::TCA9548A device;
 TCA9548A::Config gConfig;
 bool gConfigReady = false;
 bool verboseMode = false;
+static constexpr uint32_t STRESS_PROGRESS_UPDATES = 10U;
 
 // ============================================================================
 // Color Helpers
@@ -45,6 +46,37 @@ inline const char* successRateColor(float pct) {
 }
 inline const char* skipCountColor(uint32_t count) {
   return (count == 0) ? LOG_COLOR_GREEN : LOG_COLOR_YELLOW;
+}
+
+uint32_t stressProgressStep(uint32_t total) {
+  if (total == 0U) {
+    return 0U;
+  }
+  const uint32_t step = total / STRESS_PROGRESS_UPDATES;
+  return (step == 0U) ? 1U : step;
+}
+
+void printStressProgress(uint32_t completed, uint32_t total, uint32_t okCount, uint32_t failCount) {
+  if (completed == 0U || total == 0U) {
+    return;
+  }
+  const uint32_t step = stressProgressStep(total);
+  if (step == 0U || (completed != total && (completed % step) != 0U)) {
+    return;
+  }
+  const float pct = (100.0f * static_cast<float>(completed)) / static_cast<float>(total);
+  Serial.printf("  Progress: %lu/%lu (%s%.0f%%%s, ok=%s%lu%s, fail=%s%lu%s)\n",
+                static_cast<unsigned long>(completed),
+                static_cast<unsigned long>(total),
+                successRateColor(pct),
+                pct,
+                LOG_COLOR_RESET,
+                goodIfNonZeroColor(okCount),
+                static_cast<unsigned long>(okCount),
+                LOG_COLOR_RESET,
+                goodIfZeroColor(failCount),
+                static_cast<unsigned long>(failCount),
+                LOG_COLOR_RESET);
 }
 
 // ============================================================================
@@ -295,6 +327,10 @@ void runStress(int count) {
       lastFailure = st;
       if (verboseMode) { printStatus(st); }
     }
+    printStressProgress(static_cast<uint32_t>(i + 1),
+                        static_cast<uint32_t>(count),
+                        static_cast<uint32_t>(ok),
+                        static_cast<uint32_t>(fail));
   }
   const uint32_t elapsed = millis() - startMs;
   const float pct = (count > 0) ? (100.0f * static_cast<float>(ok) / static_cast<float>(count)) : 0.0f;
@@ -340,6 +376,8 @@ void runStressMix(int count) {
   const uint32_t succBefore = device.totalSuccess();
   const uint32_t failBefore = device.totalFailures();
   const uint32_t startMs = millis();
+  uint32_t okTotal = 0;
+  uint32_t failTotal = 0;
 
   for (int i = 0; i < count; ++i) {
     const int op = i % opCount;
@@ -357,21 +395,22 @@ void runStressMix(int count) {
 
     if (st.ok()) {
       stats[op].ok++;
+      okTotal++;
     } else {
       stats[op].fail++;
+      failTotal++;
       if (verboseMode) {
         Serial.printf("  [%d] %s failed: %s\n", i, stats[op].name, errToStr(st.code));
       }
     }
+
+    printStressProgress(static_cast<uint32_t>(i + 1),
+                        static_cast<uint32_t>(count),
+                        okTotal,
+                        failTotal);
   }
 
   const uint32_t elapsed = millis() - startMs;
-  uint32_t okTotal = 0;
-  uint32_t failTotal = 0;
-  for (int i = 0; i < opCount; ++i) {
-    okTotal += stats[i].ok;
-    failTotal += stats[i].fail;
-  }
 
   Serial.println("=== stress_mix summary ===");
   const float successPct =
