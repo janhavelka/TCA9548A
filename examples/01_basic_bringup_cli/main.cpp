@@ -113,6 +113,35 @@ const char* stateToStr(TCA9548A::DriverState st) {
   }
 }
 
+bool parseIntRange(const String& token, int minValue, int maxValue, int& out) {
+  char* end = nullptr;
+  const long value = strtol(token.c_str(), &end, 0);
+  if (end == token.c_str() || *end != '\0' || value < minValue || value > maxValue) {
+    return false;
+  }
+  out = static_cast<int>(value);
+  return true;
+}
+
+bool parseBool01(const String& token, bool& out) {
+  int value = 0;
+  if (!parseIntRange(token, 0, 1, value)) {
+    return false;
+  }
+  out = (value != 0);
+  return true;
+}
+
+bool parseHexByte(const String& token, uint8_t& out) {
+  char* end = nullptr;
+  const unsigned long value = strtoul(token.c_str(), &end, 16);
+  if (end == token.c_str() || *end != '\0' || value > 0xFFu) {
+    return false;
+  }
+  out = static_cast<uint8_t>(value);
+  return true;
+}
+
 // ============================================================================
 // Print Helpers
 // ============================================================================
@@ -159,7 +188,11 @@ void printEnabledChannels(uint8_t mask) {
 void printVersionInfo() {
   Serial.printf("%s=== Version Info ===%s\n", LOG_COLOR_CYAN, LOG_COLOR_RESET);
   Serial.printf("  Library: %s\n", TCA9548A::VERSION);
-  Serial.printf("  Library build: %s\n", TCA9548A::VERSION_FULL);
+  Serial.printf("  Library full: %s\n", TCA9548A::VERSION_FULL);
+  Serial.printf("  Library build: %s\n", TCA9548A::BUILD_TIMESTAMP);
+  Serial.printf("  Library commit: %s (%s)\n",
+                TCA9548A::GIT_COMMIT,
+                TCA9548A::GIT_STATUS);
   Serial.printf("  Example build: %s %s\n", __DATE__, __TIME__);
 #ifdef ARDUINO
   Serial.printf("  Arduino: %d\n", ARDUINO);
@@ -313,6 +346,12 @@ void runStress(int count) {
   bool hasFailure = false;
   TCA9548A::Status firstFailure = TCA9548A::Status::Ok();
   TCA9548A::Status lastFailure = TCA9548A::Status::Ok();
+  HealthSnapshot<TCA9548A::TCA9548A> healthBefore;
+  healthBefore.capture(device);
+  const uint32_t successBefore = device.totalSuccess();
+  const uint32_t failBefore = device.totalFailures();
+  uint8_t baselineMask = device.lastKnownMask();
+  const TCA9548A::Status baselineRead = device.readChannelMask(baselineMask);
   const uint32_t startMs = millis();
 
   for (int i = 0; i < count; ++i) {
@@ -332,8 +371,15 @@ void runStress(int count) {
                         static_cast<uint32_t>(ok),
                         static_cast<uint32_t>(fail));
   }
+  const TCA9548A::Status restoreStatus = baselineRead.ok()
+                                             ? device.setChannelMask(baselineMask)
+                                             : TCA9548A::Status::Ok();
   const uint32_t elapsed = millis() - startMs;
   const float pct = (count > 0) ? (100.0f * static_cast<float>(ok) / static_cast<float>(count)) : 0.0f;
+  const uint32_t successDelta = device.totalSuccess() - successBefore;
+  const uint32_t failDelta = device.totalFailures() - failBefore;
+  HealthSnapshot<TCA9548A::TCA9548A> healthAfter;
+  healthAfter.capture(device);
   Serial.printf("  Stress results: %s%d ok%s, %s%d failed%s (%s%.2f%%%s)\n",
                 goodIfNonZeroColor(static_cast<uint32_t>(ok)), ok, LOG_COLOR_RESET,
                 goodIfZeroColor(static_cast<uint32_t>(fail)), fail, LOG_COLOR_RESET,
@@ -341,6 +387,24 @@ void runStress(int count) {
   Serial.printf("  Duration: %lu ms\n", static_cast<unsigned long>(elapsed));
   if (elapsed > 0) {
     Serial.printf("  Rate: %.2f ops/s\n", (1000.0f * static_cast<float>(count)) / elapsed);
+  }
+  Serial.printf("  Health delta: %ssuccess +%lu%s, %sfailures +%lu%s\n",
+                goodIfNonZeroColor(successDelta), static_cast<unsigned long>(successDelta), LOG_COLOR_RESET,
+                goodIfZeroColor(failDelta), static_cast<unsigned long>(failDelta), LOG_COLOR_RESET);
+  Serial.println("  Health changes:");
+  printHealthDiff(healthBefore, healthAfter);
+  if (!baselineRead.ok()) {
+    Serial.printf("  Baseline restore: %sSKIPPED%s (could not read original mask)\n",
+                  LOG_COLOR_YELLOW,
+                  LOG_COLOR_RESET);
+  } else if (!restoreStatus.ok()) {
+    Serial.printf("  Baseline restore: %sFAILED%s\n", LOG_COLOR_RED, LOG_COLOR_RESET);
+    printStatus(restoreStatus);
+  } else {
+    Serial.printf("  Baseline restore: %sOK%s (0x%02X)\n",
+                  LOG_COLOR_GREEN,
+                  LOG_COLOR_RESET,
+                  baselineMask);
   }
   if (hasFailure) {
     Serial.println("  First failure:");
@@ -373,11 +437,18 @@ void runStressMix(int count) {
   };
   const int opCount = static_cast<int>(sizeof(stats) / sizeof(stats[0]));
 
+  uint8_t baselineMask = device.lastKnownMask();
+  const TCA9548A::Status baselineRead = device.readChannelMask(baselineMask);
+  HealthSnapshot<TCA9548A::TCA9548A> healthBefore;
+  healthBefore.capture(device);
   const uint32_t succBefore = device.totalSuccess();
   const uint32_t failBefore = device.totalFailures();
   const uint32_t startMs = millis();
   uint32_t okTotal = 0;
   uint32_t failTotal = 0;
+  bool hasFailure = false;
+  TCA9548A::Status firstFailure = TCA9548A::Status::Ok();
+  TCA9548A::Status lastFailure = TCA9548A::Status::Ok();
 
   for (int i = 0; i < count; ++i) {
     const int op = i % opCount;
@@ -399,6 +470,11 @@ void runStressMix(int count) {
     } else {
       stats[op].fail++;
       failTotal++;
+      if (!hasFailure) {
+        firstFailure = st;
+        hasFailure = true;
+      }
+      lastFailure = st;
       if (verboseMode) {
         Serial.printf("  [%d] %s failed: %s\n", i, stats[op].name, errToStr(st.code));
       }
@@ -410,7 +486,12 @@ void runStressMix(int count) {
                         failTotal);
   }
 
+  const TCA9548A::Status restoreStatus = baselineRead.ok()
+                                             ? device.setChannelMask(baselineMask)
+                                             : TCA9548A::Status::Ok();
   const uint32_t elapsed = millis() - startMs;
+  HealthSnapshot<TCA9548A::TCA9548A> healthAfter;
+  healthAfter.capture(device);
 
   Serial.println("=== stress_mix summary ===");
   const float successPct =
@@ -424,16 +505,45 @@ void runStressMix(int count) {
     Serial.printf("  Rate: %.2f ops/s\n", (1000.0f * static_cast<float>(count)) / elapsed);
   }
   for (int i = 0; i < opCount; ++i) {
-    Serial.printf("  %-12s %sok=%lu%s %sfail=%lu%s\n",
+    const uint32_t opTotal = stats[i].ok + stats[i].fail;
+    const float opPct = (opTotal > 0U)
+                            ? (100.0f * static_cast<float>(stats[i].ok) /
+                               static_cast<float>(opTotal))
+                            : 0.0f;
+    Serial.printf("  %-12s %sok=%lu%s %sfail=%lu%s (%s%.1f%%%s)\n",
                   stats[i].name,
                   goodIfNonZeroColor(stats[i].ok), static_cast<unsigned long>(stats[i].ok), LOG_COLOR_RESET,
-                  goodIfZeroColor(stats[i].fail), static_cast<unsigned long>(stats[i].fail), LOG_COLOR_RESET);
+                  goodIfZeroColor(stats[i].fail), static_cast<unsigned long>(stats[i].fail), LOG_COLOR_RESET,
+                  successRateColor(opPct), opPct, LOG_COLOR_RESET);
   }
   const uint32_t successDelta = device.totalSuccess() - succBefore;
   const uint32_t failDelta = device.totalFailures() - failBefore;
   Serial.printf("  Health delta: %ssuccess +%lu%s, %sfailures +%lu%s\n",
                 goodIfNonZeroColor(successDelta), static_cast<unsigned long>(successDelta), LOG_COLOR_RESET,
                 goodIfZeroColor(failDelta), static_cast<unsigned long>(failDelta), LOG_COLOR_RESET);
+  Serial.println("  Health changes:");
+  printHealthDiff(healthBefore, healthAfter);
+  if (!baselineRead.ok()) {
+    Serial.printf("  Baseline restore: %sSKIPPED%s (could not read original mask)\n",
+                  LOG_COLOR_YELLOW,
+                  LOG_COLOR_RESET);
+  } else if (!restoreStatus.ok()) {
+    Serial.printf("  Baseline restore: %sFAILED%s\n", LOG_COLOR_RED, LOG_COLOR_RESET);
+    printStatus(restoreStatus);
+  } else {
+    Serial.printf("  Baseline restore: %sOK%s (0x%02X)\n",
+                  LOG_COLOR_GREEN,
+                  LOG_COLOR_RESET,
+                  baselineMask);
+  }
+  if (hasFailure) {
+    Serial.println("  First failure:");
+    printStatus(firstFailure);
+    if (failTotal > 1U) {
+      Serial.println("  Last failure:");
+      printStatus(lastFailure);
+    }
+  }
 }
 
 // ============================================================================
@@ -625,15 +735,27 @@ void processCommand(const String& cmd) {
     return;
   }
   if (cmd == "probe") {
+    HealthSnapshot<TCA9548A::TCA9548A> before;
+    before.capture(device);
     TCA9548A::Status st = device.probe();
     Serial.print("probe: ");
     printStatus(st);
+    HealthSnapshot<TCA9548A::TCA9548A> after;
+    after.capture(device);
+    Serial.println("  Health changes:");
+    printHealthDiff(before, after);
     return;
   }
   if (cmd == "recover") {
+    HealthSnapshot<TCA9548A::TCA9548A> before;
+    before.capture(device);
     TCA9548A::Status st = device.recover();
     Serial.print("recover: ");
     printStatus(st);
+    HealthSnapshot<TCA9548A::TCA9548A> after;
+    after.capture(device);
+    Serial.println("  Health changes:");
+    printHealthDiff(before, after);
     return;
   }
   if (cmd == "reset" || cmd == "hardreset") {
@@ -659,13 +781,21 @@ void processCommand(const String& cmd) {
     return;
   }
   if (cmd.startsWith("verbose ")) {
-    int val = cmd.substring(8).toInt();
-    verboseMode = (val != 0);
+    bool value = false;
+    if (!parseBool01(cmd.substring(8), value)) {
+      LOGE("Usage: verbose <0|1>");
+      return;
+    }
+    verboseMode = value;
     LOGI("Verbose mode: %s%s%s", onOffColor(verboseMode), verboseMode ? "ON" : "OFF", LOG_COLOR_RESET);
     return;
   }
   if (cmd.startsWith("select ")) {
-    int ch = atoi(cmd.c_str() + 7);
+    int ch = 0;
+    if (!parseIntRange(cmd.substring(7), 0, 7, ch)) {
+      LOGE("Usage: select <0-7>");
+      return;
+    }
     TCA9548A::Status st = device.selectChannel(static_cast<uint8_t>(ch));
     Serial.printf("select(%d): ", ch);
     printStatus(st);
@@ -673,7 +803,11 @@ void processCommand(const String& cmd) {
     return;
   }
   if (cmd.startsWith("mask ")) {
-    uint8_t m = static_cast<uint8_t>(strtoul(cmd.c_str() + 5, nullptr, 16));
+    uint8_t m = 0;
+    if (!parseHexByte(cmd.substring(5), m)) {
+      LOGE("Usage: mask <hex>");
+      return;
+    }
     TCA9548A::Status st = device.setChannelMask(m);
     Serial.printf("mask(0x%02X): ", m);
     printStatus(st);
@@ -694,16 +828,16 @@ void processCommand(const String& cmd) {
     return;
   }
   if (cmd.startsWith("enable ")) {
-    int ch = atoi(cmd.c_str() + 7);
-    if (ch < 0 || ch > 7) { LOGE("Channel must be 0-7"); return; }
+    int ch = 0;
+    if (!parseIntRange(cmd.substring(7), 0, 7, ch)) { LOGE("Usage: enable <0-7>"); return; }
     TCA9548A::Status st = device.enableChannels(static_cast<uint8_t>(1U << ch));
     Serial.printf("enable(%d): ", ch);
     printStatus(st);
     return;
   }
   if (cmd.startsWith("disable ")) {
-    int ch = atoi(cmd.c_str() + 8);
-    if (ch < 0 || ch > 7) { LOGE("Channel must be 0-7"); return; }
+    int ch = 0;
+    if (!parseIntRange(cmd.substring(8), 0, 7, ch)) { LOGE("Usage: disable <0-7>"); return; }
     TCA9548A::Status st = device.disableChannels(static_cast<uint8_t>(1U << ch));
     Serial.printf("disable(%d): ", ch);
     printStatus(st);
@@ -727,7 +861,11 @@ void processCommand(const String& cmd) {
     return;
   }
   if (cmd.startsWith("write reg ")) {
-    uint8_t mask = static_cast<uint8_t>(strtoul(cmd.c_str() + 10, nullptr, 16));
+    uint8_t mask = 0;
+    if (!parseHexByte(cmd.substring(10), mask)) {
+      LOGE("Usage: write reg <hex>");
+      return;
+    }
     TCA9548A::Status st = device.writeControlRegister(mask);
     Serial.printf("write reg(0x%02X): ", mask);
     printStatus(st);
@@ -738,7 +876,11 @@ void processCommand(const String& cmd) {
     return;
   }
   if (cmd.startsWith("wreg ")) {
-    uint8_t mask = static_cast<uint8_t>(strtoul(cmd.c_str() + 5, nullptr, 16));
+    uint8_t mask = 0;
+    if (!parseHexByte(cmd.substring(5), mask)) {
+      LOGE("Usage: wreg <hex>");
+      return;
+    }
     TCA9548A::Status st = device.writeControlRegister(mask);
     Serial.printf("wreg(0x%02X): ", mask);
     printStatus(st);
@@ -749,7 +891,11 @@ void processCommand(const String& cmd) {
     return;
   }
   if (cmd.startsWith("check ")) {
-    int ch = atoi(cmd.c_str() + 6);
+    int ch = 0;
+    if (!parseIntRange(cmd.substring(6), 0, 7, ch)) {
+      LOGE("Usage: check <0-7>");
+      return;
+    }
     bool enabled = false;
     TCA9548A::Status st = device.isChannelEnabled(static_cast<uint8_t>(ch), enabled);
     Serial.printf("check(%d): ", ch);
@@ -761,17 +907,12 @@ void processCommand(const String& cmd) {
     return;
   }
   if (cmd == "state") {
-    const auto st = device.state();
-    const bool online = device.isOnline();
-    Serial.printf("  State: %s%s%s  Online: %s%s%s\n",
-                  LOG_COLOR_STATE(online, device.consecutiveFailures()),
-                  stateToStr(st), LOG_COLOR_RESET,
-                  onOffColor(online), online ? "yes" : "no", LOG_COLOR_RESET);
+    printHealthView(device);
     return;
   }
   if (cmd.startsWith("scanch ")) {
-    int ch = atoi(cmd.c_str() + 7);
-    if (ch < 0 || ch > 7) { LOGE("Channel must be 0-7"); return; }
+    int ch = 0;
+    if (!parseIntRange(cmd.substring(7), 0, 7, ch)) { LOGE("Usage: scanch <0-7>"); return; }
     LOGI("Selecting channel %d...", ch);
     TCA9548A::Status st = device.selectChannel(static_cast<uint8_t>(ch));
     if (!st.ok()) {
@@ -784,7 +925,11 @@ void processCommand(const String& cmd) {
     return;
   }
   if (cmd.startsWith("addr ")) {
-    uint8_t a = static_cast<uint8_t>(strtoul(cmd.c_str() + 5, nullptr, 16));
+    uint8_t a = 0;
+    if (!parseHexByte(cmd.substring(5), a)) {
+      LOGE("Usage: addr <hex>");
+      return;
+    }
     Serial.printf("Setting address to 0x%02X and reinitializing...\n", a);
     device.end();
     gConfig.i2cAddress = a;
@@ -794,7 +939,10 @@ void processCommand(const String& cmd) {
   if (cmd.startsWith("stress_mix")) {
     int count = 10;
     if (cmd.length() > 10) {
-      count = cmd.substring(11).toInt();
+      if (!parseIntRange(cmd.substring(11), 1, 100000, count)) {
+        LOGE("Usage: stress_mix [1-100000]");
+        return;
+      }
     }
     runStressMix(count);
     return;
@@ -802,7 +950,10 @@ void processCommand(const String& cmd) {
   if (cmd.startsWith("stress")) {
     int count = 10;
     if (cmd.length() > 6) {
-      count = cmd.substring(7).toInt();
+      if (!parseIntRange(cmd.substring(7), 1, 100000, count)) {
+        LOGE("Usage: stress [1-100000]");
+        return;
+      }
     }
     runStress(count);
     return;
