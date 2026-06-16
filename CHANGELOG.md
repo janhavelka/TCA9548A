@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Core driver code is framework-neutral and no longer includes Arduino or falls back to `millis()`
 - Without `Config::nowMs`, timestamps remain `0` and recovery backoff is not enforced
-- Documentation is consolidated under `docs/README.md` and `docs/PORTING.md`; vendored datasheet, application-note, and audit extraction artifacts were removed
+- Documentation is consolidated under `docs/README.md`, `docs/HARDWARE_NOTES.md`, and `docs/PORTING.md`; vendored datasheet, application-note, and audit extraction artifacts were removed
 - `OFFLINE` now latches normal channel/control APIs, returning `BUSY` without bus I/O until explicit recovery
 - `recover()` now keeps/reasserts `OFFLINE` if a recovery attempt that started offline fails partway
 - `recover()` now restores the last known channel mask after a successful probe/reset

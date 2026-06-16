@@ -6,13 +6,14 @@ repository [README](../README.md), the public API is documented in
 
 ## Local Documents
 
+- [HARDWARE_NOTES.md](HARDWARE_NOTES.md) - concise chip and board-design notes
 - [PORTING.md](PORTING.md) - transport adapter and framework-neutral porting notes
 - Doxygen output may be generated under `docs/doxygen/`; generated output is not
   source documentation
 
 ## Hardware Notes
 
-Keep these protocol details visible when changing the driver or examples:
+Keep these core protocol details visible when changing the driver or examples:
 
 - The device address range is `0x70` through `0x77`.
 - The control register is one byte wide and has no register address byte.
@@ -27,6 +28,9 @@ Keep these protocol details visible when changing the driver or examples:
 - Treat each enabled bus segment as part of the active I2C capacitance budget.
   Fast-mode operation is limited to 400 kHz and the usual 400 pF I2C bus budget
   per segment.
+
+See [HARDWARE_NOTES.md](HARDWARE_NOTES.md) for the preserved design details from
+the original chip documentation extracts.
 
 ## External References
 

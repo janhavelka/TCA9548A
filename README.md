@@ -371,6 +371,7 @@ AGENTS.md               - Coding guidelines
 
 - [CHANGELOG.md](CHANGELOG.md) - release history
 - [docs/README.md](docs/README.md) - compact docs index and hardware notes
+- [docs/HARDWARE_NOTES.md](docs/HARDWARE_NOTES.md) - preserved chip and board-design notes
 - [docs/PORTING.md](docs/PORTING.md) - framework-neutral transport and ESP-IDF porting notes
 
 ## License
