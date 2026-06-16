@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Core driver code is framework-neutral and no longer includes Arduino or falls back to `millis()`
 - Without `Config::nowMs`, timestamps remain `0` and recovery backoff is not enforced
+- Documentation is consolidated under `docs/README.md` and `docs/PORTING.md`; vendored datasheet, application-note, and audit extraction artifacts were removed
 - `OFFLINE` now latches normal channel/control APIs, returning `BUSY` without bus I/O until explicit recovery
 - `recover()` now keeps/reasserts `OFFLINE` if a recovery attempt that started offline fails partway
 - `recover()` now restores the last known channel mask after a successful probe/reset
@@ -32,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Synchronous bus-touching APIs now return `BUSY` while a poll-chunked job is active
 - The CLI example now exposes `read/dump`, `read reg` / `rreg`, `write reg` / `wreg`, `on/all`, `reset/hardreset`, and help entries for `health` / `state`
 - The example `Wire` transport now validates buffers and maps transport failures into health-tracked I2C error codes consistently
-- README now documents the internal implementation manual, protocol limits, recovery semantics, and the example/public boundary more clearly
+- README now documents protocol limits, recovery semantics, and the example/public boundary more clearly
 
 ### Fixed
 - `end()` skips best-effort all-off bus I/O while `OFFLINE`

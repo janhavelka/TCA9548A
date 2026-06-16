@@ -7,7 +7,13 @@ Thank you for considering contributing to this project!
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feature/my-feature`
 3. Make your changes
-4. Ensure examples build: `pio run -e esp32s3dev -e esp32s2dev`
+4. Run local validation:
+   ```bash
+   pio test -e native
+   pio run -e native_core_no_arduino
+   pio run -e esp32s3dev
+   pio run -e esp32s2dev
+   ```
 5. Commit with a clear message: `git commit -m "feat: add X"`
 6. Push and open a Pull Request
 
@@ -32,7 +38,7 @@ Thank you for considering contributing to this project!
 - Keep PRs focused (one feature/fix per PR)
 - Update documentation if needed
 - Add changelog entry under `[Unreleased]`
-- Ensure CI passes
+- Ensure local validation passes
 
 ### What We Accept
 - Bug fixes

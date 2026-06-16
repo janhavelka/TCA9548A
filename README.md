@@ -359,6 +359,7 @@ src/
 examples/
   01_basic_bringup_cli/ - Interactive CLI example
   common/               - Example-only helpers
+docs/                   - Compact docs index and porting notes
 platformio.ini          - Build environments
 library.json            - PlatformIO metadata
 README.md               - This file
@@ -369,9 +370,8 @@ AGENTS.md               - Coding guidelines
 ## Documentation
 
 - [CHANGELOG.md](CHANGELOG.md) - release history
-- [AGENTS.md](AGENTS.md) - engineering guidelines
-- [docs/IDF_PORT.md](docs/IDF_PORT.md) - ESP-IDF portability guidance
-- [TCA9548A_i2c_switch_implementation_manual.md](TCA9548A_i2c_switch_implementation_manual.md) - extracted datasheet/app-note behavior used for implementation review
+- [docs/README.md](docs/README.md) - compact docs index and hardware notes
+- [docs/PORTING.md](docs/PORTING.md) - framework-neutral transport and ESP-IDF porting notes
 
 ## License
 
