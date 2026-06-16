@@ -36,7 +36,7 @@ using I2cWriteReadFn = Status (*)(uint8_t addr, const uint8_t* txData,
 /// Optional hard-reset callback for the active-low RESET pin.
 /// Implementations should assert RESET low for at least
 /// cmd::RESET_MIN_LOW_NS and release it before returning.
-/// @param user User context pointer (Config::i2cUser)
+/// @param user User context pointer (Config::resetUser)
 /// @return Status indicating success or failure
 using HardResetFn = Status (*)(void* user);
 
@@ -50,8 +50,9 @@ struct Config {
   // === I2C Transport (required) ===
   I2cWriteFn i2cWrite = nullptr;          ///< I2C write function pointer
   I2cWriteReadFn i2cWriteRead = nullptr;  ///< I2C write-read function pointer
-  void* i2cUser = nullptr;                ///< User context for transport/reset callbacks
+  void* i2cUser = nullptr;                ///< User context for transport callbacks
   HardResetFn hardReset = nullptr;        ///< Optional hardware reset callback
+  void* resetUser = nullptr;              ///< User context for hardReset callback
 
   // === Timing Hooks (optional) ===
   NowMsFn nowMs = nullptr;                ///< Monotonic millisecond source

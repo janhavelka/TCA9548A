@@ -12,6 +12,7 @@ using Arduino and PlatformIO.
 - Optional active-low RESET pin callback with explicit `hardReset()` support
 - Runtime settings snapshot API (`getSettings()`) for diagnostics and examples
 - Direct control-register aliases: `readControlRegister()` / `writeControlRegister()`
+- Optional poll-chunked job API with explicit instruction accounting
 - Address configurability across `0x70`-`0x77`
 
 ## Hardware
@@ -66,6 +67,10 @@ TCA9548A::Status myI2cWrite(uint8_t addr, const uint8_t* data, size_t len,
 TCA9548A::Status myI2cWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
                                 uint8_t* rxData, size_t rxLen,
                                 uint32_t timeoutMs, void* user);
+uint32_t myNowMs(void* user) {
+  (void)user;
+  return millis();
+}
 
 void setup() {
   Serial.begin(115200);
@@ -77,6 +82,7 @@ void setup() {
   cfg.i2cWrite = myI2cWrite;
   cfg.i2cWriteRead = myI2cWriteRead;
   cfg.i2cUser = &Wire;
+  cfg.nowMs = myNowMs;
   cfg.i2cAddress = 0x70;
 
   TCA9548A::Status st = mux.begin(cfg);
@@ -100,8 +106,8 @@ void loop() {
 
 The repository also ships an example-only Arduino adapter in
 `examples/common/I2cTransport.h`, but that helper is not part of the public
-library API. If `Config::nowMs` is not provided, the driver falls back to
-`millis()` on Arduino/native-test builds.
+library API. If `Config::nowMs` is not provided, driver timestamps remain `0`
+and `recoverBackoffMs` is not enforced.
 
 ## Versioning
 
@@ -196,6 +202,10 @@ Driver states:
 | `DEGRADED` | One or more failures below the offline threshold |
 | `OFFLINE` | Consecutive failures reached the offline threshold |
 
+When the driver is `OFFLINE`, normal channel/control APIs do not touch the bus
+and return `Err::BUSY`. Use explicit `recover()` or `hardReset()` to attempt
+manual recovery.
+
 ## API Reference
 
 ### Lifecycle
@@ -215,14 +225,18 @@ Driver states:
 - `Status selectChannel(uint8_t channel)` - enable one channel and disable others
 - `Status setChannelMask(uint8_t mask)` - write raw mask
 - `Status writeControlRegister(uint8_t mask)` - alias for `setChannelMask()`
-- `Status enableChannels(uint8_t mask)` - OR mask into the current state
-- `Status disableChannels(uint8_t mask)` - clear mask bits from the current state
+- `Status enableChannels(uint8_t mask)` - convenience read-modify-write helper
+- `Status disableChannels(uint8_t mask)` - convenience read-modify-write helper
 - `Status disableAll()` - write `0x00`
 - `Status readChannelMask(uint8_t& mask)` - read current mask
 - `Status readControlRegister(uint8_t& mask)` - alias for `readChannelMask()`
 - `Status readRegister(uint8_t reg, uint8_t& value)` - read register by address (must be `CONTROL_REG`)
 - `Status writeRegister(uint8_t reg, uint8_t value)` - write register by address (must be `CONTROL_REG`)
-- `Status isChannelEnabled(uint8_t channel, bool& enabled)` - query one channel
+- `Status isChannelEnabled(uint8_t channel, bool& enabled)` - convenience read helper
+
+The minimal raw-mask API is `setChannelMask()`, `readChannelMask()`, and
+`selectChannel()`. Managed adapters that already own a cached mux mask should
+prefer those primitives over the compound convenience helpers.
 
 ### State And Health
 
@@ -239,6 +253,32 @@ Driver states:
 - `uint32_t totalSuccess() const`
 - `uint8_t lastKnownMask() const`
 
+### Poll-Chunked Jobs
+
+- `Status startReadTca9548aMaskJob(uint8_t& mask)` - one-instruction mask read
+- `Status startSetTca9548aMaskJob(uint8_t mask)` - one-instruction mask write
+- `Status startEnableTca9548aChannelsJob(uint8_t mask)` - read/modify/write enable job
+- `Status startDisableTca9548aChannelsJob(uint8_t mask)` - read/modify/write disable job
+- `Status startSelectTca9548aChannelJob(...)` - select, downstream callback, restore job
+- `Status startSelectTca9548aMaskJob(...)` - raw-mask select/downstream/restore job
+- `Status startRecoverTca9548aJob()` - chunked recovery job
+- `Status pollJob(uint32_t nowMs, uint8_t maxInstructions, PollJobResult& result)`
+- `bool pollJobActive() const`
+- `void cancelPollJob()`
+
+Instruction accounting:
+
+- One TCA9548A one-byte control write through STOP consumes one instruction.
+- One TCA9548A read-only control-register read consumes one instruction.
+- One hard-reset callback consumes one hardware instruction.
+- `maxInstructions == 0` performs no work and returns `IN_PROGRESS`.
+- Read-modify-write helpers may read and write in the same poll when budget allows.
+- Select/downstream/restore jobs keep the mux select write, downstream callback,
+  and restore write in separate polls even when additional budget remains.
+
+While a poll job is active, synchronous bus-touching APIs return `Err::BUSY` so
+the chunked sequence owns mux visibility until it completes or is cancelled.
+
 ## Recovery
 
 `recover()` does not run automatically inside `tick()`. The application decides
@@ -248,6 +288,12 @@ when to retry. On each recovery attempt the driver:
 2. Optionally pulses RESET if `recoverUseHardReset` is enabled
 3. Verifies the device responds again
 4. Restores the last known channel mask if the mux returned in the reset/default state
+
+If a recovery attempt starts from `OFFLINE` and fails partway through, the driver
+reasserts the `OFFLINE` latch. A configured `hardReset` callback receives
+`Config::resetUser`; transport callbacks continue to receive `Config::i2cUser`.
+The poll-chunked recovery job preserves the same backoff gate and splits reset,
+verify/readback, and restore into separately accounted instructions.
 
 ## Notes
 
@@ -261,8 +307,8 @@ when to retry. On each recovery attempt the driver:
 ## Behavioral Contracts
 
 1. Threading model: single-threaded by default; not ISR-safe.
-2. Timing model: `tick()` is bounded and currently a no-op; public I2C operations are blocking and bounded by the transport timeout.
-3. Resource ownership: bus, pins, and timebase remain application-owned via `Config`.
+2. Timing model: `tick()` is bounded and currently a no-op; public I2C operations are blocking and bounded by the transport timeout unless the explicit poll-job API is used.
+3. Resource ownership: bus, pins, reset callback context, and timebase remain application-owned via `Config`.
 4. Memory behavior: no heap allocation in steady-state library operation.
 5. Error handling: all fallible APIs return `Status`; no exceptions and no silent failures.
 
@@ -272,6 +318,7 @@ when to retry. On each recovery attempt the driver:
 pio run -e esp32s3dev
 pio run -e esp32s2dev
 pio test -e native
+pio run -e native_core_no_arduino
 ```
 
 ## Examples

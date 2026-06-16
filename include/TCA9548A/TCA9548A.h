@@ -34,6 +34,23 @@ struct SettingsSnapshot {
   uint8_t lastKnownMask = cmd::NO_CHANNELS;  ///< Cached control-register value
 };
 
+/// Downstream poll callback used by select/restore poll jobs.
+/// @param nowMs Current timestamp in milliseconds
+/// @param maxInstructions Maximum downstream instructions allowed this poll
+/// @param[out] instructionsUsed Downstream instructions consumed by callback
+/// @param user User context pointer
+/// @return OK when downstream work is complete, IN_PROGRESS to continue later,
+///         or an error. The mux restore step still runs after a terminal result.
+using PollDownstreamFn = Status (*)(uint32_t nowMs, uint8_t maxInstructions,
+                                    uint8_t& instructionsUsed, void* user);
+
+/// Result from one pollJob() call.
+struct PollJobResult {
+  uint8_t instructionsUsed = 0;  ///< Mux/downstream instructions consumed
+  bool active = false;           ///< True if a job remains active after polling
+  bool complete = false;         ///< True if the active job completed this call
+};
+
 /// TCA9548A driver class
 class TCA9548A {
 public:
@@ -88,12 +105,14 @@ public:
   /// Alias for setChannelMask() to match register-oriented sibling libraries.
   Status writeControlRegister(uint8_t mask) { return setChannelMask(mask); }
 
-  /// Enable one or more channels without changing others
+  /// Convenience read-modify-write helper: enable one or more channels without
+  /// changing others. Prefer setChannelMask() when the caller owns a cached mask.
   /// @param mask Bitmask of channels to enable (ORed with current state)
   /// @return Status::Ok() on success
   Status enableChannels(uint8_t mask);
 
-  /// Disable one or more channels without changing others
+  /// Convenience read-modify-write helper: disable one or more channels without
+  /// changing others. Prefer setChannelMask() when the caller owns a cached mask.
   /// @param mask Bitmask of channels to disable (cleared from current state)
   /// @return Status::Ok() on success
   Status disableChannels(uint8_t mask);
@@ -123,7 +142,8 @@ public:
   /// @return Status::Ok() on success, INVALID_PARAM if reg is invalid
   Status writeRegister(uint8_t reg, uint8_t value);
 
-  /// Check if a specific channel is currently enabled
+  /// Convenience read helper: check if a specific channel is currently enabled.
+  /// Prefer readChannelMask() when the caller needs more than one bit.
   /// @param channel Channel number (0-7)
   /// @param[out] enabled True if channel is enabled
   /// @return Status::Ok() on success, INVALID_PARAM if channel > 7
@@ -176,7 +196,78 @@ public:
   /// Last known channel mask (cached from last successful read/write)
   uint8_t lastKnownMask() const { return _lastKnownMask; }
 
+  // =========================================================================
+  // Poll-Chunked Jobs
+  // =========================================================================
+
+  /// Start a one-instruction control-register read job.
+  /// @param[out] mask Storage that must remain valid until the job completes
+  Status startReadTca9548aMaskJob(uint8_t& mask);
+
+  /// Start a one-instruction control-register write job.
+  Status startSetTca9548aMaskJob(uint8_t mask);
+
+  /// Start a two-step read-modify-write enable helper job.
+  Status startEnableTca9548aChannelsJob(uint8_t mask);
+
+  /// Start a two-step read-modify-write disable helper job.
+  Status startDisableTca9548aChannelsJob(uint8_t mask);
+
+  /// Start a select/downstream/restore job using a single channel.
+  Status startSelectTca9548aChannelJob(uint8_t channel,
+                                       uint8_t restoreMask,
+                                       PollDownstreamFn downstreamPoll,
+                                       void* downstreamUser);
+
+  /// Start a select/downstream/restore job using a raw channel mask.
+  Status startSelectTca9548aMaskJob(uint8_t selectMask,
+                                    uint8_t restoreMask,
+                                    PollDownstreamFn downstreamPoll,
+                                    void* downstreamUser);
+
+  /// Start a chunked recovery job.
+  Status startRecoverTca9548aJob();
+
+  /// Poll the active chunked job.
+  /// @param nowMs Current timestamp in milliseconds
+  /// @param maxInstructions Maximum instructions to execute in this call
+  /// @param[out] result Instruction accounting and completion state
+  /// @return OK when complete/no active job, IN_PROGRESS when work remains,
+  ///         or the terminal error from the job.
+  Status pollJob(uint32_t nowMs, uint8_t maxInstructions,
+                 PollJobResult& result);
+
+  /// True if a poll-chunked job is active.
+  bool pollJobActive() const;
+
+  /// Cancel an active poll-chunked job without doing bus I/O.
+  void cancelPollJob();
+
 private:
+  enum class PollJobKind : uint8_t {
+    NONE,
+    READ_MASK,
+    SET_MASK,
+    ENABLE_CHANNELS,
+    DISABLE_CHANNELS,
+    SELECT_RESTORE,
+    RECOVER
+  };
+
+  enum class PollJobPhase : uint8_t {
+    IDLE,
+    READ_MASK,
+    WRITE_MASK,
+    SELECT_MASK,
+    DOWNSTREAM,
+    RESTORE_MASK,
+    RECOVER_BACKOFF,
+    RECOVER_HARD_RESET,
+    RECOVER_WRITE_KNOWN,
+    RECOVER_VERIFY,
+    RECOVER_RESTORE
+  };
+
   // =========================================================================
   // Transport Wrappers
   // =========================================================================
@@ -189,11 +280,13 @@ private:
                           uint8_t* rxBuf, size_t rxLen);
 
   /// Tracked I2C write (updates health)
-  Status _i2cWriteTracked(const uint8_t* buf, size_t len);
+  Status _i2cWriteTracked(const uint8_t* buf, size_t len,
+                          bool allowOffline = false);
 
   /// Tracked I2C write-read (updates health)
   Status _i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
-                              uint8_t* rxBuf, size_t rxLen);
+                              uint8_t* rxBuf, size_t rxLen,
+                              bool allowOffline = false);
 
   // =========================================================================
   // Health Management
@@ -203,15 +296,27 @@ private:
   /// Called ONLY from tracked transport wrappers
   Status _updateHealth(const Status& st);
 
+  /// Reassert OFFLINE after a failed explicit recovery that started OFFLINE
+  void _reassertOfflineLatchIfNeeded(bool startedOffline);
+
+  /// Reset poll job state to idle
+  void _clearPollJob();
+
+  /// Return a standard IN_PROGRESS status
+  static Status _inProgressStatus();
+
+  /// Initialize a poll job after shared precondition checks
+  Status _startPollJob(PollJobKind kind, PollJobPhase phase);
+
   // =========================================================================
   // Internal Helpers
   // =========================================================================
 
   /// Write a value to the control register (tracked)
-  Status _writeControlReg(uint8_t value);
+  Status _writeControlReg(uint8_t value, bool allowOffline = false);
 
   /// Read the control register (tracked)
-  Status _readControlReg(uint8_t& value);
+  Status _readControlReg(uint8_t& value, bool allowOffline = false);
 
   /// Read the control register (raw, untracked)
   Status _readControlRegRaw(uint8_t& value);
@@ -238,6 +343,21 @@ private:
 
   // Cached channel state
   uint8_t _lastKnownMask = cmd::NO_CHANNELS;
+
+  // Poll job state
+  PollJobKind _pollJobKind = PollJobKind::NONE;
+  PollJobPhase _pollJobPhase = PollJobPhase::IDLE;
+  uint8_t _pollRequestedMask = cmd::NO_CHANNELS;
+  uint8_t _pollTargetMask = cmd::NO_CHANNELS;
+  uint8_t _pollCurrentMask = cmd::NO_CHANNELS;
+  uint8_t _pollRestoreMask = cmd::NO_CHANNELS;
+  uint8_t _pollRecoverDesiredMask = cmd::NO_CHANNELS;
+  uint8_t* _pollReadMaskOut = nullptr;
+  PollDownstreamFn _pollDownstream = nullptr;
+  void* _pollDownstreamUser = nullptr;
+  Status _pollPendingStatus = Status::Ok();
+  bool _pollStartedOffline = false;
+  bool _pollRecoverUseHardReset = false;
 };
 
 } // namespace TCA9548A

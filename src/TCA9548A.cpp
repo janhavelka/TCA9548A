@@ -5,7 +5,6 @@
 
 #include "TCA9548A/TCA9548A.h"
 
-#include <Arduino.h>
 #include <limits>
 
 namespace TCA9548A {
@@ -15,7 +14,11 @@ static constexpr uint32_t MAX_I2C_TIMEOUT_MS = 60000;
 static constexpr uint32_t MAX_RECOVER_BACKOFF_MS = 600000;
 
 static uint32_t configNowMs(const Config& cfg) {
-  return (cfg.nowMs != nullptr) ? cfg.nowMs(cfg.timeUser) : millis();
+  return (cfg.nowMs != nullptr) ? cfg.nowMs(cfg.timeUser) : 0;
+}
+
+static bool canEnforceBackoff(const Config& cfg) {
+  return cfg.nowMs != nullptr;
 }
 
 static bool isValidAddress(uint8_t addr) {
@@ -50,6 +53,7 @@ Status TCA9548A::begin(const Config& config) {
   _lastRecoverMs = 0;
   _lastRecoverValid = false;
   _lastKnownMask = cmd::NO_CHANNELS;
+  _clearPollJob();
 
   if (config.i2cWrite == nullptr || config.i2cWriteRead == nullptr) {
     return Status::Error(Err::INVALID_CONFIG, "I2C callbacks not set");
@@ -96,14 +100,18 @@ void TCA9548A::tick(uint32_t nowMs) {
 }
 
 void TCA9548A::end() {
-  if (_initialized) {
+  if (_initialized && _driverState != DriverState::OFFLINE) {
     const uint8_t zero = cmd::NO_CHANNELS;
     (void)_i2cWriteRaw(&zero, sizeof(zero));
   }
 
   _initialized = false;
   _driverState = DriverState::UNINIT;
+  _consecutiveFailures = 0;
+  _lastRecoverMs = 0;
+  _lastRecoverValid = false;
   _lastKnownMask = cmd::NO_CHANNELS;
+  _clearPollJob();
 }
 
 // ============================================================================
@@ -113,6 +121,9 @@ void TCA9548A::end() {
 Status TCA9548A::probe() {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (pollJobActive()) {
+    return Status::Error(Err::BUSY, "Poll job active");
   }
 
   uint8_t regValue = cmd::NO_CHANNELS;
@@ -128,8 +139,14 @@ Status TCA9548A::recover() {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (pollJobActive()) {
+    return Status::Error(Err::BUSY, "Poll job active");
+  }
 
-  if (_lastRecoverValid && _config.recoverBackoffMs > 0) {
+  const bool startedOffline = (_driverState == DriverState::OFFLINE);
+
+  if (_lastRecoverValid && _config.recoverBackoffMs > 0 &&
+      canEnforceBackoff(_config)) {
     const uint32_t now = configNowMs(_config);
     if (!timeElapsed(now, _lastRecoverMs + _config.recoverBackoffMs)) {
       return Status::Error(Err::TIMEOUT, "Recover backoff active");
@@ -142,22 +159,30 @@ Status TCA9548A::recover() {
 
   if (_config.recoverUseHardReset && _config.hardReset != nullptr) {
     Status rstSt = hardReset();
-    if (rstSt.ok()) {
-      if (desiredMask == cmd::NO_CHANNELS) {
-        return Status::Ok();
-      }
-
-      Status restoreSt = _writeControlReg(desiredMask);
-      if (restoreSt.ok()) {
-        _lastKnownMask = desiredMask;
-      }
-      return restoreSt;
+    if (!rstSt.ok()) {
+      _reassertOfflineLatchIfNeeded(startedOffline);
+      return rstSt;
     }
+
+    if (desiredMask == cmd::NO_CHANNELS) {
+      return Status::Ok();
+    }
+
+    Status restoreSt = _writeControlReg(desiredMask, true);
+    if (restoreSt.ok()) {
+      _lastKnownMask = desiredMask;
+      return Status::Ok();
+    }
+
+    _lastKnownMask = desiredMask;
+    _reassertOfflineLatchIfNeeded(startedOffline);
+    return restoreSt;
   }
 
   uint8_t regValue = cmd::NO_CHANNELS;
-  Status st = _readControlReg(regValue);
+  Status st = _readControlReg(regValue, true);
   if (!st.ok()) {
+    _reassertOfflineLatchIfNeeded(startedOffline);
     return st;
   }
 
@@ -166,9 +191,12 @@ Status TCA9548A::recover() {
     return Status::Ok();
   }
 
-  st = _writeControlReg(desiredMask);
+  st = _writeControlReg(desiredMask, true);
   if (st.ok()) {
     _lastKnownMask = desiredMask;
+  } else {
+    _lastKnownMask = desiredMask;
+    _reassertOfflineLatchIfNeeded(startedOffline);
   }
   return st;
 }
@@ -177,18 +205,21 @@ Status TCA9548A::hardReset() {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (pollJobActive()) {
+    return Status::Error(Err::BUSY, "Poll job active");
+  }
   if (_config.hardReset == nullptr) {
     return Status::Error(Err::UNSUPPORTED,
                          "hardReset callback not configured");
   }
 
-  Status rstSt = _config.hardReset(_config.i2cUser);
+  Status rstSt = _config.hardReset(_config.resetUser);
   if (!rstSt.ok()) {
     return rstSt;
   }
 
   uint8_t regValue = cmd::NO_CHANNELS;
-  Status st = _readControlReg(regValue);
+  Status st = _readControlReg(regValue, true);
   if (st.ok()) {
     _lastKnownMask = regValue;
   }
@@ -210,12 +241,350 @@ Status TCA9548A::getSettings(SettingsSnapshot& out) const {
 }
 
 // ============================================================================
+// Poll-Chunked Jobs
+// ============================================================================
+
+Status TCA9548A::startReadTca9548aMaskJob(uint8_t& mask) {
+  Status st = _startPollJob(PollJobKind::READ_MASK, PollJobPhase::READ_MASK);
+  if (!st.ok()) {
+    return st;
+  }
+  _pollReadMaskOut = &mask;
+  return Status::Ok();
+}
+
+Status TCA9548A::startSetTca9548aMaskJob(uint8_t mask) {
+  Status st = _startPollJob(PollJobKind::SET_MASK, PollJobPhase::WRITE_MASK);
+  if (!st.ok()) {
+    return st;
+  }
+  _pollTargetMask = mask;
+  return Status::Ok();
+}
+
+Status TCA9548A::startEnableTca9548aChannelsJob(uint8_t mask) {
+  Status st = _startPollJob(PollJobKind::ENABLE_CHANNELS,
+                            PollJobPhase::READ_MASK);
+  if (!st.ok()) {
+    return st;
+  }
+  _pollRequestedMask = mask;
+  return Status::Ok();
+}
+
+Status TCA9548A::startDisableTca9548aChannelsJob(uint8_t mask) {
+  Status st = _startPollJob(PollJobKind::DISABLE_CHANNELS,
+                            PollJobPhase::READ_MASK);
+  if (!st.ok()) {
+    return st;
+  }
+  _pollRequestedMask = mask;
+  return Status::Ok();
+}
+
+Status TCA9548A::startSelectTca9548aChannelJob(
+    uint8_t channel, uint8_t restoreMask, PollDownstreamFn downstreamPoll,
+    void* downstreamUser) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (pollJobActive()) {
+    return Status::Error(Err::BUSY, "Poll job active");
+  }
+  if (_driverState == DriverState::OFFLINE) {
+    return Status::Error(Err::BUSY, "Driver offline; call recover()");
+  }
+  if (channel >= cmd::NUM_CHANNELS) {
+    return Status::Error(Err::INVALID_PARAM, "Channel must be 0-7");
+  }
+  return startSelectTca9548aMaskJob(static_cast<uint8_t>(1U << channel),
+                                    restoreMask, downstreamPoll,
+                                    downstreamUser);
+}
+
+Status TCA9548A::startSelectTca9548aMaskJob(
+    uint8_t selectMask, uint8_t restoreMask, PollDownstreamFn downstreamPoll,
+    void* downstreamUser) {
+  Status st = _startPollJob(PollJobKind::SELECT_RESTORE,
+                            PollJobPhase::SELECT_MASK);
+  if (!st.ok()) {
+    return st;
+  }
+  if (downstreamPoll == nullptr) {
+    _clearPollJob();
+    return Status::Error(Err::INVALID_PARAM, "Downstream poll not set");
+  }
+  _pollTargetMask = selectMask;
+  _pollRestoreMask = restoreMask;
+  _pollDownstream = downstreamPoll;
+  _pollDownstreamUser = downstreamUser;
+  return Status::Ok();
+}
+
+Status TCA9548A::startRecoverTca9548aJob() {
+  Status st = _startPollJob(PollJobKind::RECOVER,
+                            PollJobPhase::RECOVER_BACKOFF);
+  if (!st.ok()) {
+    return st;
+  }
+  _pollStartedOffline = (_driverState == DriverState::OFFLINE);
+  _pollRecoverDesiredMask = _lastKnownMask;
+  _pollRecoverUseHardReset =
+      _config.recoverUseHardReset && _config.hardReset != nullptr;
+  return Status::Ok();
+}
+
+Status TCA9548A::pollJob(uint32_t nowMs, uint8_t maxInstructions,
+                         PollJobResult& result) {
+  result = PollJobResult{};
+  if (!pollJobActive()) {
+    result.complete = true;
+    return Status::Ok();
+  }
+
+  result.active = true;
+  if (maxInstructions == 0) {
+    return _inProgressStatus();
+  }
+
+  while (result.instructionsUsed < maxInstructions && pollJobActive()) {
+    switch (_pollJobPhase) {
+      case PollJobPhase::READ_MASK: {
+        Status st = _readControlReg(_pollCurrentMask);
+        result.instructionsUsed++;
+        if (!st.ok()) {
+          _clearPollJob();
+          result.active = false;
+          result.complete = true;
+          return st;
+        }
+
+        if (_pollJobKind == PollJobKind::READ_MASK) {
+          if (_pollReadMaskOut != nullptr) {
+            *_pollReadMaskOut = _pollCurrentMask;
+          }
+          _clearPollJob();
+          result.active = false;
+          result.complete = true;
+          return Status::Ok();
+        }
+
+        if (_pollJobKind == PollJobKind::ENABLE_CHANNELS) {
+          _pollTargetMask =
+              static_cast<uint8_t>(_pollCurrentMask | _pollRequestedMask);
+        } else if (_pollJobKind == PollJobKind::DISABLE_CHANNELS) {
+          _pollTargetMask =
+              static_cast<uint8_t>(_pollCurrentMask & ~_pollRequestedMask);
+        } else {
+          Status bad = Status::Error(Err::INVALID_CONFIG,
+                                     "Invalid poll job phase");
+          _clearPollJob();
+          result.active = false;
+          result.complete = true;
+          return bad;
+        }
+
+        if (_pollTargetMask == _pollCurrentMask) {
+          _clearPollJob();
+          result.active = false;
+          result.complete = true;
+          return Status::Ok();
+        }
+        _pollJobPhase = PollJobPhase::WRITE_MASK;
+        break;
+      }
+
+      case PollJobPhase::WRITE_MASK: {
+        Status st = _writeControlReg(_pollTargetMask);
+        result.instructionsUsed++;
+        _clearPollJob();
+        result.active = false;
+        result.complete = true;
+        return st;
+      }
+
+      case PollJobPhase::SELECT_MASK: {
+        Status st = _writeControlReg(_pollTargetMask);
+        result.instructionsUsed++;
+        if (!st.ok()) {
+          _clearPollJob();
+          result.active = false;
+          result.complete = true;
+          return st;
+        }
+        _pollJobPhase = PollJobPhase::DOWNSTREAM;
+        return _inProgressStatus();
+      }
+
+      case PollJobPhase::DOWNSTREAM: {
+        const uint8_t remaining =
+            static_cast<uint8_t>(maxInstructions - result.instructionsUsed);
+        uint8_t downstreamUsed = 0;
+        Status st = _pollDownstream(nowMs, remaining, downstreamUsed,
+                                    _pollDownstreamUser);
+        if (downstreamUsed > remaining) {
+          Status bad = Status::Error(Err::INVALID_PARAM,
+                                     "Downstream overran instruction budget");
+          _clearPollJob();
+          result.active = false;
+          result.complete = true;
+          return bad;
+        }
+        result.instructionsUsed =
+            static_cast<uint8_t>(result.instructionsUsed + downstreamUsed);
+
+        if (st.inProgress()) {
+          return _inProgressStatus();
+        }
+
+        _pollPendingStatus = st;
+        _pollJobPhase = PollJobPhase::RESTORE_MASK;
+        return _inProgressStatus();
+      }
+
+      case PollJobPhase::RESTORE_MASK: {
+        Status restoreSt = _writeControlReg(_pollRestoreMask);
+        result.instructionsUsed++;
+        Status terminal = restoreSt.ok() ? _pollPendingStatus : restoreSt;
+        _clearPollJob();
+        result.active = false;
+        result.complete = true;
+        return terminal;
+      }
+
+      case PollJobPhase::RECOVER_BACKOFF: {
+        if (_lastRecoverValid && _config.recoverBackoffMs > 0 &&
+            canEnforceBackoff(_config) &&
+            !timeElapsed(nowMs, _lastRecoverMs + _config.recoverBackoffMs)) {
+          return _inProgressStatus();
+        }
+
+        _lastRecoverMs = nowMs;
+        _lastRecoverValid = true;
+        _pollJobPhase = _pollRecoverUseHardReset
+                            ? PollJobPhase::RECOVER_HARD_RESET
+                            : PollJobPhase::RECOVER_WRITE_KNOWN;
+        break;
+      }
+
+      case PollJobPhase::RECOVER_HARD_RESET: {
+        Status rstSt = _config.hardReset(_config.resetUser);
+        result.instructionsUsed++;
+        if (!rstSt.ok()) {
+          _reassertOfflineLatchIfNeeded(_pollStartedOffline);
+          _clearPollJob();
+          result.active = false;
+          result.complete = true;
+          return rstSt;
+        }
+        _pollJobPhase = PollJobPhase::RECOVER_VERIFY;
+        break;
+      }
+
+      case PollJobPhase::RECOVER_WRITE_KNOWN: {
+        Status writeSt = _writeControlReg(_pollRecoverDesiredMask, true);
+        result.instructionsUsed++;
+        if (!writeSt.ok()) {
+          _lastKnownMask = _pollRecoverDesiredMask;
+          _reassertOfflineLatchIfNeeded(_pollStartedOffline);
+          _clearPollJob();
+          result.active = false;
+          result.complete = true;
+          return writeSt;
+        }
+        _pollJobPhase = PollJobPhase::RECOVER_VERIFY;
+        break;
+      }
+
+      case PollJobPhase::RECOVER_VERIFY: {
+        uint8_t regValue = cmd::NO_CHANNELS;
+        Status readSt = _readControlReg(regValue, true);
+        result.instructionsUsed++;
+        if (!readSt.ok()) {
+          _lastKnownMask = _pollRecoverDesiredMask;
+          _reassertOfflineLatchIfNeeded(_pollStartedOffline);
+          _clearPollJob();
+          result.active = false;
+          result.complete = true;
+          return readSt;
+        }
+
+        if (_pollRecoverUseHardReset) {
+          if (regValue == _pollRecoverDesiredMask) {
+            _clearPollJob();
+            result.active = false;
+            result.complete = true;
+            return Status::Ok();
+          }
+          _pollJobPhase = PollJobPhase::RECOVER_RESTORE;
+          break;
+        }
+
+        if (regValue != _pollRecoverDesiredMask) {
+          Status mismatch = Status::Error(Err::I2C_ERROR,
+                                          "Recover verify mismatch",
+                                          regValue);
+          _lastKnownMask = _pollRecoverDesiredMask;
+          _reassertOfflineLatchIfNeeded(_pollStartedOffline);
+          _clearPollJob();
+          result.active = false;
+          result.complete = true;
+          return mismatch;
+        }
+
+        _clearPollJob();
+        result.active = false;
+        result.complete = true;
+        return Status::Ok();
+      }
+
+      case PollJobPhase::RECOVER_RESTORE: {
+        Status restoreSt = _writeControlReg(_pollRecoverDesiredMask, true);
+        result.instructionsUsed++;
+        if (!restoreSt.ok()) {
+          _lastKnownMask = _pollRecoverDesiredMask;
+          _reassertOfflineLatchIfNeeded(_pollStartedOffline);
+        }
+        _clearPollJob();
+        result.active = false;
+        result.complete = true;
+        return restoreSt;
+      }
+
+      case PollJobPhase::IDLE:
+      default: {
+        Status bad = Status::Error(Err::INVALID_CONFIG,
+                                   "Invalid poll job state");
+        _clearPollJob();
+        result.active = false;
+        result.complete = true;
+        return bad;
+      }
+    }
+  }
+
+  result.active = pollJobActive();
+  return result.active ? _inProgressStatus() : Status::Ok();
+}
+
+bool TCA9548A::pollJobActive() const {
+  return _pollJobKind != PollJobKind::NONE;
+}
+
+void TCA9548A::cancelPollJob() {
+  _clearPollJob();
+}
+
+// ============================================================================
 // Channel Control
 // ============================================================================
 
 Status TCA9548A::selectChannel(uint8_t channel) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (pollJobActive()) {
+    return Status::Error(Err::BUSY, "Poll job active");
   }
   if (channel >= cmd::NUM_CHANNELS) {
     return Status::Error(Err::INVALID_PARAM, "Channel must be 0-7");
@@ -228,6 +597,9 @@ Status TCA9548A::setChannelMask(uint8_t mask) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (pollJobActive()) {
+    return Status::Error(Err::BUSY, "Poll job active");
+  }
 
   return _writeControlReg(mask);
 }
@@ -235,6 +607,9 @@ Status TCA9548A::setChannelMask(uint8_t mask) {
 Status TCA9548A::enableChannels(uint8_t mask) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (pollJobActive()) {
+    return Status::Error(Err::BUSY, "Poll job active");
   }
 
   uint8_t current = cmd::NO_CHANNELS;
@@ -255,6 +630,9 @@ Status TCA9548A::disableChannels(uint8_t mask) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (pollJobActive()) {
+    return Status::Error(Err::BUSY, "Poll job active");
+  }
 
   uint8_t current = cmd::NO_CHANNELS;
   Status st = _readControlReg(current);
@@ -274,6 +652,9 @@ Status TCA9548A::disableAll() {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
   }
+  if (pollJobActive()) {
+    return Status::Error(Err::BUSY, "Poll job active");
+  }
 
   return _writeControlReg(cmd::NO_CHANNELS);
 }
@@ -281,6 +662,9 @@ Status TCA9548A::disableAll() {
 Status TCA9548A::readChannelMask(uint8_t& mask) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (pollJobActive()) {
+    return Status::Error(Err::BUSY, "Poll job active");
   }
 
   Status st = _readControlReg(mask);
@@ -300,6 +684,9 @@ Status TCA9548A::readRegister(uint8_t reg, uint8_t& value) {
 Status TCA9548A::isChannelEnabled(uint8_t channel, bool& enabled) {
   if (!_initialized) {
     return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (pollJobActive()) {
+    return Status::Error(Err::BUSY, "Poll job active");
   }
   if (channel >= cmd::NUM_CHANNELS) {
     return Status::Error(Err::INVALID_PARAM, "Channel must be 0-7");
@@ -357,9 +744,13 @@ Status TCA9548A::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
 // Transport Wrappers - TRACKED (update health)
 // ============================================================================
 
-Status TCA9548A::_i2cWriteTracked(const uint8_t* buf, size_t len) {
+Status TCA9548A::_i2cWriteTracked(const uint8_t* buf, size_t len,
+                                  bool allowOffline) {
   if (buf == nullptr || len == 0) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
+  }
+  if (!allowOffline && _initialized && _driverState == DriverState::OFFLINE) {
+    return Status::Error(Err::BUSY, "Driver offline; call recover()");
   }
 
   Status st = _i2cWriteRaw(buf, len);
@@ -370,12 +761,16 @@ Status TCA9548A::_i2cWriteTracked(const uint8_t* buf, size_t len) {
 }
 
 Status TCA9548A::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
-                                      uint8_t* rxBuf, size_t rxLen) {
+                                      uint8_t* rxBuf, size_t rxLen,
+                                      bool allowOffline) {
   if (txLen > 0 && txBuf == nullptr) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
   }
   if (rxLen > 0 && rxBuf == nullptr) {
     return Status::Error(Err::INVALID_PARAM, "Invalid I2C buffer");
+  }
+  if (!allowOffline && _initialized && _driverState == DriverState::OFFLINE) {
+    return Status::Error(Err::BUSY, "Driver offline; call recover()");
   }
 
   Status st = _i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen);
@@ -432,22 +827,71 @@ Status TCA9548A::_updateHealth(const Status& st) {
   return st;
 }
 
+void TCA9548A::_reassertOfflineLatchIfNeeded(bool startedOffline) {
+  if (!startedOffline || !_initialized) {
+    return;
+  }
+
+  _driverState = DriverState::OFFLINE;
+  if (_consecutiveFailures < _config.offlineThreshold) {
+    _consecutiveFailures = _config.offlineThreshold;
+  }
+}
+
+void TCA9548A::_clearPollJob() {
+  _pollJobKind = PollJobKind::NONE;
+  _pollJobPhase = PollJobPhase::IDLE;
+  _pollRequestedMask = cmd::NO_CHANNELS;
+  _pollTargetMask = cmd::NO_CHANNELS;
+  _pollCurrentMask = cmd::NO_CHANNELS;
+  _pollRestoreMask = cmd::NO_CHANNELS;
+  _pollRecoverDesiredMask = cmd::NO_CHANNELS;
+  _pollReadMaskOut = nullptr;
+  _pollDownstream = nullptr;
+  _pollDownstreamUser = nullptr;
+  _pollPendingStatus = Status::Ok();
+  _pollStartedOffline = false;
+  _pollRecoverUseHardReset = false;
+}
+
+Status TCA9548A::_inProgressStatus() {
+  return Status{Err::IN_PROGRESS, 0, "Job in progress"};
+}
+
+Status TCA9548A::_startPollJob(PollJobKind kind, PollJobPhase phase) {
+  if (!_initialized) {
+    return Status::Error(Err::NOT_INITIALIZED, "begin() not called");
+  }
+  if (pollJobActive()) {
+    return Status::Error(Err::BUSY, "Poll job active");
+  }
+  if (kind != PollJobKind::RECOVER &&
+      _driverState == DriverState::OFFLINE) {
+    return Status::Error(Err::BUSY, "Driver offline; call recover()");
+  }
+
+  _clearPollJob();
+  _pollJobKind = kind;
+  _pollJobPhase = phase;
+  return Status::Ok();
+}
+
 // ============================================================================
 // Internal Helpers
 // ============================================================================
 
-Status TCA9548A::_writeControlReg(uint8_t value) {
+Status TCA9548A::_writeControlReg(uint8_t value, bool allowOffline) {
   uint8_t buf[cmd::CONTROL_REG_LEN] = {value};
-  Status st = _i2cWriteTracked(buf, sizeof(buf));
+  Status st = _i2cWriteTracked(buf, sizeof(buf), allowOffline);
   if (st.ok()) {
     _lastKnownMask = value;
   }
   return st;
 }
 
-Status TCA9548A::_readControlReg(uint8_t& value) {
+Status TCA9548A::_readControlReg(uint8_t& value, bool allowOffline) {
   uint8_t buf[cmd::CONTROL_REG_LEN] = {cmd::NO_CHANNELS};
-  Status st = _i2cWriteReadTracked(nullptr, 0, buf, sizeof(buf));
+  Status st = _i2cWriteReadTracked(nullptr, 0, buf, sizeof(buf), allowOffline);
   if (st.ok()) {
     value = buf[0];
     _lastKnownMask = value;

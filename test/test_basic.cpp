@@ -99,6 +99,44 @@ TCA9548A::Config makeConfig(uint8_t addr = 0x70) {
   return cfg;
 }
 
+void assertOfflineBusyNoIo(const TCA9548A::Status& st,
+                           const TCA9548A::TCA9548A& dev,
+                           int writeCallsBefore,
+                           int readCallsBefore) {
+  TEST_ASSERT_EQUAL(TCA9548A::Err::BUSY, st.code);
+  TEST_ASSERT_EQUAL(writeCallsBefore, gFake.writeCalls);
+  TEST_ASSERT_EQUAL(readCallsBefore, gFake.readCalls);
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::OFFLINE),
+                    static_cast<int>(dev.state()));
+}
+
+struct DownstreamContext {
+  int calls = 0;
+  uint8_t instructionCost = 1;
+  uint8_t maxInstructionsSeen = 0;
+  uint8_t observedMask = 0;
+  TCA9548A::Status terminal = TCA9548A::Status::Ok();
+};
+
+TCA9548A::Status fakeDownstreamPoll(uint32_t nowMs, uint8_t maxInstructions,
+                                    uint8_t& instructionsUsed, void* user) {
+  (void)nowMs;
+  auto* ctx = static_cast<DownstreamContext*>(user);
+  ctx->calls++;
+  ctx->maxInstructionsSeen = maxInstructions;
+  ctx->observedMask = gFake.readValue;
+  instructionsUsed = ctx->instructionCost;
+  return ctx->terminal;
+}
+
+TCA9548A::Status fakeResetToZero(void* user) {
+  if (user != nullptr) {
+    *static_cast<bool*>(user) = true;
+  }
+  gFake.readValue = 0x00;
+  return TCA9548A::Status::Ok();
+}
+
 } // namespace
 
 // ============================================================================
@@ -142,6 +180,7 @@ void test_config_defaults() {
   TEST_ASSERT_NULL(cfg.i2cWrite);
   TEST_ASSERT_NULL(cfg.i2cWriteRead);
   TEST_ASSERT_NULL(cfg.hardReset);
+  TEST_ASSERT_NULL(cfg.resetUser);
 }
 
 void test_begin_rejects_null_callbacks() {
@@ -243,6 +282,29 @@ void test_end_disables_all_channels() {
   dev.end();
   // end() should have written 0x00 (best-effort)
   TEST_ASSERT_EQUAL(0x00, gFake.lastWrittenValue);
+}
+
+void test_end_skips_bus_io_when_offline() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.offlineThreshold = 1;
+  dev.begin(cfg);
+
+  gFake.writeResult = TCA9548A::Err::I2C_ERROR;
+  (void)dev.setChannelMask(0x01);
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::OFFLINE),
+                    static_cast<int>(dev.state()));
+
+  const int writesBefore = gFake.writeCalls;
+  const int readsBefore = gFake.readCalls;
+  dev.end();
+
+  TEST_ASSERT_EQUAL(writesBefore, gFake.writeCalls);
+  TEST_ASSERT_EQUAL(readsBefore, gFake.readCalls);
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::UNINIT),
+                    static_cast<int>(dev.state()));
+  TEST_ASSERT_EQUAL(0, dev.consecutiveFailures());
 }
 
 void test_get_settings_snapshot() {
@@ -489,6 +551,62 @@ void test_health_offline_after_threshold() {
   TEST_ASSERT_FALSE(dev.isOnline()); // OFFLINE is not online
 }
 
+void test_offline_latch_blocks_normal_io() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.offlineThreshold = 1;
+  dev.begin(cfg);
+
+  gFake.writeResult = TCA9548A::Err::I2C_ERROR;
+  (void)dev.setChannelMask(0x01);
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::OFFLINE),
+                    static_cast<int>(dev.state()));
+
+  gFake.writeResult = TCA9548A::Err::OK;
+  gFake.readResult = TCA9548A::Err::OK;
+  const int writesBefore = gFake.writeCalls;
+  const int readsBefore = gFake.readCalls;
+  uint8_t mask = 0;
+  bool enabled = false;
+
+  assertOfflineBusyNoIo(dev.selectChannel(0), dev, writesBefore, readsBefore);
+  assertOfflineBusyNoIo(dev.setChannelMask(0x02), dev, writesBefore, readsBefore);
+  assertOfflineBusyNoIo(dev.disableAll(), dev, writesBefore, readsBefore);
+  assertOfflineBusyNoIo(dev.readChannelMask(mask), dev, writesBefore, readsBefore);
+  assertOfflineBusyNoIo(dev.enableChannels(0x04), dev, writesBefore, readsBefore);
+  assertOfflineBusyNoIo(dev.disableChannels(0x01), dev, writesBefore, readsBefore);
+  assertOfflineBusyNoIo(dev.isChannelEnabled(0, enabled), dev, writesBefore, readsBefore);
+  TEST_ASSERT_EQUAL(1, dev.consecutiveFailures());
+}
+
+void test_recover_is_allowed_while_offline_latched() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.offlineThreshold = 1;
+  cfg.recoverUseHardReset = false;
+  dev.begin(cfg);
+
+  TEST_ASSERT_TRUE(dev.setChannelMask(0x12).ok());
+  gFake.writeResult = TCA9548A::Err::I2C_ERROR;
+  (void)dev.setChannelMask(0x12);
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::OFFLINE),
+                    static_cast<int>(dev.state()));
+
+  gFake.writeResult = TCA9548A::Err::OK;
+  gFake.readResult = TCA9548A::Err::OK;
+  gFake.readValue = 0x12;
+  const int readsBefore = gFake.readCalls;
+
+  TCA9548A::Status st = dev.recover();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_GREATER_THAN(readsBefore, gFake.readCalls);
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::READY),
+                    static_cast<int>(dev.state()));
+  TEST_ASSERT_EQUAL(0, dev.consecutiveFailures());
+}
+
 void test_health_recovery_on_success() {
   gFake.reset();
   TCA9548A::TCA9548A dev;
@@ -594,16 +712,29 @@ void test_recover_success() {
 void test_recover_with_hard_reset() {
   gFake.reset();
 
-  bool resetCalled = false;
+  struct ResetContext {
+    uint32_t tag;
+    bool called;
+  };
+  static constexpr uint32_t RESET_TAG = 0xA55A1234u;
+  static constexpr uint32_t TRANSPORT_TAG = 0x13572468u;
+  ResetContext resetCtx{RESET_TAG, false};
+  ResetContext transportCtx{TRANSPORT_TAG, false};
   auto resetFn = [](void* user) -> TCA9548A::Status {
-    *static_cast<bool*>(user) = true;
+    auto* ctx = static_cast<ResetContext*>(user);
+    if (ctx == nullptr || ctx->tag != RESET_TAG) {
+      return TCA9548A::Status::Error(TCA9548A::Err::INVALID_CONFIG,
+                                     "wrong reset context");
+    }
+    ctx->called = true;
     return TCA9548A::Status::Ok();
   };
 
   TCA9548A::TCA9548A dev;
   TCA9548A::Config cfg = makeConfig();
   cfg.hardReset = resetFn;
-  cfg.i2cUser = &resetCalled;
+  cfg.i2cUser = &transportCtx;
+  cfg.resetUser = &resetCtx;
   // Patch write/read to use gFake, ignoring user pointer for reset test
   cfg.i2cWrite = [](uint8_t addr, const uint8_t* data, size_t len,
                      uint32_t timeoutMs, void* user) -> TCA9548A::Status {
@@ -627,7 +758,8 @@ void test_recover_with_hard_reset() {
   gFake.readValue = 0x00;
   TCA9548A::Status st = dev.recover();
   TEST_ASSERT_TRUE(st.ok());
-  TEST_ASSERT_TRUE(resetCalled);
+  TEST_ASSERT_TRUE(resetCtx.called);
+  TEST_ASSERT_FALSE(transportCtx.called);
 }
 
 void test_recover_restores_last_known_mask_after_reset() {
@@ -652,6 +784,102 @@ void test_recover_restores_last_known_mask_after_reset() {
   TEST_ASSERT_EQUAL_HEX8(0x24, dev.lastKnownMask());
 }
 
+void test_recover_restore_failure_keeps_offline_latch() {
+  gFake.reset();
+
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.offlineThreshold = 1;
+  cfg.recoverUseHardReset = false;
+  dev.begin(cfg);
+  TEST_ASSERT_TRUE(dev.setChannelMask(0x24).ok());
+
+  gFake.writeResult = TCA9548A::Err::I2C_ERROR;
+  (void)dev.setChannelMask(0x24);
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::OFFLINE),
+                    static_cast<int>(dev.state()));
+
+  gFake.readResult = TCA9548A::Err::OK;
+  gFake.readValue = 0x00;
+  TCA9548A::Status st = dev.recover();
+
+  TEST_ASSERT_EQUAL(TCA9548A::Err::I2C_ERROR, st.code);
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::OFFLINE),
+                    static_cast<int>(dev.state()));
+  TEST_ASSERT_EQUAL_HEX8(0x24, dev.lastKnownMask());
+  TEST_ASSERT_EQUAL(1, dev.consecutiveFailures());
+}
+
+void test_recover_hard_reset_restore_failure_keeps_offline_latch() {
+  gFake.reset();
+
+  bool resetCalled = false;
+  auto resetFn = [](void* user) -> TCA9548A::Status {
+    *static_cast<bool*>(user) = true;
+    gFake.readValue = 0x00;
+    return TCA9548A::Status::Ok();
+  };
+
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.offlineThreshold = 1;
+  cfg.hardReset = resetFn;
+  cfg.resetUser = &resetCalled;
+  dev.begin(cfg);
+  TEST_ASSERT_TRUE(dev.setChannelMask(0x24).ok());
+
+  gFake.writeResult = TCA9548A::Err::I2C_ERROR;
+  (void)dev.setChannelMask(0x24);
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::OFFLINE),
+                    static_cast<int>(dev.state()));
+
+  gFake.readResult = TCA9548A::Err::OK;
+  TCA9548A::Status st = dev.recover();
+
+  TEST_ASSERT_TRUE(resetCalled);
+  TEST_ASSERT_EQUAL(TCA9548A::Err::I2C_ERROR, st.code);
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::OFFLINE),
+                    static_cast<int>(dev.state()));
+  TEST_ASSERT_EQUAL_HEX8(0x24, dev.lastKnownMask());
+  TEST_ASSERT_EQUAL(1, dev.consecutiveFailures());
+}
+
+void test_recover_hard_reset_callback_failure_does_not_fall_through() {
+  gFake.reset();
+
+  bool resetCalled = false;
+  auto resetFn = [](void* user) -> TCA9548A::Status {
+    *static_cast<bool*>(user) = true;
+    return TCA9548A::Status::Error(TCA9548A::Err::I2C_BUS,
+                                   "reset gpio failed");
+  };
+
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.offlineThreshold = 1;
+  cfg.hardReset = resetFn;
+  cfg.resetUser = &resetCalled;
+  dev.begin(cfg);
+
+  gFake.writeResult = TCA9548A::Err::I2C_ERROR;
+  (void)dev.setChannelMask(0x01);
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::OFFLINE),
+                    static_cast<int>(dev.state()));
+
+  gFake.writeResult = TCA9548A::Err::OK;
+  gFake.readResult = TCA9548A::Err::OK;
+  const int writesBefore = gFake.writeCalls;
+  const int readsBefore = gFake.readCalls;
+  TCA9548A::Status st = dev.recover();
+
+  TEST_ASSERT_TRUE(resetCalled);
+  TEST_ASSERT_EQUAL(TCA9548A::Err::I2C_BUS, st.code);
+  TEST_ASSERT_EQUAL(writesBefore, gFake.writeCalls);
+  TEST_ASSERT_EQUAL(readsBefore, gFake.readCalls);
+  TEST_ASSERT_EQUAL(static_cast<int>(TCA9548A::DriverState::OFFLINE),
+                    static_cast<int>(dev.state()));
+}
+
 void test_recover_backoff_enforced() {
   gFake.reset();
   gMillis = 100;
@@ -669,11 +897,61 @@ void test_recover_backoff_enforced() {
   TEST_ASSERT_TRUE(dev.recover().ok());
 }
 
+void test_recover_backoff_not_enforced_without_now_hook() {
+  gFake.reset();
+
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.recoverBackoffMs = 50;
+  dev.begin(cfg);
+
+  TEST_ASSERT_TRUE(dev.recover().ok());
+  TEST_ASSERT_TRUE(dev.recover().ok());
+}
+
 void test_hard_reset_requires_callback() {
   gFake.reset();
   TCA9548A::TCA9548A dev;
   dev.begin(makeConfig());
   TEST_ASSERT_EQUAL(TCA9548A::Err::UNSUPPORTED, dev.hardReset().code);
+}
+
+void test_hard_reset_uses_reset_user_not_i2c_user() {
+  gFake.reset();
+
+  struct UserContext {
+    uint32_t tag;
+    bool touched;
+  };
+  static constexpr uint32_t RESET_TAG = 0xABCD0001u;
+  static constexpr uint32_t I2C_TAG = 0xABCD0002u;
+  UserContext resetCtx{RESET_TAG, false};
+  UserContext i2cCtx{I2C_TAG, false};
+
+  auto resetFn = [](void* user) -> TCA9548A::Status {
+    auto* ctx = static_cast<UserContext*>(user);
+    if (ctx == nullptr || ctx->tag != RESET_TAG) {
+      return TCA9548A::Status::Error(TCA9548A::Err::INVALID_CONFIG,
+                                     "wrong reset context");
+    }
+    ctx->touched = true;
+    gFake.readValue = 0x00;
+    return TCA9548A::Status::Ok();
+  };
+
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.i2cUser = &i2cCtx;
+  cfg.hardReset = resetFn;
+  cfg.resetUser = &resetCtx;
+  dev.begin(cfg);
+  TEST_ASSERT_TRUE(dev.setChannelMask(0x55).ok());
+
+  TCA9548A::Status st = dev.hardReset();
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(resetCtx.touched);
+  TEST_ASSERT_FALSE(i2cCtx.touched);
+  TEST_ASSERT_EQUAL_HEX8(0x00, dev.lastKnownMask());
 }
 
 void test_hard_reset_reads_back_control_register() {
@@ -796,6 +1074,257 @@ void test_disable_channels_noop_when_already_clear() {
 }
 
 // ============================================================================
+// Poll-Chunked Job Tests
+// ============================================================================
+
+void test_poll_set_mask_respects_zero_budget() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+  dev.begin(makeConfig());
+
+  TEST_ASSERT_TRUE(dev.startSetTca9548aMaskJob(0x5A).ok());
+  const int writesBefore = gFake.writeCalls;
+
+  TCA9548A::PollJobResult result;
+  TCA9548A::Status st = dev.pollJob(0, 0, result);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_TRUE(result.active);
+  TEST_ASSERT_FALSE(result.complete);
+  TEST_ASSERT_EQUAL(0, result.instructionsUsed);
+  TEST_ASSERT_EQUAL(writesBefore, gFake.writeCalls);
+
+  st = dev.pollJob(0, 1, result);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_FALSE(result.active);
+  TEST_ASSERT_TRUE(result.complete);
+  TEST_ASSERT_EQUAL(1, result.instructionsUsed);
+  TEST_ASSERT_EQUAL_HEX8(0x5A, dev.lastKnownMask());
+}
+
+void test_poll_read_mask_is_one_instruction() {
+  gFake.reset();
+  gFake.readValue = 0xA6;
+  TCA9548A::TCA9548A dev;
+  dev.begin(makeConfig());
+
+  uint8_t mask = 0;
+  const int readsBefore = gFake.readCalls;
+  TEST_ASSERT_TRUE(dev.startReadTca9548aMaskJob(mask).ok());
+
+  TCA9548A::PollJobResult result;
+  TCA9548A::Status st = dev.pollJob(0, 1, result);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_EQUAL(1, result.instructionsUsed);
+  TEST_ASSERT_EQUAL(readsBefore + 1, gFake.readCalls);
+  TEST_ASSERT_EQUAL_HEX8(0xA6, mask);
+}
+
+void test_poll_enable_channels_splits_read_modify_write_with_budget_one() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+  dev.begin(makeConfig());
+  TEST_ASSERT_TRUE(dev.setChannelMask(0x01).ok());
+
+  TEST_ASSERT_TRUE(dev.startEnableTca9548aChannelsJob(TCA9548A::cmd::CH2).ok());
+  const int readsBefore = gFake.readCalls;
+  const int writesBefore = gFake.writeCalls;
+
+  TCA9548A::PollJobResult result;
+  TCA9548A::Status st = dev.pollJob(0, 1, result);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_TRUE(result.active);
+  TEST_ASSERT_EQUAL(1, result.instructionsUsed);
+  TEST_ASSERT_EQUAL(readsBefore + 1, gFake.readCalls);
+  TEST_ASSERT_EQUAL(writesBefore, gFake.writeCalls);
+
+  st = dev.pollJob(0, 1, result);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(result.complete);
+  TEST_ASSERT_EQUAL(1, result.instructionsUsed);
+  TEST_ASSERT_EQUAL(writesBefore + 1, gFake.writeCalls);
+  TEST_ASSERT_EQUAL_HEX8(0x05, dev.lastKnownMask());
+}
+
+void test_poll_enable_channels_can_share_read_and_write_when_budget_allows() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+  dev.begin(makeConfig());
+  TEST_ASSERT_TRUE(dev.setChannelMask(0x01).ok());
+
+  TEST_ASSERT_TRUE(dev.startEnableTca9548aChannelsJob(TCA9548A::cmd::CH2).ok());
+  const int readsBefore = gFake.readCalls;
+  const int writesBefore = gFake.writeCalls;
+
+  TCA9548A::PollJobResult result;
+  TCA9548A::Status st = dev.pollJob(0, 2, result);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(result.complete);
+  TEST_ASSERT_EQUAL(2, result.instructionsUsed);
+  TEST_ASSERT_EQUAL(readsBefore + 1, gFake.readCalls);
+  TEST_ASSERT_EQUAL(writesBefore + 1, gFake.writeCalls);
+  TEST_ASSERT_EQUAL_HEX8(0x05, dev.lastKnownMask());
+}
+
+void test_poll_disable_channels_noop_consumes_only_read() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+  dev.begin(makeConfig());
+  TEST_ASSERT_TRUE(dev.setChannelMask(0x0F).ok());
+
+  TEST_ASSERT_TRUE(dev.startDisableTca9548aChannelsJob(0xF0).ok());
+  const int readsBefore = gFake.readCalls;
+  const int writesBefore = gFake.writeCalls;
+
+  TCA9548A::PollJobResult result;
+  TCA9548A::Status st = dev.pollJob(0, 2, result);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(result.complete);
+  TEST_ASSERT_EQUAL(1, result.instructionsUsed);
+  TEST_ASSERT_EQUAL(readsBefore + 1, gFake.readCalls);
+  TEST_ASSERT_EQUAL(writesBefore, gFake.writeCalls);
+  TEST_ASSERT_EQUAL_HEX8(0x0F, dev.lastKnownMask());
+}
+
+void test_poll_select_downstream_restore_are_separate_polls() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+  dev.begin(makeConfig());
+  TEST_ASSERT_TRUE(dev.setChannelMask(0xAA).ok());
+
+  DownstreamContext downstream;
+  TEST_ASSERT_TRUE(dev.startSelectTca9548aChannelJob(
+      2, 0xAA, fakeDownstreamPoll, &downstream).ok());
+  const int writesBefore = gFake.writeCalls;
+
+  TCA9548A::PollJobResult result;
+  TCA9548A::Status st = dev.pollJob(10, 3, result);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_EQUAL(1, result.instructionsUsed);
+  TEST_ASSERT_EQUAL(writesBefore + 1, gFake.writeCalls);
+  TEST_ASSERT_EQUAL(0, downstream.calls);
+  TEST_ASSERT_EQUAL_HEX8(TCA9548A::cmd::CH2, gFake.readValue);
+
+  st = dev.pollJob(11, 3, result);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_EQUAL(1, result.instructionsUsed);
+  TEST_ASSERT_EQUAL(1, downstream.calls);
+  TEST_ASSERT_EQUAL(3, downstream.maxInstructionsSeen);
+  TEST_ASSERT_EQUAL_HEX8(TCA9548A::cmd::CH2, downstream.observedMask);
+  TEST_ASSERT_EQUAL(writesBefore + 1, gFake.writeCalls);
+
+  st = dev.pollJob(12, 3, result);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(result.complete);
+  TEST_ASSERT_EQUAL(1, result.instructionsUsed);
+  TEST_ASSERT_EQUAL(writesBefore + 2, gFake.writeCalls);
+  TEST_ASSERT_EQUAL_HEX8(0xAA, dev.lastKnownMask());
+}
+
+void test_poll_select_restore_runs_after_downstream_failure() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+  dev.begin(makeConfig());
+  TEST_ASSERT_TRUE(dev.setChannelMask(0xAA).ok());
+
+  DownstreamContext downstream;
+  downstream.terminal =
+      TCA9548A::Status::Error(TCA9548A::Err::I2C_ERROR, "downstream failed");
+  TEST_ASSERT_TRUE(dev.startSelectTca9548aMaskJob(
+      TCA9548A::cmd::CH1, 0xAA, fakeDownstreamPoll, &downstream).ok());
+
+  TCA9548A::PollJobResult result;
+  TEST_ASSERT_TRUE(dev.pollJob(10, 1, result).inProgress());
+  TEST_ASSERT_TRUE(dev.pollJob(11, 1, result).inProgress());
+
+  TCA9548A::Status st = dev.pollJob(12, 1, result);
+  TEST_ASSERT_EQUAL(TCA9548A::Err::I2C_ERROR, st.code);
+  TEST_ASSERT_TRUE(result.complete);
+  TEST_ASSERT_EQUAL_HEX8(0xAA, dev.lastKnownMask());
+  TEST_ASSERT_FALSE(dev.pollJobActive());
+}
+
+void test_poll_recover_backoff_gate_consumes_no_instructions_or_io() {
+  gFake.reset();
+  gMillis = 100;
+
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.nowMs = fakeNowMs;
+  cfg.recoverBackoffMs = 50;
+  cfg.recoverUseHardReset = false;
+  dev.begin(cfg);
+  TEST_ASSERT_TRUE(dev.recover().ok());
+
+  TEST_ASSERT_TRUE(dev.startRecoverTca9548aJob().ok());
+  gMillis = 120;
+  const int readsBefore = gFake.readCalls;
+  const int writesBefore = gFake.writeCalls;
+
+  TCA9548A::PollJobResult result;
+  TCA9548A::Status st = dev.pollJob(gMillis, 5, result);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_TRUE(result.active);
+  TEST_ASSERT_EQUAL(0, result.instructionsUsed);
+  TEST_ASSERT_EQUAL(readsBefore, gFake.readCalls);
+  TEST_ASSERT_EQUAL(writesBefore, gFake.writeCalls);
+
+  gMillis = 151;
+  st = dev.pollJob(gMillis, 5, result);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(result.complete);
+  TEST_ASSERT_EQUAL(2, result.instructionsUsed);
+  TEST_ASSERT_EQUAL(readsBefore + 1, gFake.readCalls);
+  TEST_ASSERT_EQUAL(writesBefore + 1, gFake.writeCalls);
+}
+
+void test_poll_recover_hard_reset_counts_reset_verify_restore() {
+  gFake.reset();
+
+  bool resetCalled = false;
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.hardReset = fakeResetToZero;
+  cfg.resetUser = &resetCalled;
+  cfg.recoverBackoffMs = 0;
+  dev.begin(cfg);
+  TEST_ASSERT_TRUE(dev.setChannelMask(0x24).ok());
+
+  TEST_ASSERT_TRUE(dev.startRecoverTca9548aJob().ok());
+  const int readsBefore = gFake.readCalls;
+  const int writesBefore = gFake.writeCalls;
+
+  TCA9548A::PollJobResult result;
+  TCA9548A::Status st = dev.pollJob(0, 2, result);
+  TEST_ASSERT_TRUE(st.inProgress());
+  TEST_ASSERT_TRUE(resetCalled);
+  TEST_ASSERT_EQUAL(2, result.instructionsUsed);
+  TEST_ASSERT_EQUAL(readsBefore + 1, gFake.readCalls);
+  TEST_ASSERT_EQUAL(writesBefore, gFake.writeCalls);
+
+  st = dev.pollJob(0, 1, result);
+  TEST_ASSERT_TRUE(st.ok());
+  TEST_ASSERT_TRUE(result.complete);
+  TEST_ASSERT_EQUAL(1, result.instructionsUsed);
+  TEST_ASSERT_EQUAL(writesBefore + 1, gFake.writeCalls);
+  TEST_ASSERT_EQUAL_HEX8(0x24, dev.lastKnownMask());
+}
+
+void test_sync_io_returns_busy_while_poll_job_active() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+  dev.begin(makeConfig());
+  TEST_ASSERT_TRUE(dev.startSetTca9548aMaskJob(0x33).ok());
+
+  uint8_t mask = 0;
+  TEST_ASSERT_EQUAL(TCA9548A::Err::BUSY, dev.setChannelMask(0x44).code);
+  TEST_ASSERT_EQUAL(TCA9548A::Err::BUSY, dev.readChannelMask(mask).code);
+  TEST_ASSERT_TRUE(dev.pollJobActive());
+  dev.cancelPollJob();
+  TEST_ASSERT_FALSE(dev.pollJobActive());
+  TEST_ASSERT_TRUE(dev.setChannelMask(0x44).ok());
+}
+
+// ============================================================================
 // Version Tests
 // ============================================================================
 
@@ -830,6 +1359,7 @@ int main() {
   // Status
   RUN_TEST(test_status_ok);
   RUN_TEST(test_status_error);
+  RUN_TEST(test_status_helpers);
 
   // Config
   RUN_TEST(test_config_defaults);
@@ -845,6 +1375,7 @@ int main() {
   RUN_TEST(test_begin_device_not_found);
   RUN_TEST(test_end_resets_state);
   RUN_TEST(test_end_disables_all_channels);
+  RUN_TEST(test_end_skips_bus_io_when_offline);
   RUN_TEST(test_get_settings_snapshot);
 
   // Channel control
@@ -855,6 +1386,7 @@ int main() {
   RUN_TEST(test_set_all_channels);
   RUN_TEST(test_disable_all_channels);
   RUN_TEST(test_read_channel_mask);
+  RUN_TEST(test_register_helpers);
   RUN_TEST(test_enable_channels);
   RUN_TEST(test_disable_channels);
   RUN_TEST(test_is_channel_enabled);
@@ -867,6 +1399,8 @@ int main() {
   RUN_TEST(test_health_ready_after_begin);
   RUN_TEST(test_health_degraded_after_failure);
   RUN_TEST(test_health_offline_after_threshold);
+  RUN_TEST(test_offline_latch_blocks_normal_io);
+  RUN_TEST(test_recover_is_allowed_while_offline_latched);
   RUN_TEST(test_health_recovery_on_success);
   RUN_TEST(test_total_counters_increment);
 
@@ -879,8 +1413,13 @@ int main() {
   RUN_TEST(test_recover_success);
   RUN_TEST(test_recover_with_hard_reset);
   RUN_TEST(test_recover_restores_last_known_mask_after_reset);
+  RUN_TEST(test_recover_restore_failure_keeps_offline_latch);
+  RUN_TEST(test_recover_hard_reset_restore_failure_keeps_offline_latch);
+  RUN_TEST(test_recover_hard_reset_callback_failure_does_not_fall_through);
   RUN_TEST(test_recover_backoff_enforced);
+  RUN_TEST(test_recover_backoff_not_enforced_without_now_hook);
   RUN_TEST(test_hard_reset_requires_callback);
+  RUN_TEST(test_hard_reset_uses_reset_user_not_i2c_user);
   RUN_TEST(test_hard_reset_reads_back_control_register);
 
   // Command table
@@ -895,6 +1434,18 @@ int main() {
   // No-op optimizations
   RUN_TEST(test_enable_channels_noop_when_already_set);
   RUN_TEST(test_disable_channels_noop_when_already_clear);
+
+  // Poll-chunked jobs
+  RUN_TEST(test_poll_set_mask_respects_zero_budget);
+  RUN_TEST(test_poll_read_mask_is_one_instruction);
+  RUN_TEST(test_poll_enable_channels_splits_read_modify_write_with_budget_one);
+  RUN_TEST(test_poll_enable_channels_can_share_read_and_write_when_budget_allows);
+  RUN_TEST(test_poll_disable_channels_noop_consumes_only_read);
+  RUN_TEST(test_poll_select_downstream_restore_are_separate_polls);
+  RUN_TEST(test_poll_select_restore_runs_after_downstream_failure);
+  RUN_TEST(test_poll_recover_backoff_gate_consumes_no_instructions_or_io);
+  RUN_TEST(test_poll_recover_hard_reset_counts_reset_verify_restore);
+  RUN_TEST(test_sync_io_returns_busy_while_poll_job_active);
 
   // Version
   RUN_TEST(test_version_constants);

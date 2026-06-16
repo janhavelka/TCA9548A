@@ -92,7 +92,7 @@ inline Status wireWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
   // end the write with STOP, then perform a fresh read transaction.
   if (txLen > 0) {
     wire->beginTransmission(addr);
-    wire->write(txData, txLen);
+    size_t written = wire->write(txData, txLen);
     uint8_t result = wire->endTransmission(true);
     if (result != 0) {
       switch (result) {
@@ -103,6 +103,10 @@ inline Status wireWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
         case 5: return Status::Error(Err::I2C_TIMEOUT, "I2C timeout", result);
         default: return Status::Error(Err::I2C_ERROR, "I2C write failed", result);
       }
+    }
+    if (written != txLen) {
+      return Status::Error(Err::I2C_ERROR, "I2C write incomplete",
+                           static_cast<int32_t>(written));
     }
   }
 
@@ -125,7 +129,16 @@ inline Status wireWriteRead(uint8_t addr, const uint8_t* txData, size_t txLen,
   }
 
   for (size_t i = 0; i < rxLen; i++) {
-    rxData[i] = wire->read();
+    if (wire->available() <= 0) {
+      return Status::Error(Err::I2C_ERROR, "I2C read unavailable",
+                           static_cast<int32_t>(i));
+    }
+    const int value = wire->read();
+    if (value < 0) {
+      return Status::Error(Err::I2C_ERROR, "I2C read failed",
+                           static_cast<int32_t>(i));
+    }
+    rxData[i] = static_cast<uint8_t>(value);
   }
 
   return Status::Ok();
