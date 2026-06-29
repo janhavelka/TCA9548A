@@ -316,11 +316,24 @@ verify/readback, and restore into separately accounted instructions.
 ## Validation
 
 ```bash
+python tools/tca9548a_hil.py --parser-self-test
+python tools/tca9548a_hil.py --dry-run --port COM8 --baud 115200
 pio run -e esp32s3dev
 pio run -e esp32s2dev
 pio test -e native
 pio run -e native_core_no_arduino
 ```
+
+Live HIL requires an attached ESP32 running `examples/01_basic_bringup_cli/` and
+a wired TCA9548A fixture:
+
+```bash
+pio run -e esp32s3dev -t upload --upload-port COM8
+python tools/tca9548a_hil.py --port COM8 --baud 115200 --verbose --report docs/reports/hil-validation-COM8-YYYYMMDD.md
+```
+
+Do not treat dry-run output as hardware validation; it only checks the host
+runner plan and report generation.
 
 ## Examples
 
@@ -362,6 +375,7 @@ examples/
   01_basic_bringup_cli/ - Interactive CLI example
   common/               - Example-only helpers
 docs/                   - Compact docs index and porting notes
+tools/                  - Host-side helper scripts, including HIL capture
 platformio.ini          - Build environments
 library.json            - PlatformIO metadata
 README.md               - This file

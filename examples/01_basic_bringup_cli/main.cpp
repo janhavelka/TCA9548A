@@ -341,6 +341,33 @@ void doBegin() {
   printStatus(st);
 }
 
+bool readOriginalMaskForMutation(uint8_t& mask, const char* operation) {
+  mask = device.lastKnownMask();
+  const TCA9548A::Status st = device.readChannelMask(mask);
+  if (st.ok()) {
+    return true;
+  }
+
+  Serial.printf("  %s: aborting because the current mask cannot be read\n",
+                operation);
+  printStatus(st);
+  return false;
+}
+
+void printRestoreStatus(const char* label, uint8_t mask, const TCA9548A::Status& st) {
+  if (!st.ok()) {
+    Serial.printf("  %s: %sFAILED%s\n", label, LOG_COLOR_RED, LOG_COLOR_RESET);
+    printStatus(st);
+    return;
+  }
+
+  Serial.printf("  %s: %sOK%s (0x%02X)\n",
+                label,
+                LOG_COLOR_GREEN,
+                LOG_COLOR_RESET,
+                mask);
+}
+
 // ============================================================================
 // Stress Tests
 // ============================================================================
@@ -355,12 +382,14 @@ void runStress(int count) {
   bool hasFailure = false;
   TCA9548A::Status firstFailure = TCA9548A::Status::Ok();
   TCA9548A::Status lastFailure = TCA9548A::Status::Ok();
+  uint8_t baselineMask = 0;
+  if (!readOriginalMaskForMutation(baselineMask, "stress baseline")) {
+    return;
+  }
   HealthSnapshot<TCA9548A::TCA9548A> healthBefore;
   healthBefore.capture(device);
   const uint32_t successBefore = device.totalSuccess();
   const uint32_t failBefore = device.totalFailures();
-  uint8_t baselineMask = device.lastKnownMask();
-  const TCA9548A::Status baselineRead = device.readChannelMask(baselineMask);
   const uint32_t startMs = millis();
 
   for (int i = 0; i < count; ++i) {
@@ -380,9 +409,7 @@ void runStress(int count) {
                         static_cast<uint32_t>(ok),
                         static_cast<uint32_t>(fail));
   }
-  const TCA9548A::Status restoreStatus = baselineRead.ok()
-                                             ? device.setChannelMask(baselineMask)
-                                             : TCA9548A::Status::Ok();
+  const TCA9548A::Status restoreStatus = device.setChannelMask(baselineMask);
   const uint32_t elapsed = millis() - startMs;
   const float pct = (count > 0) ? (100.0f * static_cast<float>(ok) / static_cast<float>(count)) : 0.0f;
   const uint32_t successDelta = device.totalSuccess() - successBefore;
@@ -402,19 +429,7 @@ void runStress(int count) {
                 goodIfZeroColor(failDelta), static_cast<unsigned long>(failDelta), LOG_COLOR_RESET);
   Serial.println("  Health changes:");
   printHealthDiff(healthBefore, healthAfter);
-  if (!baselineRead.ok()) {
-    Serial.printf("  Baseline restore: %sSKIPPED%s (could not read original mask)\n",
-                  LOG_COLOR_YELLOW,
-                  LOG_COLOR_RESET);
-  } else if (!restoreStatus.ok()) {
-    Serial.printf("  Baseline restore: %sFAILED%s\n", LOG_COLOR_RED, LOG_COLOR_RESET);
-    printStatus(restoreStatus);
-  } else {
-    Serial.printf("  Baseline restore: %sOK%s (0x%02X)\n",
-                  LOG_COLOR_GREEN,
-                  LOG_COLOR_RESET,
-                  baselineMask);
-  }
+  printRestoreStatus("Baseline restore", baselineMask, restoreStatus);
   if (hasFailure) {
     Serial.println("  First failure:");
     printStatus(firstFailure);
@@ -446,8 +461,10 @@ void runStressMix(int count) {
   };
   const int opCount = static_cast<int>(sizeof(stats) / sizeof(stats[0]));
 
-  uint8_t baselineMask = device.lastKnownMask();
-  const TCA9548A::Status baselineRead = device.readChannelMask(baselineMask);
+  uint8_t baselineMask = 0;
+  if (!readOriginalMaskForMutation(baselineMask, "stress_mix baseline")) {
+    return;
+  }
   HealthSnapshot<TCA9548A::TCA9548A> healthBefore;
   healthBefore.capture(device);
   const uint32_t succBefore = device.totalSuccess();
@@ -495,9 +512,7 @@ void runStressMix(int count) {
                         failTotal);
   }
 
-  const TCA9548A::Status restoreStatus = baselineRead.ok()
-                                             ? device.setChannelMask(baselineMask)
-                                             : TCA9548A::Status::Ok();
+  const TCA9548A::Status restoreStatus = device.setChannelMask(baselineMask);
   const uint32_t elapsed = millis() - startMs;
   HealthSnapshot<TCA9548A::TCA9548A> healthAfter;
   healthAfter.capture(device);
@@ -532,19 +547,7 @@ void runStressMix(int count) {
                 goodIfZeroColor(failDelta), static_cast<unsigned long>(failDelta), LOG_COLOR_RESET);
   Serial.println("  Health changes:");
   printHealthDiff(healthBefore, healthAfter);
-  if (!baselineRead.ok()) {
-    Serial.printf("  Baseline restore: %sSKIPPED%s (could not read original mask)\n",
-                  LOG_COLOR_YELLOW,
-                  LOG_COLOR_RESET);
-  } else if (!restoreStatus.ok()) {
-    Serial.printf("  Baseline restore: %sFAILED%s\n", LOG_COLOR_RED, LOG_COLOR_RESET);
-    printStatus(restoreStatus);
-  } else {
-    Serial.printf("  Baseline restore: %sOK%s (0x%02X)\n",
-                  LOG_COLOR_GREEN,
-                  LOG_COLOR_RESET,
-                  baselineMask);
-  }
+  printRestoreStatus("Baseline restore", baselineMask, restoreStatus);
   if (hasFailure) {
     Serial.println("  First failure:");
     printStatus(firstFailure);
@@ -616,6 +619,14 @@ void runSelfTest() {
   uint8_t origMask = 0;
   TCA9548A::Status st = device.readChannelMask(origMask);
   reportCheck("readChannelMask", st.ok(), st.ok() ? "" : errToStr(st.code));
+  if (!st.ok()) {
+    reportSkip("remaining checks", "original mask unavailable");
+    Serial.printf("Selftest result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
+                  goodIfNonZeroColor(stats.pass), static_cast<unsigned long>(stats.pass), LOG_COLOR_RESET,
+                  goodIfZeroColor(stats.fail), static_cast<unsigned long>(stats.fail), LOG_COLOR_RESET,
+                  skipCountColor(stats.skip), static_cast<unsigned long>(stats.skip), LOG_COLOR_RESET);
+    return;
+  }
 
   // disableAll
   st = device.disableAll();
@@ -701,14 +712,14 @@ void runSelfTest() {
       uint8_t m = 0xFF;
       st = device.readControlRegister(m);
       reportCheck("verify reset mask 0x00", st.ok() && m == 0x00, "");
-      (void)device.setChannelMask(origMask);
     }
   } else {
     reportSkip("hardReset", "callback not configured");
   }
 
   // Restore original mask
-  device.setChannelMask(origMask);
+  st = device.setChannelMask(origMask);
+  reportCheck("restore original mask", st.ok(), st.ok() ? "" : errToStr(st.code));
   (void)reportSkip; // suppress unused warning
 
   Serial.printf("Selftest result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
@@ -912,6 +923,11 @@ void processCommand(const String& cmd) {
     return;
   }
   if (cmd == "end") {
+    if (device.isInitialized()) {
+      TCA9548A::Status st = device.disableAll();
+      Serial.print("disable before end: ");
+      printStatus(st);
+    }
     device.end();
     LOGI("Driver shut down");
     return;
@@ -1095,6 +1111,10 @@ void processCommand(const String& cmd) {
   if (cmd.startsWith("scanch ")) {
     int ch = 0;
     if (!parseIntRange(cmd.substring(7), 0, 7, ch)) { LOGE("Usage: scanch <0-7>"); return; }
+    uint8_t originalMask = 0;
+    if (!readOriginalMaskForMutation(originalMask, "scanch baseline")) {
+      return;
+    }
     LOGI("Selecting channel %d...", ch);
     TCA9548A::Status st = device.selectChannel(static_cast<uint8_t>(ch));
     if (!st.ok()) {
@@ -1104,6 +1124,8 @@ void processCommand(const String& cmd) {
     }
     LOGI("Scanning downstream bus on channel %d:", ch);
     i2c::scan();
+    st = device.setChannelMask(originalMask);
+    printRestoreStatus("Restore after scan", originalMask, st);
     return;
   }
   if (cmd.startsWith("addr ")) {

@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native core compile environment that builds the library without Arduino/Wire include paths
 - Poll-chunked job API with `pollJob(nowMs, maxInstructions, result)` instruction accounting
 - Budgeted jobs for raw mask read/write, read-modify-write enable/disable, select/downstream/restore, and recovery
+- Host-side HIL runner with parser self-test, dry-run planning, bounded serial execution, and Markdown report output
 
 ### Changed
 - Core driver code is framework-neutral and no longer includes Arduino or falls back to `millis()`
@@ -34,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The CLI example now exposes `read/dump`, `read reg` / `rreg`, `write reg` / `wreg`, `on/all`, `reset/hardreset`, and help entries for `health` / `state`
 - The example `Wire` transport now validates buffers and maps transport failures into health-tracked I2C error codes consistently
 - README now documents protocol limits, recovery semantics, and the example/public boundary more clearly
+- Example stress, self-test, and downstream scan commands now abort before mutating the mux if the original mask cannot be read
 
 ### Fixed
 - `end()` skips best-effort all-off bus I/O while `OFFLINE`
@@ -43,6 +45,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native tests now include the Arduino/Wire stubs required by the `native` PlatformIO environment
 - Native coverage now exercises settings snapshots, explicit hard reset, probe normalization, recover backoff behavior, and poll-job instruction budgets
 - Previously defined `test_status_helpers()` and `test_register_helpers()` are now registered in the native test runner
+- CLI command input is bounded and overlong serial lines are discarded until newline
+- Example mutating diagnostics now report mux-mask restore failures instead of silently leaving state uncertain
 
 ## [1.0.0] - 2026-07-07
 

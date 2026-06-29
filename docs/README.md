@@ -8,8 +8,23 @@ repository [README](../README.md), the public API is documented in
 
 - [HARDWARE_NOTES.md](HARDWARE_NOTES.md) - concise chip and board-design notes
 - [PORTING.md](PORTING.md) - transport adapter and framework-neutral porting notes
+- `reports/` - generated validation reports; live HIL reports must clearly
+  distinguish hardware evidence from dry-run or parser-only checks
 - Doxygen output may be generated under `docs/doxygen/`; generated output is not
   source documentation
+
+## HIL Reports
+
+Use the host runner only as a bounded serial harness around the example CLI:
+
+```bash
+python tools/tca9548a_hil.py --parser-self-test
+python tools/tca9548a_hil.py --dry-run --port COM8 --baud 115200 --report docs/reports/hil-validation-COM8-YYYYMMDD.md
+```
+
+Live HIL requires an attached ESP32 and TCA9548A fixture. If the fixture is not
+present, report the live steps as `NOT_RUN`; do not claim hardware validation
+from parser or dry-run checks.
 
 ## Hardware Notes
 
