@@ -230,8 +230,8 @@ manual recovery.
 - `Status disableAll()` - write `0x00`
 - `Status readChannelMask(uint8_t& mask)` - read current mask
 - `Status readControlRegister(uint8_t& mask)` - alias for `readChannelMask()`
-- `Status readRegister(uint8_t reg, uint8_t& value)` - read register by address (must be `CONTROL_REG`)
-- `Status writeRegister(uint8_t reg, uint8_t value)` - write register by address (must be `CONTROL_REG`)
+- `Status readRegister(uint8_t reg, uint8_t& value)` - compatibility helper for the logical `CONTROL_REG`; no register-address byte is sent
+- `Status writeRegister(uint8_t reg, uint8_t value)` - compatibility helper for the logical `CONTROL_REG`; no register-address byte is sent
 - `Status isChannelEnabled(uint8_t channel, bool& enabled)` - convenience read helper
 
 The minimal raw-mask API is `setChannelMask()`, `readChannelMask()`, and
@@ -241,6 +241,7 @@ prefer those primitives over the compound convenience helpers.
 ### State And Health
 
 - `DriverState state() const`
+- `DriverState driverState() const` - alias for sibling-library uniformity
 - `bool isInitialized() const`
 - `bool isOnline() const`
 - `const Config& getConfig() const`
@@ -327,6 +328,7 @@ pio run -e native_core_no_arduino
   - `read` / `dump`, `read reg` / `rreg`, `write reg` / `wreg`
   - `select`, `mask`, `on`, `off`, `enable`, `disable`, `check`, `scanch`
   - `drv` / `health`, `state`, `probe`, `recover`, `reset`, `cfg`, `selftest`
+  - `hil dry`, `hil parser`, `hil run`, `hil run reset`
 
 ### Example Helpers
 

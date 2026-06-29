@@ -337,6 +337,23 @@ void test_get_settings_snapshot() {
   TEST_ASSERT_EQUAL_HEX8(0x75, dev.getConfig().i2cAddress);
 }
 
+void test_driver_state_alias_matches_state() {
+  gFake.reset();
+  TCA9548A::TCA9548A dev;
+
+  TEST_ASSERT_EQUAL(static_cast<int>(dev.state()),
+                    static_cast<int>(dev.driverState()));
+
+  TEST_ASSERT_TRUE(dev.begin(makeConfig()).ok());
+  TEST_ASSERT_EQUAL(static_cast<int>(dev.state()),
+                    static_cast<int>(dev.driverState()));
+
+  gFake.writeResult = TCA9548A::Err::I2C_ERROR;
+  (void)dev.setChannelMask(0x01);
+  TEST_ASSERT_EQUAL(static_cast<int>(dev.state()),
+                    static_cast<int>(dev.driverState()));
+}
+
 // ============================================================================
 // Channel Control Tests
 // ============================================================================
@@ -897,6 +914,38 @@ void test_recover_backoff_enforced() {
   TEST_ASSERT_TRUE(dev.recover().ok());
 }
 
+void test_recover_backoff_blocks_i2c_and_reset_while_gated() {
+  gFake.reset();
+  gMillis = 100;
+
+  int resetCalls = 0;
+  auto resetFn = [](void* user) -> TCA9548A::Status {
+    ++(*static_cast<int*>(user));
+    gFake.readValue = 0x00;
+    return TCA9548A::Status::Ok();
+  };
+
+  TCA9548A::TCA9548A dev;
+  TCA9548A::Config cfg = makeConfig();
+  cfg.nowMs = fakeNowMs;
+  cfg.recoverBackoffMs = 50;
+  cfg.hardReset = resetFn;
+  cfg.resetUser = &resetCalls;
+  cfg.recoverUseHardReset = true;
+  dev.begin(cfg);
+
+  TEST_ASSERT_TRUE(dev.recover().ok());
+  const int readsBefore = gFake.readCalls;
+  const int writesBefore = gFake.writeCalls;
+  const int resetBefore = resetCalls;
+
+  TCA9548A::Status st = dev.recover();
+  TEST_ASSERT_EQUAL(TCA9548A::Err::TIMEOUT, st.code);
+  TEST_ASSERT_EQUAL(readsBefore, gFake.readCalls);
+  TEST_ASSERT_EQUAL(writesBefore, gFake.writeCalls);
+  TEST_ASSERT_EQUAL(resetBefore, resetCalls);
+}
+
 void test_recover_backoff_not_enforced_without_now_hook() {
   gFake.reset();
 
@@ -1377,6 +1426,7 @@ int main() {
   RUN_TEST(test_end_disables_all_channels);
   RUN_TEST(test_end_skips_bus_io_when_offline);
   RUN_TEST(test_get_settings_snapshot);
+  RUN_TEST(test_driver_state_alias_matches_state);
 
   // Channel control
   RUN_TEST(test_select_channel_0);
@@ -1417,6 +1467,7 @@ int main() {
   RUN_TEST(test_recover_hard_reset_restore_failure_keeps_offline_latch);
   RUN_TEST(test_recover_hard_reset_callback_failure_does_not_fall_through);
   RUN_TEST(test_recover_backoff_enforced);
+  RUN_TEST(test_recover_backoff_blocks_i2c_and_reset_while_gated);
   RUN_TEST(test_recover_backoff_not_enforced_without_now_hook);
   RUN_TEST(test_hard_reset_requires_callback);
   RUN_TEST(test_hard_reset_uses_reset_user_not_i2c_user);

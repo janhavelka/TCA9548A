@@ -41,10 +41,23 @@ Rules:
 
 ## Core Engineering Rules (Mandatory)
 
+- Prefer simplicity, clarity, correctness, robustness, safety, and readability over clever abstractions or speculative flexibility.
+- Before coding, inspect whether existing code can be simplified, reused, or deleted.
+- Prefer deleting unnecessary code over adding new code.
+- Prefer extending existing owners/modules/contracts over creating parallel abstractions.
+- Before adding a new service, class, file, interface, or abstraction, confirm there is a concrete current need and a clear caller or test.
+- Do not add placeholder classes, future stubs, empty managers, broad frameworks, plugin systems, registries, generic layers, or speculative extension points unless the current task explicitly requires them.
+- Keep changes tightly scoped to the user's request.
+- Preserve dirty user changes and never revert unrelated work.
 - Deterministic: no unbounded loops/waits; all timeouts via deadlines, never `delay()` in library code.
 - Non-blocking lifecycle: `Status begin(const Config&)`, `void tick(uint32_t nowMs)`, `void end()`.
 - Any I/O that can exceed ~1-2 ms must be split into state machine steps driven by `tick()`.
-- No heap allocation in steady state (no `String`, `std::vector`, `new` in normal ops).
+- No unbounded waits, retries, loops, allocations, queues, or buffers in steady paths.
+- Every hardware operation that can block must have a timeout and an observable failure path.
+- Recovery logic must be bounded, deterministic, and testable.
+- Prefer explicit state, explicit ownership, and small local helpers over hidden global state.
+- Do not hide hardware failures behind silent retries or fake success.
+- No heap allocation in steady state (no `String`, `std::vector`, `new` in normal ops). Avoid dynamic allocation in steady embedded paths unless it is already an accepted local pattern and the bound is clear.
 - No logging in library code; examples may log.
 - No macros for constants; use `static constexpr`. Macros only for conditional compile or logging helpers.
 
@@ -52,10 +65,16 @@ Rules:
 
 ## I2C Manager + Transport (Required)
 
+- The I2C bus must have one clear owner.
 - The library MUST NOT own I2C. It never touches `Wire` directly.
+- Device drivers must not directly own or reconfigure a shared bus unless this repository's architecture explicitly says so.
 - `Config` MUST accept a transport adapter (function pointers or abstract interface).
 - Transport errors MUST map to `Status` (no leaking `Wire`, `esp_err_t`, etc.).
+- I2C transactions MUST be timeout-bounded and report errors clearly.
 - The library MUST NOT configure bus timeouts or pins.
+- Keep chip-level protocol code inside the driver/wrapper. Keep application policy outside the chip driver.
+- Do not add fake devices, simulated buses, or test doubles to production paths.
+- Do not implement chip protocols manually if an existing hardened project library already provides the needed timeout, recovery, and testability behavior.
 
 ---
 

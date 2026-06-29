@@ -4,6 +4,7 @@
 
 #include <Arduino.h>
 #include <cstdlib>
+#include <cstring>
 
 #include "examples/common/Log.h"
 #include "examples/common/BoardConfig.h"
@@ -98,6 +99,8 @@ const char* errToStr(TCA9548A::Err err) {
     case Err::I2C_NACK_DATA: return "I2C_NACK_DATA";
     case Err::I2C_TIMEOUT: return "I2C_TIMEOUT";
     case Err::I2C_BUS: return "I2C_BUS";
+    case Err::BUSY: return "BUSY";
+    case Err::IN_PROGRESS: return "IN_PROGRESS";
     default: return "UNKNOWN";
   }
 }
@@ -262,6 +265,10 @@ void printRegisterDump() {
   printEnabledChannels(mask);
 }
 
+uint32_t arduinoNowMs(void*) {
+  return millis();
+}
+
 void printHelp() {
   auto helpSection = [](const char* title) {
     Serial.printf("\n%s[%s]%s\n", LOG_COLOR_GREEN, title, LOG_COLOR_RESET);
@@ -306,6 +313,7 @@ void printHelp() {
   helpItem("stress [N]", "Run N channel-sweep cycles");
   helpItem("stress_mix [N]", "Run N mixed-operation cycles");
   helpItem("selftest", "Run safe command self-test report");
+  helpItem("hil [dry|parser|run|run reset]", "Run safe HIL contract checks");
 }
 
 // ============================================================================
@@ -318,6 +326,7 @@ void initConfig() {
   gConfig.i2cUser = &Wire;
   gConfig.i2cAddress = 0x70;
   gConfig.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
+  gConfig.nowMs = arduinoNowMs;
   gConfig.offlineThreshold = 5;
   gConfig.recoverBackoffMs = 100;
   gConfigReady = true;
@@ -709,6 +718,163 @@ void runSelfTest() {
 }
 
 // ============================================================================
+// HIL Runner
+// ============================================================================
+
+void runHil(bool live, bool includeReset) {
+  struct HilStats {
+    uint32_t pass = 0;
+    uint32_t fail = 0;
+    uint32_t skip = 0;
+  } stats;
+
+  enum class HilOutcome : uint8_t { PASS, FAIL, SKIP };
+  auto report = [&](const char* name, HilOutcome outcome, const char* note) {
+    const bool passed = (outcome == HilOutcome::PASS);
+    const bool skipped = (outcome == HilOutcome::SKIP);
+    const char* color = skipped ? LOG_COLOR_YELLOW : LOG_COLOR_RESULT(passed);
+    const char* tag = skipped ? "SKIP" : (passed ? "PASS" : "FAIL");
+    Serial.printf("  [%s%s%s] %s", color, tag, LOG_COLOR_RESET, name);
+    if (note && note[0]) {
+      Serial.printf(" - %s", note);
+    }
+    Serial.println();
+    if (skipped) { stats.skip++; }
+    else if (passed) { stats.pass++; }
+    else { stats.fail++; }
+  };
+  auto reportCheck = [&](const char* name, bool passed, const char* note) {
+    report(name, passed ? HilOutcome::PASS : HilOutcome::FAIL, note);
+  };
+  auto reportSkip = [&](const char* name, const char* note) {
+    report(name, HilOutcome::SKIP, note);
+  };
+  auto reportStatus = [&](const char* name, const TCA9548A::Status& st) {
+    reportCheck(name, st.ok(), st.ok() ? "" : errToStr(st.code));
+  };
+
+  Serial.printf("%s=== TCA9548A HIL %s ===%s\n",
+                LOG_COLOR_CYAN,
+                live ? "RUN" : "DRY-RUN",
+                LOG_COLOR_RESET);
+  Serial.println("  Live mode may change the mux control mask; the original mask is restored.");
+
+  reportCheck("parser mode", true, live ? "live" : "dry-run");
+  reportCheck("version", TCA9548A::VERSION[0] != '\0', TCA9548A::VERSION);
+
+  const TCA9548A::Err allErrs[] = {
+    TCA9548A::Err::OK,
+    TCA9548A::Err::NOT_INITIALIZED,
+    TCA9548A::Err::INVALID_CONFIG,
+    TCA9548A::Err::I2C_ERROR,
+    TCA9548A::Err::TIMEOUT,
+    TCA9548A::Err::INVALID_PARAM,
+    TCA9548A::Err::DEVICE_NOT_FOUND,
+    TCA9548A::Err::UNSUPPORTED,
+    TCA9548A::Err::I2C_NACK_ADDR,
+    TCA9548A::Err::I2C_NACK_DATA,
+    TCA9548A::Err::I2C_TIMEOUT,
+    TCA9548A::Err::I2C_BUS,
+    TCA9548A::Err::BUSY,
+    TCA9548A::Err::IN_PROGRESS
+  };
+  bool tokensOk = true;
+  for (const TCA9548A::Err err : allErrs) {
+    if (std::strcmp(errToStr(err), "UNKNOWN") == 0) {
+      tokensOk = false;
+      break;
+    }
+  }
+  reportCheck("failure-token classification", tokensOk, tokensOk ? "" : "UNKNOWN token found");
+
+  TCA9548A::SettingsSnapshot snap;
+  const TCA9548A::Status settingsStatus = device.getSettings(snap);
+  reportStatus("settings snapshot", settingsStatus);
+  reportCheck("driverState alias", device.driverState() == device.state(), "");
+  printConfig();
+  printDriverHealth();
+
+  if (!live) {
+    reportSkip("scan", "dry-run");
+    reportSkip("probe", "dry-run");
+    reportSkip("current mask read", "dry-run");
+    reportSkip("clear mask", "dry-run");
+    reportSkip("restore mask", "dry-run");
+    reportSkip("recover/backoff", "dry-run");
+    reportSkip("hardReset", includeReset ? "dry-run" : "not requested");
+    Serial.printf("HIL result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
+                  goodIfNonZeroColor(stats.pass), static_cast<unsigned long>(stats.pass), LOG_COLOR_RESET,
+                  goodIfZeroColor(stats.fail), static_cast<unsigned long>(stats.fail), LOG_COLOR_RESET,
+                  skipCountColor(stats.skip), static_cast<unsigned long>(stats.skip), LOG_COLOR_RESET);
+    return;
+  }
+
+  Serial.println("  I2C scan:");
+  i2c::scan();
+  reportCheck("scan", true, "manual review");
+
+  TCA9548A::Status st = device.probe();
+  reportStatus("probe", st);
+
+  uint8_t originalMask = 0;
+  st = device.readControlRegister(originalMask);
+  reportStatus("current mask read", st);
+  const bool canRestoreMask = st.ok();
+
+  if (canRestoreMask) {
+    st = device.disableAll();
+    reportStatus("clear mask", st);
+    if (st.ok()) {
+      uint8_t clearedMask = 0xFF;
+      const TCA9548A::Status readClear = device.readControlRegister(clearedMask);
+      reportCheck("verify clear mask", readClear.ok() && clearedMask == TCA9548A::cmd::NO_CHANNELS,
+                  readClear.ok() ? "" : errToStr(readClear.code));
+    }
+
+    st = device.setChannelMask(originalMask);
+    reportStatus("restore mask", st);
+  } else {
+    reportSkip("clear mask", "current mask unavailable");
+    reportSkip("restore mask", "current mask unavailable");
+  }
+
+  const bool recoverWouldReset =
+      gConfig.recoverUseHardReset && gConfig.hardReset != nullptr && !includeReset;
+  if (recoverWouldReset) {
+    reportSkip("recover/backoff", "hard reset configured; use 'hil run reset'");
+  } else {
+    st = device.recover();
+    reportStatus("recover", st);
+    if (st.ok() && gConfig.nowMs != nullptr && gConfig.recoverBackoffMs > 0U) {
+      const TCA9548A::Status gated = device.recover();
+      reportCheck("recover backoff gate", gated.code == TCA9548A::Err::TIMEOUT,
+                  gated.code == TCA9548A::Err::TIMEOUT ? "" : errToStr(gated.code));
+    } else {
+      reportSkip("recover backoff gate", "backoff not enforceable or recover failed");
+    }
+  }
+
+  if (includeReset) {
+    if (gConfig.hardReset == nullptr) {
+      reportSkip("hardReset", "callback not configured");
+    } else {
+      st = device.hardReset();
+      reportStatus("hardReset", st);
+      if (st.ok() && canRestoreMask) {
+        reportStatus("restore mask after hardReset", device.setChannelMask(originalMask));
+      }
+    }
+  } else {
+    reportSkip("hardReset", "use 'hil run reset' to include RESET");
+  }
+
+  Serial.printf("HIL result: pass=%s%lu%s fail=%s%lu%s skip=%s%lu%s\n",
+                goodIfNonZeroColor(stats.pass), static_cast<unsigned long>(stats.pass), LOG_COLOR_RESET,
+                goodIfZeroColor(stats.fail), static_cast<unsigned long>(stats.fail), LOG_COLOR_RESET,
+                skipCountColor(stats.skip), static_cast<unsigned long>(stats.skip), LOG_COLOR_RESET);
+}
+
+// ============================================================================
 // Command Processing
 // ============================================================================
 
@@ -723,6 +889,22 @@ void processCommand(const String& cmd) {
   }
   if (cmd == "scan") {
     i2c::scan();
+    return;
+  }
+  if (cmd == "hil" || cmd == "hil dry" || cmd == "hil parser") {
+    runHil(false, false);
+    return;
+  }
+  if (cmd == "hil run") {
+    runHil(true, false);
+    return;
+  }
+  if (cmd == "hil run reset") {
+    runHil(true, true);
+    return;
+  }
+  if (cmd.startsWith("hil ")) {
+    LOGE("Usage: hil [dry|parser|run|run reset]");
     return;
   }
   if (cmd == "begin") {

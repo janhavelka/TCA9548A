@@ -126,8 +126,11 @@ public:
   /// @return Status::Ok() on success
   Status readChannelMask(uint8_t& mask);
 
-  /// Read the control register by register address.
-  /// @param reg Register address (must be `cmd::CONTROL_REG`)
+  /// Read the single control byte through the register-oriented compatibility API.
+  /// TCA9548A has no addressed register map and no register-address byte is sent
+  /// on the bus. `reg` is only a logical identifier and must be `cmd::CONTROL_REG`.
+  /// Prefer readChannelMask() or readControlRegister() for new TCA9548A code.
+  /// @param reg Logical register identifier (must be `cmd::CONTROL_REG`)
   /// @param[out] value Current control-register value
   /// @return Status::Ok() on success, INVALID_PARAM if reg is invalid
   Status readRegister(uint8_t reg, uint8_t& value);
@@ -136,8 +139,11 @@ public:
   /// Alias for readChannelMask() to match register-oriented sibling libraries.
   Status readControlRegister(uint8_t& mask) { return readChannelMask(mask); }
 
-  /// Write the control register by register address.
-  /// @param reg Register address (must be `cmd::CONTROL_REG`)
+  /// Write the single control byte through the register-oriented compatibility API.
+  /// TCA9548A has no addressed register map and no register-address byte is sent
+  /// on the bus. `reg` is only a logical identifier and must be `cmd::CONTROL_REG`.
+  /// Prefer setChannelMask() or writeControlRegister() for new TCA9548A code.
+  /// @param reg Logical register identifier (must be `cmd::CONTROL_REG`)
   /// @param value New control-register value
   /// @return Status::Ok() on success, INVALID_PARAM if reg is invalid
   Status writeRegister(uint8_t reg, uint8_t value);
@@ -155,6 +161,9 @@ public:
 
   /// Get current driver state
   DriverState state() const { return _driverState; }
+
+  /// Uniform alias for state() used by sibling I2C libraries
+  DriverState driverState() const { return state(); }
 
   /// Check if begin() has completed successfully
   bool isInitialized() const { return _initialized; }
