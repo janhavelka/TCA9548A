@@ -26,12 +26,12 @@ control protocol and truthful local diagnostics.
 ## Installation
 
 For reproducible production builds, pin the reviewed full commit SHA rather
-than a branch or movable tag name. The released `v2.0.0` tag resolves to
-`7bf734102390e07a99e1262b3790742ef761bb5f`:
+than a branch or movable tag name. The released `v2.0.1` tag resolves to
+`b7845809ba7aac9696f3afd3d1241866d193794d`:
 
 ```ini
 lib_deps =
-  https://github.com/janhavelka/TCA9548A.git#7bf734102390e07a99e1262b3790742ef761bb5f
+  https://github.com/janhavelka/TCA9548A.git#b7845809ba7aac9696f3afd3d1241866d193794d
 ```
 
 Do not use a floating repository URL, branch, or tag name in a production
