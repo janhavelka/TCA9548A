@@ -124,7 +124,7 @@ The driver follows a **managed synchronous** model with health tracking:
 
 ```cpp
 enum class DriverState : uint8_t {
-  UNINIT,    // begin() not called or end() called
+  UNINIT,    // Unbound, or no tracked I2C success in the current binding
   READY,     // Operational, consecutiveFailures == 0
   DEGRADED,  // 1 <= consecutiveFailures < offlineThreshold
   OFFLINE    // consecutiveFailures >= offlineThreshold
@@ -133,6 +133,7 @@ enum class DriverState : uint8_t {
 
 State transitions:
 - `begin()` success -> READY
+- `begin()` presence-read failure -> binding retained, state remains UNINIT
 - Any I2C failure in READY -> DEGRADED
 - Success in DEGRADED/OFFLINE -> READY
 - Failures reach `offlineThreshold` -> OFFLINE
@@ -172,7 +173,8 @@ Transport callbacks (Config::i2cWrite, i2cWriteRead)
 - `_lastErrorMs` - timestamp of last failed I2C operation
 - `_lastError` - most recent error Status
 - `_consecutiveFailures` - failures since last success (resets on success)
-- `_totalFailures` / `_totalSuccess` - lifetime counters (wrap at max)
+- `_totalFailures` / `_totalSuccess` - object-lifetime counters (saturate at max;
+  `end()` and rebinding do not reset them)
 
 ---
 

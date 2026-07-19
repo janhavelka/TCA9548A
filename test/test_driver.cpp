@@ -106,8 +106,17 @@ void test_status_and_transport_helpers() {
   TEST_ASSERT_TRUE(TCA9548A::TransportStatus::Ok().ok());
   TEST_ASSERT_FALSE(
       TCA9548A::TransportStatus::Error(TransportErr::TIMEOUT, 4).ok());
-  TEST_ASSERT_EQUAL_INT(14,
-                        static_cast<int>(Err::RESET_STATE_MISMATCH));
+  const Err errors[] = {
+      Err::OK,               Err::NOT_INITIALIZED, Err::INVALID_CONFIG,
+      Err::I2C_ERROR,        Err::TIMEOUT,          Err::INVALID_PARAM,
+      Err::DEVICE_NOT_FOUND, Err::UNSUPPORTED,      Err::I2C_NACK_ADDR,
+      Err::I2C_NACK_DATA,    Err::I2C_TIMEOUT,      Err::I2C_BUS,
+      Err::BUSY,             Err::IN_PROGRESS,      Err::RESET_STATE_MISMATCH,
+  };
+  for (size_t index = 0; index < sizeof(errors) / sizeof(errors[0]); ++index) {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(index),
+                          static_cast<int>(errors[index]));
+  }
 }
 
 void test_address_helpers_cover_all_straps_and_boundaries() {
@@ -308,6 +317,27 @@ void test_end_is_bus_silent_and_rebinding_is_repeatable() {
                          mux.channelMaskObservation().mask.raw());
 }
 
+void test_lifetime_counters_survive_end_and_rebind() {
+  Driver mux;
+  beginOk(mux);
+  TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::BUS, 31));
+  assertStatus(mux.disableAll(), Err::I2C_BUS, 31);
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalFailures());
+
+  mux.end();
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalFailures());
+  TEST_ASSERT_EQUAL_UINT8(0, mux.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT32(0, mux.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(0, mux.lastErrorMs());
+  assertStatus(mux.lastError(), Err::OK);
+
+  beginOk(mux);
+  TEST_ASSERT_EQUAL_UINT32(2, mux.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalFailures());
+}
+
 void test_unbound_hardware_apis_do_no_work() {
   Driver mux;
   ChannelMask output = ChannelMask::fromRaw(0xA5);
@@ -352,6 +382,13 @@ void test_invalid_channel_is_rejected_without_io_or_cache_change() {
   Driver mux;
   beginOk(mux);
   const auto before = mux.channelMaskObservation();
+  const DriverState stateBefore = mux.state();
+  const uint32_t successBefore = mux.totalSuccess();
+  const uint32_t failureBefore = mux.totalFailures();
+  const uint8_t consecutiveBefore = mux.consecutiveFailures();
+  const uint32_t lastOkBefore = mux.lastOkMs();
+  const uint32_t lastErrorMsBefore = mux.lastErrorMs();
+  const Status lastErrorBefore = mux.lastError();
   gTransport.clearHistory();
 
   assertStatus(mux.selectChannel(static_cast<Channel>(8)),
@@ -362,6 +399,14 @@ void test_invalid_channel_is_rejected_without_io_or_cache_change() {
   TEST_ASSERT_EQUAL_INT(static_cast<int>(before.provenance),
                         static_cast<int>(after.provenance));
   TEST_ASSERT_EQUAL_HEX8(before.mask.raw(), after.mask.raw());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(stateBefore),
+                        static_cast<int>(mux.state()));
+  TEST_ASSERT_EQUAL_UINT32(successBefore, mux.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(failureBefore, mux.totalFailures());
+  TEST_ASSERT_EQUAL_UINT8(consecutiveBefore, mux.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT32(lastOkBefore, mux.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(lastErrorMsBefore, mux.lastErrorMs());
+  assertStatus(mux.lastError(), lastErrorBefore.code, lastErrorBefore.detail);
 }
 
 void test_write_masks_are_exact_one_byte_transactions() {
@@ -511,9 +556,23 @@ void test_probe_updates_observation_but_not_health() {
                          mux.channelMaskObservation().mask.raw());
   assertReadCall(gTransport.call(0));
 
+  const DriverState stateBeforeFailure = mux.state();
+  const uint8_t consecutiveBeforeFailure = mux.consecutiveFailures();
+  const uint32_t lastErrorMsBeforeFailure = mux.lastErrorMs();
+  const Status lastErrorBeforeFailure = mux.lastError();
+  gNowMs = 1001;
   TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::NACK_ADDR, 8));
   assertStatus(mux.probe(), Err::I2C_NACK_ADDR, 8);
+  TEST_ASSERT_EQUAL_UINT32(successBefore, mux.totalSuccess());
   TEST_ASSERT_EQUAL_UINT32(failureBefore, mux.totalFailures());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(stateBeforeFailure),
+                        static_cast<int>(mux.state()));
+  TEST_ASSERT_EQUAL_UINT8(consecutiveBeforeFailure,
+                          mux.consecutiveFailures());
+  TEST_ASSERT_EQUAL_UINT32(lastOkBefore, mux.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(lastErrorMsBeforeFailure, mux.lastErrorMs());
+  assertStatus(mux.lastError(), lastErrorBeforeFailure.code,
+               lastErrorBeforeFailure.detail);
   TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
 }
 
@@ -571,7 +630,7 @@ void test_offline_is_passive_and_success_recovers_health() {
   }
   TEST_ASSERT_EQUAL_UINT8(std::numeric_limits<uint8_t>::max(),
                           mux.consecutiveFailures());
-  TEST_ASSERT_EQUAL_UINT32(300, mux.totalFailures());
+  TEST_ASSERT_EQUAL_UINT32(302, mux.totalFailures());
   TEST_ASSERT_EQUAL_UINT32(300,
                            static_cast<uint32_t>(gTransport.callCount()));
   TEST_ASSERT_FALSE(gTransport.overflowed());
@@ -750,6 +809,7 @@ int main(int, char**) {
   RUN_TEST(test_failed_begin_preserves_binding_and_exact_error);
   RUN_TEST(test_rebind_is_rejected_transactionally);
   RUN_TEST(test_end_is_bus_silent_and_rebinding_is_repeatable);
+  RUN_TEST(test_lifetime_counters_survive_end_and_rebind);
   RUN_TEST(test_unbound_hardware_apis_do_no_work);
   RUN_TEST(test_select_channel_encodes_every_one_hot_value);
   RUN_TEST(test_invalid_channel_is_rejected_without_io_or_cache_change);

@@ -109,10 +109,11 @@ struct SettingsSnapshot {
   bool bound = false;                        ///< Valid Config is bound
   bool initialized = false;                  ///< Initial/tracked I2C succeeded
   DriverState state = DriverState::UNINIT;   ///< Passive health state
-  uint8_t i2cAddress = cmd::DEFAULT_ADDRESS; ///< Active 7-bit device address
-  uint32_t i2cTimeoutMs = 0;                 ///< Active I2C timeout
-  uint32_t resetTimeoutMs = 0;               ///< Active RESET callback timeout
-  uint8_t offlineThreshold = 0;              ///< Passive OFFLINE threshold
+  /// Configuration fields below are meaningful only while bound is true.
+  uint8_t i2cAddress = cmd::DEFAULT_ADDRESS; ///< Bound 7-bit device address
+  uint32_t i2cTimeoutMs = 0;                 ///< Bound I2C timeout
+  uint32_t resetTimeoutMs = 0;               ///< Bound RESET callback timeout
+  uint8_t offlineThreshold = 0;              ///< Bound passive threshold
   bool hasNowMsHook = false;                 ///< Config::nowMs is provided
   bool hasHardReset = false;                 ///< Config::hardReset is provided
   ChannelMaskObservation maskObservation{};  ///< Cached mask and provenance
@@ -192,10 +193,15 @@ public:
   /// True after the initial presence read or a tracked operation succeeds.
   /// A diagnostic probe() deliberately does not change health/lifecycle state.
   bool isInitialized() const { return _initialized; }
+
+  /// Passive tracked-health shorthand; performs no probe and never controls
+  /// admission. A raw diagnostic probe() does not change this value.
   bool isOnline() const {
     return _initialized && _driverState != DriverState::OFFLINE;
   }
 
+  /// Return the copied bound configuration. When unbound, this is the neutral
+  /// default Config installed by end(); inspect isBound() before using it.
   const Config& getConfig() const { return _config; }
   Status getSettings(SettingsSnapshot& out) const;
 
@@ -234,7 +240,7 @@ private:
   Status _readControlByte(ChannelMask& mask);
   Status _readControlByteRaw(ChannelMask& mask);
   void _recordMask(ChannelMask mask, MaskProvenance provenance);
-  void _resetState();
+  void _resetBindingState();
 
   Config _config;
   bool _bound = false;

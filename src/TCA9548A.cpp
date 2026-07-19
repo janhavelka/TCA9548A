@@ -66,7 +66,7 @@ Status TCA9548A::begin(const Config& config) {
                          "Offline threshold must be greater than zero");
   }
 
-  _resetState();
+  _resetBindingState();
   _config = config;
   _bound = true;
 
@@ -83,7 +83,7 @@ void TCA9548A::tick(uint32_t nowMs) {
 }
 
 void TCA9548A::end() {
-  _resetState();
+  _resetBindingState();
 }
 
 Status TCA9548A::probe() {
@@ -230,10 +230,6 @@ Status TCA9548A::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
 }
 
 Status TCA9548A::_i2cWriteTracked(const uint8_t* buf, size_t len) {
-  if (buf == nullptr || len == 0) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid I2C write buffer");
-  }
-
   Status status = _i2cWriteRaw(buf, len);
   if (status.is(Err::INVALID_CONFIG) || status.is(Err::INVALID_PARAM)) {
     return status;
@@ -243,13 +239,6 @@ Status TCA9548A::_i2cWriteTracked(const uint8_t* buf, size_t len) {
 
 Status TCA9548A::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
                                       uint8_t* rxBuf, size_t rxLen) {
-  if (txLen > 0 && txBuf == nullptr) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid I2C transmit buffer");
-  }
-  if (rxLen > 0 && rxBuf == nullptr) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid I2C receive buffer");
-  }
-
   Status status = _i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen);
   if (status.is(Err::INVALID_CONFIG) || status.is(Err::INVALID_PARAM)) {
     return status;
@@ -334,7 +323,7 @@ void TCA9548A::_recordMask(ChannelMask mask, MaskProvenance provenance) {
   _maskObservation.provenance = provenance;
 }
 
-void TCA9548A::_resetState() {
+void TCA9548A::_resetBindingState() {
   _config = Config{};
   _bound = false;
   _initialized = false;
@@ -343,8 +332,6 @@ void TCA9548A::_resetState() {
   _lastErrorMs = 0;
   _lastError = Status::Ok();
   _consecutiveFailures = 0;
-  _totalFailures = 0;
-  _totalSuccess = 0;
   _maskObservation = ChannelMaskObservation{};
 }
 

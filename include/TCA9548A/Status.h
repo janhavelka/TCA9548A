@@ -8,21 +8,21 @@ namespace TCA9548A {
 
 /// Error codes for all TCA9548A operations
 enum class Err : uint8_t {
-  OK = 0,                 ///< Operation successful
-  NOT_INITIALIZED,        ///< begin() not called
-  INVALID_CONFIG,         ///< Invalid configuration parameter
-  I2C_ERROR,              ///< I2C communication failure (unspecified)
-  TIMEOUT,                ///< Driver-side timeout (internal wait/guard)
-  INVALID_PARAM,          ///< Invalid parameter value
-  DEVICE_NOT_FOUND,       ///< Device not responding on I2C bus
-  UNSUPPORTED,            ///< Operation not supported (missing callback)
-  I2C_NACK_ADDR,          ///< I2C NACK on address
-  I2C_NACK_DATA,          ///< I2C NACK on data
-  I2C_TIMEOUT,            ///< I2C transaction timeout
-  I2C_BUS,                ///< I2C bus error (SDA stuck, arbitration, etc.)
-  BUSY,                   ///< Operation cannot start because state is busy
-  IN_PROGRESS,            ///< Reserved for compatibility with sibling drivers
-  RESET_STATE_MISMATCH    ///< RESET completed but control byte was not 0x00
+  OK = 0,                      ///< Operation successful
+  NOT_INITIALIZED = 1,         ///< No valid Config is currently bound
+  INVALID_CONFIG = 2,          ///< Invalid configuration parameter
+  I2C_ERROR = 3,               ///< I2C communication failure (unspecified)
+  TIMEOUT = 4,                 ///< Driver-side timeout (internal wait/guard)
+  INVALID_PARAM = 5,           ///< Invalid parameter value
+  DEVICE_NOT_FOUND = 6,        ///< Device not responding on I2C bus
+  UNSUPPORTED = 7,             ///< Operation not supported (missing callback)
+  I2C_NACK_ADDR = 8,           ///< I2C NACK on address
+  I2C_NACK_DATA = 9,           ///< I2C NACK on data
+  I2C_TIMEOUT = 10,            ///< I2C transaction timeout
+  I2C_BUS = 11,                ///< I2C bus error (SDA stuck, arbitration, etc.)
+  BUSY = 12,                   ///< Operation cannot start because state is busy
+  IN_PROGRESS = 13,            ///< Reserved for sibling-driver compatibility
+  RESET_STATE_MISMATCH = 14    ///< RESET completed but byte was not 0x00
 };
 
 /// Status structure returned by all fallible operations
