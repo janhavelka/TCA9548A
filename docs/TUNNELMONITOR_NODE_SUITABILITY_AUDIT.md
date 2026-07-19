@@ -1,5 +1,120 @@
 # TunnelMonitor-node suitability audit
 
+## 2026-07-19 implementation closeout (supersedes the original disposition)
+
+The original audit remains below as historical evidence, but its line numbers,
+"current" API descriptions, and unchanged-library conclusion no longer describe
+the 2.0.0 implementation. This closeout revalidated all fifteen findings against
+the current repositories and records the implemented disposition.
+
+### Revalidation basis
+
+| Repository/state | Revision | Working-tree evidence |
+| --- | --- | --- |
+| TCA9548A baseline | `817c8e8225b92b0bc65eb2ebe1c4ff0b91719520` on `main`, equal to `origin/main` | Clean before the closeout branch was created; no local or remote tags |
+| TCA9548A implementation | `hardening/tunnelmonitor-suitability-reaudit` | All closeout work is isolated on this branch; release commits and the annotated `v2.0.0` tag are the publication artifacts |
+| TunnelMonitor-node baseline | `0897f12c1a1369367747d1063936906005391580` on `develop`, equal to `origin/develop` | Clean and read only at the start of this task |
+| TunnelMonitor-node final revalidation | `322a7b2b130da658d9c86ee35afa874b10617939` on `docs/mb85rc-suitability-contract-facts` | The shared checkout was advanced externally during this task; it was clean when re-read, and its three intervening changes concern only FRAM documentation |
+
+No TunnelMonitor-node file was changed by this work. Its current hardware and
+contracts still define a flat I2C bus and contain no TCA9548A/PCA9548A address,
+RESET pin, channel map, route identity, or mux health role. `I2cTask` remains the
+sole bus owner. It owns fixed request/result storage, command deadlines,
+exact-result identity, scheduling, retry, health, and recovery. Normal RTC/FRAM
+transfers use a 5 ms callback cap; probe/scan and the currently optional devices
+use their documented 20 ms cap.
+
+Primary protocol facts were rechecked against TI TCA9548A datasheet revision H:
+one control byte with no register-address byte, selection effective after STOP,
+and POR/RESET value `0x00`.
+
+### Authority and applicability decisions
+
+The closeout required three explicit authority decisions. For the first two,
+original audit recommendations conflict with the binding `AGENTS.md`, so the
+more specific repository contract controls:
+
+- `begin()` must check device presence. It therefore validates and binds, then
+  performs exactly one tracked control-byte read. A failed read leaves the valid
+  binding usable, preserving the safety goal behind H-08 and H-09.
+- The four health states and counters must remain. They are now passive
+  transport diagnostics only: `OFFLINE` never denies I2C and recovery policy is
+  entirely external, preserving the ownership goal behind H-01.
+- The former `AGENTS.md` sentence that `recover()` tracks a probe failure
+  presupposed the unsafe compound recovery removed for H-02/H-07. The repository
+  contract now states the implemented invariant explicitly: `recover()` makes
+  one tracked safe-off write, while diagnostic `probe()` remains raw and does
+  not update health. This keeps recovery within one owner transaction.
+
+The pasted general requirements for progress jobs, operation deadlines,
+cancellation states, stale-result prevention, and exactly-once result retrieval
+do not create an internal scheduler for this chip. The TCA9548A has no
+conversion, measurement, interrupt, NVM write, calibration, or wait phase. Its
+ordinary operations are already terminal in one transport callback. Request
+identity and multi-poll route/target/cleanup composition therefore stay with the
+external owner, where TunnelMonitor's authoritative contracts already place
+them.
+
+### Final operation classes and bounds
+
+| Class | Operations | Maximum work per call | Completion/cancellation contract |
+| --- | --- | --- | --- |
+| Pure helpers/cache | address helpers, `ChannelMask` helpers, settings/health/observation reads, `invalidateChannelMask()`, `tick()` | Zero I2C, zero waits, fixed memory | Immediate |
+| Lifecycle | `begin()`, `end()` | `begin()`: one read; `end()`: zero I2C | `begin()` returns one terminal status; failed presence keeps the binding; `end()` is bus-silent |
+| Steady-state | `probe()`, `selectChannel()`, `writeChannelMask()`, `readChannelMask()`, `disableAll()`, `recover()` | At most one timeout-bounded transport callback, no wait/retry | Synchronous terminal result; an owner can cancel only between calls |
+| Rare maintenance | `hardReset()` | Exactly one RESET callback and, after callback success, one verification read; default callback budget 10 ms + 50 ms, configurable maxima 60 s + 60 s | No retry or route restore; success requires readback `0x00`; callback failure leaves mask provenance unknown |
+
+Every successful transport return means the physical transaction and its
+terminating STOP completed. A caller cannot abort an in-flight synchronous
+callback; the transport must terminate within the supplied timeout. There is no
+hidden work after a public status returns.
+
+### Finding disposition
+
+| Finding | Revalidated evidence and resolution | Tests/evidence | Status |
+| --- | --- | --- | --- |
+| H-01 owner conflict | Removed admission gating, recovery backoff, automatic RESET policy, and retry. Kept only the required four-state passive diagnostics; `OFFLINE` still reaches transport. | Two failures reach `OFFLINE`; the next request is issued and success returns `READY`. | Resolved |
+| H-02 unsafe restore | `recover()` is exactly one `0x00` write. `hardReset()` never restores an old mask and accepts success only after exact-zero readback. | Exact call counts, safe-off byte, ambiguous recovery failure, no-restore RESET tests. | Resolved |
+| H-03 untruthful cache | Replaced `lastKnownMask` with a byte plus `UNKNOWN`, `WRITE_COMPLETED`, or `READBACK_OBSERVED` provenance. Failed/partial writes and reads invalidate it; readback reconciles it. | Ambiguous write with simulated hardware effect, partial read failure, external invalidation, and readback reconciliation. | Resolved |
+| H-04 RESET verification | Added timeout-aware RESET callback and `RESET_STATE_MISMATCH`; nonzero readback is retained as verified evidence and returned in `detail`. | Callback failure, read failure, exact zero, and nonzero mismatch stages. | Resolved |
+| H-05 cancellation cleanup | Deleted the mux job/cancellation engine. Every primitive is terminal; the owner records and performs cleanup in its own route job. No product route job was invented without a topology. | Zero hidden operations plus exact one-transfer primitive assertions. Product cancellation/cleanup remains a TunnelMonitor integration test after topology approval. | Resolved at library boundary; product gate remains |
+| H-06 downstream scheduler | Deleted `PollDownstreamFn`, job state, instruction accounting, and arbitrary downstream callbacks. | Framework-neutral compile and obsolete-symbol search. | Resolved |
+| H-07 compound work | Deleted read-modify-write and compound poll APIs. Ordinary methods use at most one callback. The sole rare exception, `hardReset()`, has two explicit bounded stages. | Address/length/value/timeout/call-count assertions for all primitives. | Resolved |
+| H-08 lifecycle/rebind | Rebind while bound returns `BUSY` without replacing state. `end()` is repeatable and bus-silent. Safe-off is explicit and fallible. `begin()` retains a valid binding after its required presence read fails. | Invalid-config zero-I2C, transactional rebind, repeated end/rebind, and failed-presence cases. | Resolved with `AGENTS.md` lifecycle constraint |
+| H-09 failed presence | Bound and initialized are separate. A failed initial read records the exact error but later tracked primitives and recovery remain callable. | Failed begin followed by successful read/recover without rebind. | Resolved |
+| H-10 error collapse | Added narrow `TransportStatus`; address NACK, data NACK, timeout, bus, and other errors map distinctly when the backend exposes them. The part still has no identity register. Arduino `requestFrom()` exposes only a byte count, so its short reads truthfully map to `OTHER`. | Table-driven core error mapping and detail preservation; documented Wire limitation. | Resolved |
+| H-11 STOP contract | Public callbacks now require completed STOP before success. The example uses `endTransmission(true)` and read completion; no operation queues work after returning. | Fake transport checks exact address, null/no-prefix read shape, lengths, byte, timeout, and context. Electrical STOP timing remains HIL evidence. | Resolved in API/adapter; physical gate remains |
+| H-12 dual clocks | Removed recovery backoff and its second clock. The optional clock now timestamps passive health only; no deadline arithmetic depends on it. | `UINT32_MAX -> 0 -> 1` timestamp-wrap test. | Resolved |
+| H-13 immutable release | Bumped the breaking API to 2.0.0, regenerated `Version.h`, pinned release validation platforms, and documented exact tag pinning. The final release step creates and verifies annotated tag `v2.0.0` at the complete closeout revision. | Version check, package creation, remote branch/tag verification in release workflow. | Release-step gate |
+| H-14 transport/topology tests | Replaced the broad legacy suite with a fixed-capacity scripted transport that records exact transactions and models ambiguous hardware effects. Added GitHub Actions host and S2/S3 jobs. Product branch routing cannot be tested until a topology exists. | 31 native cases, including accepted 60 s bounds, threshold 255/failure-counter saturation, illegal asynchronous RESET response, plus compile-time size/copy/portability assertions and CI workflow. | Resolved for library; product topology gate remains |
+| H-15 live hardware | The runner now fails live mode when required steps are `NOT_RUN` unless `--allow-not-run` is explicit; FAIL/UNKNOWN always fail. No fixture was attached during this task. | Parser contract: 8 steps; dry-run success; unavailable live fixture exit 1; explicit override exit 0. | External physical gate remains |
+
+### Local closeout verification
+
+| Check | Result |
+| --- | --- |
+| Generated `Version.h` consistency | PASS, 2.0.0 |
+| Native scripted transport suite | PASS, 31/31 |
+| Framework-neutral core build | PASS |
+| Strict C++17 core compile | PASS with `-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Werror` |
+| ESP32-S2 example, official `platformio/espressif32@7.0.1` | PASS, 26,876 B RAM / 277,086 B flash |
+| ESP32-S3 example, official `platformio/espressif32@7.0.1` | PASS, 19,452 B RAM / 285,841 B flash |
+| HIL parser self-test | PASS, 8 planned steps |
+| Doxygen | PASS with warnings treated as errors |
+| PlatformIO package | PASS, `TCA9548A-2.0.0.tar.gz` |
+
+The remaining gates are genuinely external: approve a real TunnelMonitor board
+topology and electrical budget; define mux address, RESET wiring, channel/idle
+map, direct versus routed devices, and required/optional health identity; exact-
+pin the reviewed tag in that product only after approval; and perform ESP32-S3
+HIL for routing/isolation, duplicate downstream addresses, STOP sequencing,
+400 kHz signal integrity, RESET, stuck-branch recovery, cancellation cleanup,
+and soak behavior.
+
+---
+
+## Historical audit (2026-07-18; superseded by the closeout above)
+
 ## TCA9548A 8-channel I2C switch library
 
 Date: 2026-07-18
