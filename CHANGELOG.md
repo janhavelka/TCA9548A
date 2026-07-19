@@ -6,6 +6,33 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-07-19
+
+### Changed
+
+- Health success/failure totals now retain their documented object-lifetime
+  meaning across `end()` and rebinding; binding-scoped state still resets.
+- Public `Err` values are explicit and regression-tested to preserve their
+  established append-only numeric mapping.
+- The example owner forces verified all-off at startup and after HIL/stress
+  diagnostics instead of restoring a possibly faulted prior route.
+- The example Wire adapter applies each callback's requested timeout before the
+  physical attempt; maintenance scan/stress loops yield after each transaction.
+- `Doxyfile` project version is now checked and synchronized from
+  `library.json` by the existing version generator.
+
+### Fixed
+
+- Live HIL requires RESET validation by default, requires scan completion rather
+  than only scan start, treats silent soak commands as failures, and recognizes
+  nonzero soak failure counts.
+- HIL reports now label free-form change and verification text as unexecuted
+  operator assertions instead of captured evidence.
+- A failed example `Wire.begin()` no longer falls through into a device
+  transaction on an unavailable controller.
+- Invalid-parameter and raw-probe tests now lock all required no-health side
+  effects, and lifecycle tests lock lifetime-counter continuity.
+
 ## [2.0.0] - 2026-07-19
 
 ### Added
@@ -83,5 +110,6 @@ release was published; later additions remained on `main` under the same
 manifest version. Version 2.0.0 is the first release intended to have a verified
 immutable tag.
 
-[Unreleased]: https://github.com/janhavelka/TCA9548A/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/janhavelka/TCA9548A/compare/v2.0.1...HEAD
+[2.0.1]: https://github.com/janhavelka/TCA9548A/releases/tag/v2.0.1
 [2.0.0]: https://github.com/janhavelka/TCA9548A/releases/tag/v2.0.0

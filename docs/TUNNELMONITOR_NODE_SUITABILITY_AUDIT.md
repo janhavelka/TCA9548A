@@ -1,5 +1,66 @@
 # TunnelMonitor-node suitability audit
 
+## 2026-07-19 independent post-release self-audit
+
+This section supersedes stale release evidence in the 2.0.0 closeout below.
+The complete original prompt, all 1,062 lines of this report, the complete diff
+from baseline `817c8e8225b92b0bc65eb2ebe1c4ff0b91719520`, and both current
+repositories were re-read. Independent requirement, core, and docs/CI reviews
+were then reconciled against the implementation rather than accepted as proof.
+
+### Exact basis
+
+| Evidence | Exact state |
+| --- | --- |
+| Published 2.0.0 release | Annotated `v2.0.0` tag object `4b3665f264f4034e8099d66d0d7103345e3945dc`, target `7bf734102390e07a99e1262b3790742ef761bb5f`; remote branch and tag CI both passed host, ESP32-S2, and ESP32-S3 jobs |
+| Self-audit patch | Version `2.0.1` release candidate on `hardening/tunnelmonitor-suitability-reaudit`; final tag target and CI evidence are recorded in a post-publication evidence update rather than predicted here |
+| TunnelMonitor-node | Clean and equal to its remote branch at `b708f511964db6c51e949e99c67820476f00f9c7` on `docs/mb85rc-suitability-contract-facts`; this commit reverts the preceding FRAM-doc-only commit, so its tree equals baseline `0897f12c1a1369367747d1063936906005391580` |
+
+TunnelMonitor still has a flat, address-only bus and no TCA9548A/PCA9548A
+dependency, address, RESET pin, channel map, route identity, or mux health role.
+No TunnelMonitor file was changed. Its `I2cTask` remains the sole owner of fixed
+queues, per-operation deadlines and transfer caps, retries, recovery, exact
+result identity, and take-or-reclaim delivery.
+
+### Gaps found and closed by the self-audit
+
+| Item | Disposition | Evidence |
+| --- | --- | --- |
+| Lifetime diagnostics | `end()` incorrectly reset counters described by the repository's binding `AGENTS.md` as lifetime totals. Binding reset now preserves saturating object-lifetime totals while clearing binding-local state. | New end/rebind continuity test; native suite is 32/32. |
+| Append-only status contract | Existing `Err` values were implicit and only value 14 was tested. Values 0 through 14 are now explicit and fully asserted. | Numeric compatibility test plus unchanged values. |
+| No-health paths | Invalid parameters and raw probe failures lacked complete regression assertions. | State, consecutive/total counters, timestamps, last error, cache, and zero-I2C effects are now locked where applicable. |
+| Example startup/cleanup | The example inherited a powered mux route at MCU restart and restored its pre-test mask after recover/RESET. It now forces verified all-off after binding and after HIL/stress; failed controller initialization issues no device transaction. | Both firmware targets build; HIL final cleanup is a required token. |
+| HIL false positives | Scan start could pass without completion, silent soak commands were not failures, nonzero `failures=` was not recognized, RESET was optional by default, and free-form assertions looked executed. | Parser self-test covers incomplete/completed scan, soak failure classification, RESET-default plan, interrupted identity, and live NOT_RUN/FAIL semantics. Reports label operator text as unexecuted. |
+| Timeout and long diagnostics | The example Wire callbacks ignored the per-call timeout and maintenance loops did not yield. | Callbacks apply the validated timeout; scan/stress have fixed transfer maxima, no retry, per-transfer yield, documented worst-case bounds, and verified safe-off for stress. |
+| Documentation version | `Doxyfile` duplicated the manifest version without a consistency guard. | The existing generator now checks/synchronizes both `Version.h` and `Doxyfile` from `library.json`. |
+| Release pin/evidence | The prior closeout still said “Release-step gate” and documented only a tag name. | The exact 2.0.0 tag object/target is recorded above and README uses the full target SHA. The patch-release evidence follows publication. |
+
+### Complete requirement disposition
+
+- H-01 through H-12 remain resolved in core behavior; the self-audit found no
+  new owner, transport, lifecycle, cache, RESET, recovery, deadline, or
+  allocation defect in those findings.
+- H-13 is resolved for 2.0.0 by the annotated tag and exact target above. The
+  2.0.1 patch follows the same immutable-tag and CI process.
+- H-14 remains resolved at the library boundary with exact scripted transport,
+  fault, ambiguity, lifecycle, threshold, wrap, compile-time, and target-build
+  coverage. Product route/cancellation/duplicate-address scan tests remain
+  correctly blocked on an approved topology.
+- H-15 remains an external physical gate. The harness now fails closed, but no
+  attached TCA9548A fixture, routing/isolation trace, RESET fault injection,
+  electrical measurement, or soak evidence was produced.
+- General multi-step progress, cancellation, request identity, and exactly-once
+  result rules remain application-owner responsibilities because every ordinary
+  chip operation is already terminal in one callback. `hardReset()` remains the
+  sole rare two-callback operation with explicit finite bounds and no retry.
+
+The original workflow's numbered chunks 2 through 7 were intentionally combined
+in commit `9ec4e8bfedc320204e6ccb1c37ba1f14d75749c9` because the breaking API,
+state, tests, examples, and documentation formed one atomic ownership refactor.
+The published tag is not rewritten to manufacture finer historical commits;
+this self-audit uses separate focused core, HIL/example, build, release, and
+evidence commits.
+
 ## 2026-07-19 implementation closeout (supersedes the original disposition)
 
 The original audit remains below as historical evidence, but its line numbers,
