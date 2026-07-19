@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synchronize Version.h from library.json and expose build metadata via macros.
+"""Synchronize generated version fields from library.json.
 
 Default behavior:
 - when run by PlatformIO as an extra script: sync generated headers if needed
@@ -32,6 +32,9 @@ except Exception:
     ENV = None
 
 SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+DOXYGEN_PROJECT_NUMBER_RE = re.compile(
+    r"^(PROJECT_NUMBER\s*=\s*).*$", re.MULTILINE
+)
 
 
 def _find_project_root(start_dir: Path) -> Path:
@@ -188,8 +191,17 @@ def _expected_outputs(project_root: Path) -> Dict[Path, str]:
     library_data = _load_library_json(library_json)
     version = str(library_data.get("version", "0.0.0"))
     namespace = "TCA9548A"
+    doxyfile = project_root / "Doxyfile"
+    doxyfile_text = _read_text(doxyfile)
+    expected_doxyfile, replacements = DOXYGEN_PROJECT_NUMBER_RE.subn(
+        rf'\g<1>"{version}"', doxyfile_text
+    )
+    if replacements != 1:
+        raise ValueError("Doxyfile must contain exactly one PROJECT_NUMBER field")
+
     return {
         project_root / "include" / namespace / "Version.h": _render_version_header(namespace, version),
+        doxyfile: expected_doxyfile,
     }
 
 
