@@ -14,7 +14,7 @@ were then reconciled against the implementation rather than accepted as proof.
 | --- | --- |
 | Published 2.0.0 release | Annotated `v2.0.0` tag object `4b3665f264f4034e8099d66d0d7103345e3945dc`, target `7bf734102390e07a99e1262b3790742ef761bb5f`; remote branch and tag CI both passed host, ESP32-S2, and ESP32-S3 jobs |
 | Published 2.0.1 self-audit patch | Annotated `v2.0.1` tag object `e7e0705435757300770dee0a29d9f43f1e2c5148`, target `b7845809ba7aac9696f3afd3d1241866d193794d`; [branch CI run 29702527997](https://github.com/janhavelka/TCA9548A/actions/runs/29702527997) and [tag CI run 29702560376](https://github.com/janhavelka/TCA9548A/actions/runs/29702560376) passed host, ESP32-S2, and ESP32-S3 jobs |
-| Release-documentation correction | Version `2.0.2` release candidate replaces the self-referential current-SHA example with a version-independent peeled-tag procedure; final immutable tag and CI evidence are added after publication |
+| Published 2.0.2 release-documentation correction | Annotated `v2.0.2` tag object `0f01a6f2cd4ccf6d65e8f2a4ae786ef69d829958`, target `d17a2f36876d9595e10e4276b06c43982729e8bc`; [branch CI run 29702823919](https://github.com/janhavelka/TCA9548A/actions/runs/29702823919) and [tag CI run 29702872867](https://github.com/janhavelka/TCA9548A/actions/runs/29702872867) passed host, ESP32-S2, and ESP32-S3 jobs |
 | TunnelMonitor-node | Clean and equal to its remote branch at `b708f511964db6c51e949e99c67820476f00f9c7` on `docs/mb85rc-suitability-contract-facts`; this commit reverts the preceding FRAM-doc-only commit, so its tree equals baseline `0897f12c1a1369367747d1063936906005391580` |
 
 TunnelMonitor still has a flat, address-only bus and no TCA9548A/PCA9548A
@@ -65,7 +65,7 @@ The published tag is not rewritten to manufacture finer historical commits;
 this self-audit uses separate focused core, HIL/example, build, release, and
 evidence commits.
 
-### Final 2.0.1 verification
+### Final 2.0.1 code and 2.0.2 release-documentation verification
 
 - Local PlatformIO 6.1.18: 32/32 native tests, framework-neutral core build,
   ESP32-S2 build (26,876 B RAM, 277,066 B flash), and ESP32-S3 build (19,452 B
@@ -76,11 +76,12 @@ evidence commits.
 - HIL parser self-test passed all eight planned steps. An unavailable required
   live serial fixture returned 1; the explicit `--allow-not-run` diagnostic
   override returned 0. No physical HIL result is claimed.
-- Doxygen 1.13.2 generated version 2.0.1 locally with no obsolete public API
+- Doxygen 1.13.2 generated version 2.0.2 locally with no obsolete public API
   symbols outside the historical changelog. Remote CI repeated documentation
   generation with pinned Doxygen 1.17.0 and warnings treated as errors.
 - Version synchronization, whitespace checks, and PlatformIO package creation
-  for `TCA9548A-2.0.1.tar.gz` passed.
+  for `TCA9548A-2.0.2.tar.gz` passed. Package inspection confirmed that README
+  contains the version-independent peeled-tag procedure.
 
 ## 2026-07-19 implementation closeout (supersedes the original disposition)
 
