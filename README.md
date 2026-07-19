@@ -25,19 +25,27 @@ control protocol and truthful local diagnostics.
 
 ## Installation
 
-For reproducible production builds, pin the reviewed full commit SHA rather
-than a branch or movable tag name. The released `v2.0.1` tag resolves to
-`b7845809ba7aac9696f3afd3d1241866d193794d`:
+For reproducible production builds, pin a reviewed full commit SHA rather than
+a branch or tag name. After the annotated release tag exists, resolve its
+peeled commit and compare it with the release evidence before updating the
+dependency. Replace `vX.Y.Z` with the reviewed release:
+
+```sh
+git ls-remote --tags https://github.com/janhavelka/TCA9548A.git \
+  'refs/tags/vX.Y.Z^{}'
+```
+
+Use the returned 40-character commit, not the tag object, branch, or tag name:
 
 ```ini
 lib_deps =
-  https://github.com/janhavelka/TCA9548A.git#b7845809ba7aac9696f3afd3d1241866d193794d
+  https://github.com/janhavelka/TCA9548A.git#<peeled-40-character-commit-sha>
 ```
 
-Do not use a floating repository URL, branch, or tag name in a production
-manifest. The annotated tag is release evidence; the full target SHA is the
-dependency pin. For manual installation, copy `include/TCA9548A/` and `src/`
-into the project.
+This version-independent procedure avoids stale installation guidance inside
+an immutable release while keeping the product repository on an exact,
+auditable revision. For manual installation, copy `include/TCA9548A/` and
+`src/` into the project.
 
 ## Quick Start
 
