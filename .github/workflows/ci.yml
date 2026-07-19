@@ -14,6 +14,8 @@ concurrency:
 
 env:
   PLATFORMIO_CORE_VERSION: "6.1.19"
+  DOXYGEN_VERSION: "1.17.0"
+  DOXYGEN_SHA256: "75419ef4f446fc1c24ef12514b574e66e898ee6f527c6ae2ad84f91a905823c2"
 
 jobs:
   host:
@@ -39,8 +41,14 @@ jobs:
       - name: Install validation tools
         run: |
           python -m pip install --disable-pip-version-check "platformio==${PLATFORMIO_CORE_VERSION}"
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends doxygen
+          curl --fail --location --silent --show-error \
+            "https://github.com/doxygen/doxygen/releases/download/Release_${DOXYGEN_VERSION//./_}/doxygen-${DOXYGEN_VERSION}.linux.bin.tar.gz" \
+            --output "${RUNNER_TEMP}/doxygen.tar.gz"
+          echo "${DOXYGEN_SHA256}  ${RUNNER_TEMP}/doxygen.tar.gz" | sha256sum --check --strict
+          mkdir -p "${RUNNER_TEMP}/doxygen"
+          tar --extract --gzip --file "${RUNNER_TEMP}/doxygen.tar.gz" \
+            --directory "${RUNNER_TEMP}/doxygen" --strip-components=1
+          echo "${RUNNER_TEMP}/doxygen/bin" >> "${GITHUB_PATH}"
 
       - name: Check generated version header
         run: python scripts/generate_version.py check
