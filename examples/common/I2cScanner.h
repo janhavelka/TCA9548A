@@ -9,20 +9,24 @@
 
 namespace i2c {
 
-/// Scan I2C bus and print found devices
+/// Scan I2C bus and print found devices.
+///
+/// This is an explicit maintenance diagnostic: it performs exactly 126
+/// address probes, never retries, and yields after each completed probe.
 /// @return Number of devices found
 inline int scan() {
   LOGI("Scanning I2C bus...");
 
   int count = 0;
-  for (uint8_t addr = 1; addr < 127; addr++) {
+  for (uint8_t addr = 1; addr < 127; ++addr) {
     Wire.beginTransmission(addr);
-    uint8_t error = Wire.endTransmission();
+    const uint8_t error = Wire.endTransmission(true);
 
     if (error == 0) {
       Serial.printf("  Found device at 0x%02X\n", addr);
       count++;
     }
+    yield();
   }
 
   if (count == 0) {
@@ -31,15 +35,9 @@ inline int scan() {
     LOGI("Found %d device(s)", count);
   }
 
-  return count;
-}
+  Serial.printf("Scan complete: devices=%d\n", count);
 
-/// Check if a specific address responds
-/// @param addr I2C address to check
-/// @return true if device responds
-inline bool checkAddress(uint8_t addr) {
-  Wire.beginTransmission(addr);
-  return Wire.endTransmission() == 0;
+  return count;
 }
 
 } // namespace i2c

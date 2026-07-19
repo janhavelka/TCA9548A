@@ -47,7 +47,6 @@ inline bool initWire(int sda, int scl, uint32_t freqHz, uint32_t timeoutMs) {
 /// @return Narrow transport result; success includes the terminating STOP
 inline TransportStatus wireWrite(uint8_t addr, const uint8_t* data, size_t len,
                                  uint32_t timeoutMs, void* user) {
-  (void)timeoutMs;
   TwoWire* wire = static_cast<TwoWire*>(user);
   if (wire == nullptr) {
     return TransportStatus::Error(TransportErr::OTHER, -1);
@@ -56,6 +55,7 @@ inline TransportStatus wireWrite(uint8_t addr, const uint8_t* data, size_t len,
     return TransportStatus::Error(TransportErr::OTHER, -2);
   }
 
+  wire->setTimeOut(static_cast<uint16_t>(timeoutMs));
   wire->beginTransmission(addr);
   size_t written = wire->write(data, len);
   uint8_t result = wire->endTransmission(true);
@@ -84,7 +84,6 @@ inline TransportStatus wireWriteRead(uint8_t addr, const uint8_t* txData,
                                      size_t txLen, uint8_t* rxData,
                                      size_t rxLen, uint32_t timeoutMs,
                                      void* user) {
-  (void)timeoutMs;
   TwoWire* wire = static_cast<TwoWire*>(user);
   if (wire == nullptr) {
     return TransportStatus::Error(TransportErr::OTHER, -1);
@@ -96,6 +95,7 @@ inline TransportStatus wireWriteRead(uint8_t addr, const uint8_t* txData,
     return TransportStatus::Error(TransportErr::OTHER, -3);
   }
 
+  wire->setTimeOut(static_cast<uint16_t>(timeoutMs));
   // TCA9548A has no register-pointer phase. For tx+rx flows we intentionally
   // end the write with STOP, then perform a fresh read transaction.
   if (txLen > 0) {

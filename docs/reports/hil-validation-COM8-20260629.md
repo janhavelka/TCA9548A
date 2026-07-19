@@ -1,5 +1,10 @@
 # TCA9548A HIL Validation Report - COM8 - 2026-06-29
 
+> Historical dry-run artifact: the runner did not execute entries supplied via
+> `--verification-result`. The section now labelled as operator assertions is
+> not captured test evidence. Current evidence is recorded in the suitability
+> audit closeout.
+
 ## Metadata
 
 - Date/time: `2026-06-29T16:58:15+02:00`
@@ -81,13 +86,13 @@ Report generation command: `C:\Users\Honza\AppData\Local\Programs\Python\Python3
 - Boot transcript and prompt responsiveness were not captured.
 - Live scan, probe, mask mutation, recover, reset, stress, and soak steps were not run.
 
-## Fixes Implemented During This Pass
+## Operator-Supplied Change Notes (Not Executed By Runner)
 
 - Added host-side HIL runner with parser self-test, dry-run planning, bounded serial execution, and Markdown report output.
 - Bounded the example CLI command buffer and discarded overlong serial lines until newline.
 - Tightened example stress, selftest, and channel-scan commands to read and restore the original mux mask explicitly.
 
-## Final Verification
+## Operator-Supplied Verification Assertions (Not Executed By Runner)
 
 - python tools\\tca9548a_hil.py --parser-self-test: PASS
 - python tools\\tca9548a_hil.py --dry-run --port COM8 --baud 115200: PASS

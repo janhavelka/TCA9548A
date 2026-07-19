@@ -25,18 +25,19 @@ control protocol and truthful local diagnostics.
 
 ## Installation
 
-For reproducible production builds, pin an immutable release commit rather than
-a branch:
+For reproducible production builds, pin the reviewed full commit SHA rather
+than a branch or movable tag name. The released `v2.0.0` tag resolves to
+`7bf734102390e07a99e1262b3790742ef761bb5f`:
 
 ```ini
 lib_deps =
-  https://github.com/janhavelka/TCA9548A.git#v2.0.0
+  https://github.com/janhavelka/TCA9548A.git#7bf734102390e07a99e1262b3790742ef761bb5f
 ```
 
-Do not use the floating repository URL in a production manifest. Consumers
-whose policy requires commit-level pinning should resolve and record the
-annotated `v2.0.0` tag target. For manual installation, copy
-`include/TCA9548A/` and `src/` into the project.
+Do not use a floating repository URL, branch, or tag name in a production
+manifest. The annotated tag is release evidence; the full target SHA is the
+dependency pin. For manual installation, copy `include/TCA9548A/` and `src/`
+into the project.
 
 ## Quick Start
 
@@ -92,6 +93,10 @@ void useChannelZero() {
 `tick(nowMs)` is intentionally a no-op for this device. `end()` only unbinds
 and performs no I2C; call and check `disableAll()` first when the application
 requires a safe-off shutdown.
+
+The example owner additionally forces and verifies `0x00` after its initial
+binding. An MCU-only restart does not prove the mux was power-cycled, so an
+example must not inherit a previously selected route silently.
 
 ## Typed Channel Masks
 
@@ -207,16 +212,18 @@ call `invalidateChannelMask()`.
 | `READBACK_OBSERVED` | A successful read observed this hardware value. |
 
 `known()` accepts either successful evidence; `verified()` is true only for
-readback. A failed or ambiguous write invalidates the observation before the
-attempt. `hardReset()` invalidates first; an exact-zero read records verified
+readback. A failed or ambiguous write invalidates the observation when the
+callback returns failure. `hardReset()` invalidates before RESET; an exact-zero
+read records verified
 all-off, while a mismatch records the actual verified byte and returns an
 error. Use explicit readback whenever application policy requires proof.
 
 ## Passive Health Diagnostics
 
 Tracked primitives update `state()`, timestamps, last error, consecutive
-failures, and saturating binding-lifetime counters. `OFFLINE` is diagnostic
-only and never blocks I2C. `probe()` is intentionally raw and does not update health.
+failures, and saturating object-lifetime counters that survive `end()` and
+rebinding. `OFFLINE` is diagnostic only and never blocks I2C. `probe()` is
+intentionally raw and does not update health or `isOnline()`.
 The external owner remains responsible for admission, retry, health policy,
 controller recovery, RESET policy, and route reconciliation.
 
@@ -260,17 +267,23 @@ Live HIL requires an attached ESP32 and TCA9548A fixture:
 python tools/tca9548a_hil.py --port COM8 --baud 115200 --verbose
 ```
 
-A live run exits nonzero if required cases are `NOT_RUN`. Use
-`--allow-not-run` only for an explicitly accepted missing-fixture run; FAIL and
-UNKNOWN remain failures. `--dry-run` validates only the plan and never counts
-as hardware evidence.
+A live run requires RESET validation by default and exits nonzero if required
+cases are `NOT_RUN`. `--skip-reset` is an explicit diagnostic exception and is
+not release HIL evidence. Use `--allow-not-run` only for an explicitly accepted
+missing-fixture run; FAIL and UNKNOWN remain failures. `--dry-run` validates
+only the plan and never counts as hardware evidence.
 
 ## Example
 
 `examples/01_basic_bringup_cli/` provides a fixed-buffer Arduino bring-up CLI.
 Its `Wire` transport and board pins live under `examples/common/` and are not
 part of the public library API. The CLI exposes typed mask operations, passive
-health, safe-off recovery, bounded stress commands, and the HIL contract.
+health, safe-off recovery, and the HIL contract. `scan`, `stress`, and
+`stress_mix` are explicit maintenance diagnostics: they are finite, yield after
+each transaction, block command processing until complete, and always finish
+stress at verified all-off. Scan makes exactly 126 probes. Stress makes at most
+the requested 1,000 operations plus one safe-off write and one verification
+read; with the default 50 ms Wire timeout its transport bound is 50.1 seconds.
 
 ## License
 

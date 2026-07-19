@@ -20,6 +20,9 @@ namespace {
 
 TCA9548A::TCA9548A device;
 TCA9548A::Config config;
+bool i2cReady = false;
+
+bool safeOffVerified();
 
 const char* errorName(TCA9548A::Err error) {
   using TCA9548A::Err;
@@ -161,9 +164,9 @@ void printHelp() {
   Serial.println(F("  recover                        One safe-off write"));
   Serial.println(F("  reset / hardreset              RESET then verify 0x00"));
   Serial.println(F("  begin / end                    Bind+probe / bus-silent unbind"));
-  Serial.println(F("  scan                           Upstream address scan"));
-  Serial.println(F("  stress <1-1000>                Bounded select sample"));
-  Serial.println(F("  stress_mix <1-1000>            Bounded primitive mix"));
+  Serial.println(F("  scan                           Maintenance: 126 probes"));
+  Serial.println(F("  stress <1-1000>                Maintenance select sample"));
+  Serial.println(F("  stress_mix <1-1000>            Maintenance primitive mix"));
   Serial.println(F("  selftest                       Live primitive contract checks"));
   Serial.println(F("  hil [dry|parser|run|run reset] HIL contract entry point"));
   Serial.println(F("  help                           This help"));
@@ -207,10 +210,20 @@ void configureDriver() {
 }
 
 void beginDriver() {
+  if (!i2cReady) {
+    Serial.println(F("begin: NOT_INITIALIZED (I2C controller unavailable)"));
+    return;
+  }
+
+  const bool wasBound = device.isBound();
   const auto status = device.begin(config);
   Serial.print(F("begin: "));
   printStatus(status);
   Serial.printf(" (bound=%s)\n", device.isBound() ? "yes" : "no");
+  if (!wasBound && device.isBound()) {
+    Serial.printf("startup safe-off: %s\n",
+                  safeOffVerified() ? "OK (verified 0x00)" : "FAILED");
+  }
 }
 
 bool parseUnsignedArgument(const char* command, const char* prefix,
@@ -235,10 +248,10 @@ bool parseUnsignedArgument(const char* command, const char* prefix,
   return true;
 }
 
-bool restoreVerified(TCA9548A::ChannelMask desired) {
-  auto status = device.writeChannelMask(desired);
+bool safeOffVerified() {
+  auto status = device.disableAll();
   if (!status.ok()) {
-    Serial.print(F("restore write: "));
+    Serial.print(F("safe-off write: "));
     printStatus(status);
     Serial.println();
     return false;
@@ -246,12 +259,10 @@ bool restoreVerified(TCA9548A::ChannelMask desired) {
 
   TCA9548A::ChannelMask observed;
   status = device.readChannelMask(observed);
-  if (!status.ok() || observed.raw() != desired.raw()) {
-    Serial.print(F("restore readback: "));
+  if (!status.ok() || !observed.isNone()) {
+    Serial.print(F("safe-off readback: "));
     printStatus(status);
     if (status.ok()) {
-      Serial.print(F(" expected="));
-      printMask(desired);
       Serial.print(F(" observed="));
       printMask(observed);
     }
@@ -293,6 +304,11 @@ void printHilResult(const HilCounts& counts) {
                 static_cast<unsigned>(counts.skipped));
 }
 
+void finishHilSafe(HilCounts& counts) {
+  reportCheck(counts, "final verified safe-off", safeOffVerified());
+  printHilResult(counts);
+}
+
 void runHil(bool dryRun, bool includeReset) {
   Serial.printf("%s=== TCA9548A HIL %s ===%s\n", LOG_COLOR_CYAN,
                 dryRun ? "DRY-RUN" : "RUN", LOG_COLOR_RESET);
@@ -318,82 +334,113 @@ void runHil(bool dryRun, bool includeReset) {
   const uint32_t successBeforeProbe = device.totalSuccess();
   const uint32_t failureBeforeProbe = device.totalFailures();
   auto status = device.probe();
-  reportCheck(counts, "probe", status.ok(), errorName(status.code));
-  reportCheck(counts, "probe no-health-side-effects",
-              device.totalSuccess() == successBeforeProbe &&
-                  device.totalFailures() == failureBeforeProbe);
-
-  TCA9548A::ChannelMask original;
-  status = device.readChannelMask(original);
-  if (!status.ok()) {
-    reportCheck(counts, "capture original mask", false,
-                errorName(status.code));
-    printHilResult(counts);
+  const bool probeOk = status.ok();
+  reportCheck(counts, "probe", probeOk, errorName(status.code));
+  const bool probeHealthUnchanged =
+      device.totalSuccess() == successBeforeProbe &&
+      device.totalFailures() == failureBeforeProbe;
+  reportCheck(counts, "probe no-health-side-effects", probeHealthUnchanged);
+  if (!probeOk || !probeHealthUnchanged) {
+    finishHilSafe(counts);
     return;
   }
-  reportCheck(counts, "capture verified original mask",
-              device.channelMaskObservation().verified());
 
   status = device.disableAll();
-  reportCheck(counts, "disableAll write", status.ok(), errorName(status.code));
+  const bool disableOk = status.ok();
+  reportCheck(counts, "disableAll write", disableOk, errorName(status.code));
+  if (!disableOk) {
+    finishHilSafe(counts);
+    return;
+  }
   TCA9548A::ChannelMask observed;
   status = device.readChannelMask(observed);
-  reportCheck(counts, "disableAll readback",
-              status.ok() && observed.isNone(), errorName(status.code));
+  const bool disableVerified = status.ok() && observed.isNone();
+  reportCheck(counts, "disableAll readback", disableVerified,
+              errorName(status.code));
+  if (!disableVerified) {
+    finishHilSafe(counts);
+    return;
+  }
 
   status = device.selectChannel(TCA9548A::Channel::CH3);
-  reportCheck(counts, "select CH3", status.ok(), errorName(status.code));
+  const bool selectOk = status.ok();
+  reportCheck(counts, "select CH3", selectOk, errorName(status.code));
+  if (!selectOk) {
+    finishHilSafe(counts);
+    return;
+  }
   status = device.readChannelMask(observed);
-  reportCheck(counts, "select CH3 readback",
-              status.ok() &&
-                  observed.raw() ==
-                      TCA9548A::ChannelMask::one(TCA9548A::Channel::CH3).raw(),
+  const bool selectVerified =
+      status.ok() &&
+      observed.raw() ==
+          TCA9548A::ChannelMask::one(TCA9548A::Channel::CH3).raw();
+  reportCheck(counts, "select CH3 readback", selectVerified,
               errorName(status.code));
+  if (!selectVerified) {
+    finishHilSafe(counts);
+    return;
+  }
 
   status = device.writeChannelMask(TCA9548A::ChannelMask::fromRaw(0xA5U));
-  reportCheck(counts, "write mask 0xA5", status.ok(), errorName(status.code));
-  status = device.readChannelMask(observed);
-  reportCheck(counts, "read mask 0xA5",
-              status.ok() && observed.raw() == 0xA5U,
+  const bool maskWriteOk = status.ok();
+  reportCheck(counts, "write mask 0xA5", maskWriteOk,
               errorName(status.code));
+  if (!maskWriteOk) {
+    finishHilSafe(counts);
+    return;
+  }
+  status = device.readChannelMask(observed);
+  const bool maskVerified = status.ok() && observed.raw() == 0xA5U;
+  reportCheck(counts, "read mask 0xA5", maskVerified,
+              errorName(status.code));
+  if (!maskVerified) {
+    finishHilSafe(counts);
+    return;
+  }
 
   status = device.recover();
-  reportCheck(counts, "recover safe-off write", status.ok(),
+  const bool recoverOk = status.ok();
+  reportCheck(counts, "recover safe-off write", recoverOk,
               errorName(status.code));
+  if (!recoverOk) {
+    finishHilSafe(counts);
+    return;
+  }
   status = device.readChannelMask(observed);
-  reportCheck(counts, "recover readback 0x00",
-              status.ok() && observed.isNone(), errorName(status.code));
+  const bool recoverVerified = status.ok() && observed.isNone();
+  reportCheck(counts, "recover readback 0x00", recoverVerified,
+              errorName(status.code));
+  if (!recoverVerified) {
+    finishHilSafe(counts);
+    return;
+  }
 
   if (includeReset) {
     if (config.hardReset == nullptr) {
       reportCheck(counts, "hardReset", false, "callback not configured");
     } else {
       status = device.hardReset();
-      reportCheck(counts, "hardReset exact-zero verification", status.ok(),
+      const bool resetOk = status.ok();
+      reportCheck(counts, "hardReset exact-zero verification", resetOk,
                   errorName(status.code));
       const auto resetObservation = device.channelMaskObservation();
-      reportCheck(counts, "hardReset leaves verified all-off",
-                  resetObservation.verified() &&
-                      resetObservation.mask.isNone());
+      const bool resetVerified = resetObservation.verified() &&
+                                 resetObservation.mask.isNone();
+      reportCheck(counts, "hardReset leaves verified all-off", resetVerified);
+      if (!resetOk || !resetVerified) {
+        finishHilSafe(counts);
+        return;
+      }
     }
   } else {
     reportSkip(counts, "hardReset", "use 'hil run reset' to include RESET");
   }
 
-  reportCheck(counts, "restore original mask", restoreVerified(original));
-  printHilResult(counts);
+  finishHilSafe(counts);
 }
 
 void runStress(unsigned long count, bool mixed) {
-  TCA9548A::ChannelMask original;
-  auto status = device.readChannelMask(original);
-  if (!status.ok()) {
-    Serial.print(F("stress baseline: "));
-    printStatus(status);
-    Serial.println();
-    return;
-  }
-
+  TCA9548A::Status status = TCA9548A::Status::Ok();
   const uint32_t successesBefore = device.totalSuccess();
   const uint32_t failuresBefore = device.totalFailures();
   const uint32_t startedMs = millis();
@@ -424,24 +471,25 @@ void runStress(unsigned long count, bool mixed) {
     if (!status.ok()) {
       break;
     }
+    yield();
   }
 
-  const bool restored = restoreVerified(original);
+  const bool safeOff = safeOffVerified();
   const uint32_t durationMs = millis() - startedMs;
   if (mixed) {
     Serial.println(F("=== stress_mix summary ==="));
   }
-  Serial.printf("Stress results: completed=%lu requested=%lu status=%s restore=%s\n",
+  Serial.printf("Stress results: completed=%lu requested=%lu status=%s safe_off=%s\n",
                 completed, count, errorName(status.code),
-                restored ? "OK" : "FAILED");
+                safeOff ? "OK" : "FAILED");
   Serial.printf("Duration: %lu ms\n", static_cast<unsigned long>(durationMs));
   Serial.printf("Health delta: success=%lu failure=%lu\n",
                 static_cast<unsigned long>(device.totalSuccess() -
                                            successesBefore),
                 static_cast<unsigned long>(device.totalFailures() -
                                            failuresBefore));
-  if (!restored) {
-    Serial.println(F("  [FAIL] original mask restore was not verified"));
+  if (!safeOff) {
+    Serial.println(F("  [FAIL] final safe-off was not verified"));
   }
 }
 
@@ -542,7 +590,8 @@ void setup() {
   Serial.println(F("============================="));
 
   printVersionInfo();
-  if (!board::initI2c()) {
+  i2cReady = board::initI2c();
+  if (!i2cReady) {
     LOGE("I2C controller initialization failed");
   }
   configureDriver();

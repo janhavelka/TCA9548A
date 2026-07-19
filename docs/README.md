@@ -31,6 +31,9 @@ Live mode exits nonzero when a required case is `NOT_RUN`. The explicit
 `--allow-not-run` option is only for an accepted unavailable-fixture run; it
 does not turn FAIL or UNKNOWN into success.
 
+RESET validation is required by default. `--skip-reset` is an explicit
+diagnostic exception and the resulting run is not release HIL evidence.
+
 ## Hardware Notes
 
 Keep these core protocol details visible when changing the driver or examples:

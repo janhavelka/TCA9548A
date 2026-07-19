@@ -28,6 +28,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 COMMON_FAILURE_PATTERNS = (
     r"\[FAIL\]",
     r"\bfail=[1-9][0-9]*\b",
+    r"\bfailures=[1-9][0-9]*\b",
 )
 STATUS_FAILURE_PATTERNS = (
     r"\bI2C_(?:ERROR|TIMEOUT|BUS|NACK_ADDR|NACK_DATA)\b",
@@ -130,8 +131,8 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
             "TCA-HIL-005",
             "bus",
             "scan",
-            "Upstream I2C scan runs with bounded firmware loop.",
-            ("Scanning I2C bus",),
+            "All 126 bounded upstream address probes complete.",
+            ("Scanning I2C bus", "Scan complete: devices="),
         ),
         Step(
             "TCA-HIL-006",
@@ -153,8 +154,8 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
             "TCA-HIL-008",
             "contract",
             "hil run reset" if args.include_reset else "hil run",
-            "Live safe HIL contract checks run and restore the mux mask.",
-            ("=== TCA9548A HIL RUN ===", "HIL result:"),
+            "Live safe HIL checks run and finish at verified all-off.",
+            ("=== TCA9548A HIL RUN ===", "final verified safe-off", "HIL result:"),
             status_patterns,
         ),
     ]
@@ -383,6 +384,11 @@ def write_report(
             limitation_lines.append(
                 "- Live steps not run: " + ", ".join(not_run_commands) + "."
             )
+        if not args.include_reset:
+            limitation_lines.append(
+                "- RESET validation was explicitly omitted with --skip-reset; "
+                "this run is not release HIL evidence."
+            )
 
     lines = [
         f"# TCA9548A HIL Validation Report - {args.port} - {now:%Y-%m-%d}",
@@ -471,7 +477,7 @@ def write_report(
             "",
             *limitation_lines,
             "",
-            "## Fixes Implemented During This Pass",
+            "## Operator-Supplied Change Notes (Not Executed By Runner)",
             "",
         ]
     )
@@ -481,7 +487,9 @@ def write_report(
     else:
         lines.append("- None recorded by the runner.")
 
-    lines.extend(["", "## Final Verification", ""])
+    lines.extend(
+        ["", "## Operator-Supplied Verification Assertions (Not Executed By Runner)", ""]
+    )
     if args.verification_result:
         lines.extend(f"- {item}" for item in args.verification_result)
     else:
@@ -572,7 +580,9 @@ def run_soak(runner: SerialRunner, args: argparse.Namespace) -> tuple[str, float
         transcript_parts.append(f"\n$ {command}\n{text}")
         counts[command] += 1
         latencies.append(elapsed)
-        if first_failure(text, COMMON_FAILURE_PATTERNS + STATUS_FAILURE_PATTERNS):
+        if not strip_ansi(text).strip() or first_failure(
+            text, COMMON_FAILURE_PATTERNS + STATUS_FAILURE_PATTERNS
+        ):
             failures += 1
 
     worst = max(latencies) if latencies else 0.0
@@ -662,7 +672,24 @@ def parser_self_test(args: argparse.Namespace) -> int:
     )
     unknown_status, _ = classify("unrelated output\n", plan[0])
 
-    if pass_status != PASS or fail_status != FAIL or unknown_status != UNKNOWN:
+    scan_started_only, _ = classify("Scanning I2C bus...\n", plan[4])
+    scan_complete, _ = classify(
+        "Scanning I2C bus...\nScan complete: devices=1\n", plan[4]
+    )
+    soak_failure = first_failure(
+        "soak complete counts={} failures=1 worst_latency_s=5.000",
+        COMMON_FAILURE_PATTERNS,
+    )
+
+    if (
+        pass_status != PASS
+        or fail_status != FAIL
+        or unknown_status != UNKNOWN
+        or scan_started_only != UNKNOWN
+        or scan_complete != PASS
+        or soak_failure is None
+        or plan[7].command != "hil run reset"
+    ):
         print(
             "Parser self-test: FAIL - "
             f"pass={pass_status} fail={fail_status} unknown={unknown_status}"
@@ -740,7 +767,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "still fail"
         ),
     )
-    parser.add_argument("--include-reset", action="store_true")
+    reset_mode = parser.add_mutually_exclusive_group()
+    reset_mode.add_argument(
+        "--include-reset",
+        dest="include_reset",
+        action="store_true",
+        default=True,
+        help="require live RESET validation (default)",
+    )
+    reset_mode.add_argument(
+        "--skip-reset",
+        dest="include_reset",
+        action="store_false",
+        help="explicitly omit RESET validation; this is not release HIL evidence",
+    )
     parser.add_argument("--sample-count", type=int, default=0)
     parser.add_argument("--stress-count", type=int, default=0)
     parser.add_argument("--soak-duration-s", type=float, default=0.0)

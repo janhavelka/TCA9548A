@@ -84,9 +84,11 @@ Do not expose `esp_err_t` as the public code; retain it in
 ## Arduino Adapter Shape
 
 The example adapter under `examples/common/I2cTransport.h` configures `Wire`
-outside the library. `endTransmission(true)` supplies the required STOP and its
-result is mapped to `TransportStatus`. Because Arduino `Wire` uses a bus-level
-timeout, configure it to the same bound supplied in `Config::i2cTimeoutMs`.
+outside the library. Its serialized callback applies the supplied timeout to
+the bus before each attempt. `endTransmission(true)` supplies the required STOP
+and its result is mapped to `TransportStatus`. A production owner that cannot
+set a per-attempt timeout must configure its bus-level timeout no larger than
+`Config::i2cTimeoutMs`.
 `TwoWire::requestFrom()` exposes only the received length, so this adapter maps
 zero or short reads to `OTHER`; it does not invent a read-side NACK, timeout, or
 bus cause that the API did not provide.
