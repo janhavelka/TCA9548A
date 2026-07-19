@@ -155,7 +155,8 @@ Transport callbacks (Config::i2cWrite, i2cWriteRead)
 **Rules:**
 - Public API methods NEVER call `_updateHealth()` directly
 - `probe()` uses RAW wrappers -> no health tracking (diagnostic only)
-- `recover()` tracks probe failures (driver is initialized, so failures count)
+- `recover()` performs one tracked safe-off write; that write updates health.
+  `probe()` remains the only raw, no-health diagnostic operation.
 
 ### Health Tracking Rules
 

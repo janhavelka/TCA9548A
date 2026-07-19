@@ -54,6 +54,18 @@ static constexpr uint8_t NUM_ADDRESSES = 8;
 /// Mask of the configurable address bits
 static constexpr uint8_t ADDRESS_PIN_MASK = 0x07;
 
+/// Return true when `address` is in the TCA9548A 7-bit address range.
+constexpr bool isValidAddress(uint8_t address) {
+  return address >= I2C_ADDR_MIN && address <= I2C_ADDR_MAX;
+}
+
+/// Encode the datasheet A2/A1/A0 pin levels as a 7-bit I2C address.
+constexpr uint8_t addressFromPins(bool a2, bool a1, bool a0) {
+  return static_cast<uint8_t>(
+      I2C_ADDR_BASE | (a2 ? 0x04U : 0x00U) | (a1 ? 0x02U : 0x00U) |
+      (a0 ? 0x01U : 0x00U));
+}
+
 // ============================================================================
 // Control Register (single 8-bit register, no register address byte)
 // ============================================================================

@@ -43,6 +43,13 @@ documentation extracts without keeping local copies of vendor PDFs.
 - RESET releases SDA high within 500 ns maximum after assertion.
 - RESET is the preferred hardware recovery path when a downstream target holds
   SDA low and the mux reset pin is available.
+- The library's explicit `hardReset()` callback is bounded by
+  `Config::resetTimeoutMs`, invalidates cached mask state before RESET, verifies
+  an exact `0x00` control byte afterward, and never reconnects a previous
+  branch.
+- A failed RESET callback leaves mask provenance unknown. A completed read that
+  observes a nonzero byte is retained as verified evidence and reported as
+  `RESET_STATE_MISMATCH`.
 - A full power-cycle reset must drop `VCC` below the POR falling threshold and
   respect the datasheet's minimum time-to-reramp requirement.
 - POR rising threshold is typically 1.2 V and 1.5 V maximum.

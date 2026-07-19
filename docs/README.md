@@ -8,6 +8,7 @@ repository [README](../README.md), the public API is documented in
 
 - [HARDWARE_NOTES.md](HARDWARE_NOTES.md) - concise chip and board-design notes
 - [PORTING.md](PORTING.md) - transport adapter and framework-neutral porting notes
+- `TUNNELMONITOR_NODE_SUITABILITY_AUDIT.md` - integration suitability findings and product gates
 - `reports/` - generated validation reports; live HIL reports must clearly
   distinguish hardware evidence from dry-run or parser-only checks
 - Doxygen output may be generated under `docs/doxygen/`; generated output is not
@@ -25,6 +26,10 @@ python tools/tca9548a_hil.py --dry-run --port COM8 --baud 115200 --report docs/r
 Live HIL requires an attached ESP32 and TCA9548A fixture. If the fixture is not
 present, report the live steps as `NOT_RUN`; do not claim hardware validation
 from parser or dry-run checks.
+
+Live mode exits nonzero when a required case is `NOT_RUN`. The explicit
+`--allow-not-run` option is only for an accepted unavailable-fixture run; it
+does not turn FAIL or UNKNOWN into success.
 
 ## Hardware Notes
 

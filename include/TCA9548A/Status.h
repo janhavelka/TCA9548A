@@ -20,8 +20,9 @@ enum class Err : uint8_t {
   I2C_NACK_DATA,          ///< I2C NACK on data
   I2C_TIMEOUT,            ///< I2C transaction timeout
   I2C_BUS,                ///< I2C bus error (SDA stuck, arbitration, etc.)
-  BUSY,                   ///< Operation deferred because device is busy
-  IN_PROGRESS             ///< Operation scheduled; call tick() to complete
+  BUSY,                   ///< Operation cannot start because state is busy
+  IN_PROGRESS,            ///< Reserved for compatibility with sibling drivers
+  RESET_STATE_MISMATCH    ///< RESET completed but control byte was not 0x00
 };
 
 /// Status structure returned by all fallible operations

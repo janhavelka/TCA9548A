@@ -5,8 +5,9 @@
  * These are convenience defaults for reference designs only.
  * NOT part of the library API. Override for your hardware.
  *
- * @warning The library itself is board-agnostic. All pins are passed via Config.
- *          These defaults are provided for examples only.
+ * @warning The library itself is board-agnostic. The application-owned
+ *          transport and RESET callback own all pins; these defaults are for
+ *          examples only.
  */
 
 #pragma once
@@ -32,6 +33,12 @@ static constexpr uint32_t I2C_FREQ_HZ = 400000;
 
 /// @brief I2C timeout in milliseconds for example transactions.
 static constexpr uint16_t I2C_TIMEOUT_MS = 50;
+
+/// @brief Optional active-low TCA9548A RESET pin. Set to -1 when unwired.
+static constexpr int TCA_RESET = -1;
+
+/// @brief Maximum time allowed for the example RESET callback.
+static constexpr uint16_t TCA_RESET_TIMEOUT_MS = 10;
 
 /// @brief LED pin. Example default for ESP32-S3 (RGB LED on GPIO48).
 /// Set to -1 to disable.

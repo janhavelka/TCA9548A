@@ -1,5 +1,5 @@
 /// @file TCA9548A.h
-/// @brief Main driver class for TCA9548A 8-channel I2C switch
+/// @brief Production TCA9548A 8-channel I2C switch driver
 #pragma once
 
 #include <cstddef>
@@ -12,333 +12,235 @@
 
 namespace TCA9548A {
 
-/// Driver state for health monitoring
+/// Typed downstream channel identifier.
+enum class Channel : uint8_t {
+  CH0 = 0,
+  CH1,
+  CH2,
+  CH3,
+  CH4,
+  CH5,
+  CH6,
+  CH7
+};
+
+/// Fixed-size value type for the TCA9548A control byte.
+class ChannelMask {
+public:
+  constexpr ChannelMask() = default;
+
+  static constexpr ChannelMask none() { return ChannelMask{cmd::NO_CHANNELS}; }
+  static constexpr ChannelMask all() { return ChannelMask{cmd::ALL_CHANNELS}; }
+
+  /// Return a one-hot mask. An out-of-range cast of Channel produces none().
+  static constexpr ChannelMask one(Channel channel) {
+    return static_cast<uint8_t>(channel) < cmd::NUM_CHANNELS
+               ? ChannelMask{static_cast<uint8_t>(
+                     1U << static_cast<uint8_t>(channel))}
+               : none();
+  }
+
+  /// Explicit raw conversion for legitimate multi-channel masks.
+  static constexpr ChannelMask fromRaw(uint8_t rawMask) {
+    return ChannelMask{rawMask};
+  }
+
+  constexpr uint8_t raw() const { return _value; }
+
+  constexpr bool contains(Channel channel) const {
+    return static_cast<uint8_t>(channel) < cmd::NUM_CHANNELS &&
+           (_value & one(channel)._value) != 0;
+  }
+
+  constexpr bool isNone() const { return _value == cmd::NO_CHANNELS; }
+
+  constexpr bool isOneHot() const {
+    return _value != 0 && (_value & static_cast<uint8_t>(_value - 1U)) == 0;
+  }
+
+  constexpr ChannelMask withEnabled(ChannelMask channels) const {
+    return fromRaw(static_cast<uint8_t>(_value | channels._value));
+  }
+
+  constexpr ChannelMask withDisabled(ChannelMask channels) const {
+    return fromRaw(
+        static_cast<uint8_t>(_value & static_cast<uint8_t>(~channels._value)));
+  }
+
+private:
+  explicit constexpr ChannelMask(uint8_t value) : _value(value) {}
+  uint8_t _value = cmd::NO_CHANNELS;
+};
+
+static_assert(sizeof(ChannelMask) == sizeof(uint8_t),
+              "ChannelMask must remain one byte");
+
+/// Provenance of the cached channel-mask observation.
+enum class MaskProvenance : uint8_t {
+  UNKNOWN,             ///< Hardware state may differ from the cached byte
+  WRITE_COMPLETED,     ///< Successful write returned after terminating STOP
+  READBACK_OBSERVED    ///< Successful control-byte read observed this value
+};
+
+/// Truthful cached channel-mask value and its provenance.
+struct ChannelMaskObservation {
+  ChannelMask mask = ChannelMask::none();
+  MaskProvenance provenance = MaskProvenance::UNKNOWN;
+
+  constexpr bool known() const { return provenance != MaskProvenance::UNKNOWN; }
+  constexpr bool verified() const {
+    return provenance == MaskProvenance::READBACK_OBSERVED;
+  }
+};
+
+/// Passive driver-health classification.
+///
+/// OFFLINE never blocks an operation; the external I2C owner retains admission,
+/// retry, recovery, and bus-reset authority.
 enum class DriverState : uint8_t {
-  UNINIT,    ///< begin() not called or end() called
-  READY,     ///< Operational, consecutiveFailures == 0
+  UNINIT,    ///< No successful device transaction in the current binding
+  READY,     ///< Most recent tracked transport operation succeeded
   DEGRADED,  ///< 1 <= consecutiveFailures < offlineThreshold
   OFFLINE    ///< consecutiveFailures >= offlineThreshold
 };
 
 /// Snapshot of current driver settings/state without performing I2C.
 struct SettingsSnapshot {
-  bool initialized = false;                  ///< True after begin() succeeds
-  DriverState state = DriverState::UNINIT;   ///< Current driver state
+  bool bound = false;                        ///< Valid Config is bound
+  bool initialized = false;                  ///< Initial/tracked I2C succeeded
+  DriverState state = DriverState::UNINIT;   ///< Passive health state
   uint8_t i2cAddress = cmd::DEFAULT_ADDRESS; ///< Active 7-bit device address
-  uint32_t i2cTimeoutMs = 0;                 ///< Active transport timeout
-  uint8_t offlineThreshold = 0;              ///< Consecutive failures before OFFLINE
-  uint32_t recoverBackoffMs = 0;             ///< Minimum ms between recover() attempts
-  bool hasNowMsHook = false;                 ///< True when Config::nowMs is provided
-  bool hasHardReset = false;                 ///< True when Config::hardReset is provided
-  bool recoverUseHardReset = false;          ///< True when recover() may use hard reset
-  uint8_t lastKnownMask = cmd::NO_CHANNELS;  ///< Cached control-register value
+  uint32_t i2cTimeoutMs = 0;                 ///< Active I2C timeout
+  uint32_t resetTimeoutMs = 0;               ///< Active RESET callback timeout
+  uint8_t offlineThreshold = 0;              ///< Passive OFFLINE threshold
+  bool hasNowMsHook = false;                 ///< Config::nowMs is provided
+  bool hasHardReset = false;                 ///< Config::hardReset is provided
+  ChannelMaskObservation maskObservation{};  ///< Cached mask and provenance
 };
 
-/// Downstream poll callback used by select/restore poll jobs.
-/// @param nowMs Current timestamp in milliseconds
-/// @param maxInstructions Maximum downstream instructions allowed this poll
-/// @param[out] instructionsUsed Downstream instructions consumed by callback
-/// @param user User context pointer
-/// @return OK when downstream work is complete, IN_PROGRESS to continue later,
-///         or an error. The mux restore step still runs after a terminal result.
-using PollDownstreamFn = Status (*)(uint32_t nowMs, uint8_t maxInstructions,
-                                    uint8_t& instructionsUsed, void* user);
-
-/// Result from one pollJob() call.
-struct PollJobResult {
-  uint8_t instructionsUsed = 0;  ///< Mux/downstream instructions consumed
-  bool active = false;           ///< True if a job remains active after polling
-  bool complete = false;         ///< True if the active job completed this call
-};
-
-/// TCA9548A driver class
+/// Managed synchronous TCA9548A driver.
+///
+/// Ownership and bounds:
+/// - The driver is non-owning and never configures, locks, retries, or recovers
+///   the I2C bus.
+/// - Except for hardReset(), each fallible hardware API performs at most one
+///   timeout-bounded transport transaction and never waits or retries.
+/// - hardReset() is an explicit rare-operation exception: it invokes exactly
+///   one reset callback and, if that callback succeeds, exactly one verification
+///   read. Both receive finite configured timeouts, so its maximum callback
+///   budget is resetTimeoutMs + i2cTimeoutMs; there are no waits/retries.
+/// - Operations are synchronous and terminal. The owner may cancel between
+///   calls; an in-flight callback must terminate within its supplied timeout.
+/// - Calls are not thread-safe, reentrant, or ISR-safe. One external bus owner
+///   must serialize driver and callback access.
 class TCA9548A {
 public:
-  // =========================================================================
-  // Lifecycle
-  // =========================================================================
+  TCA9548A() = default;
+  TCA9548A(const TCA9548A&) = delete;
+  TCA9548A& operator=(const TCA9548A&) = delete;
+  TCA9548A(TCA9548A&&) = delete;
+  TCA9548A& operator=(TCA9548A&&) = delete;
 
-  /// Initialize the driver with configuration
-  /// @param config Configuration including transport callbacks
-  /// @return Status::Ok() on success, error otherwise
+  /// Validate and bind configuration, then perform one control-byte presence
+  /// read as required by the managed lifecycle contract.
+  ///
+  /// A valid configuration remains bound if the presence read fails, and that
+  /// exact transport Status is returned. The owner may retry probe(),
+  /// readChannelMask(), or another primitive without rebinding. Rebinding is
+  /// rejected with BUSY until end() is called.
   Status begin(const Config& config);
 
-  /// Process pending operations (no-op for TCA9548A)
-  /// @param nowMs Current timestamp in milliseconds
+  /// No-op; the device has no pending I/O or state machine.
   void tick(uint32_t nowMs);
 
-  /// Shutdown the driver and release resources
+  /// Unbind without bus I/O. Explicitly call and check disableAll() first when
+  /// safe-off is required.
   void end();
 
-  // =========================================================================
-  // Diagnostics
-  // =========================================================================
-
-  /// Check if device is present on the bus (no health tracking)
-  /// @return Status::Ok() if device responds, error otherwise
+  /// Perform one raw diagnostic control-byte read without health accounting.
+  /// A successful read stores READBACK_OBSERVED provenance. Exact transport
+  /// errors are returned unchanged; the part has no identity register.
   Status probe();
 
-  /// Attempt to recover from DEGRADED/OFFLINE state
-  /// @return Status::Ok() if device now responsive, error otherwise
+  /// Make one explicit safe-off recovery attempt by writing 0x00.
+  /// Performs one transfer, never asserts RESET or restores a previous mask.
   Status recover();
 
-  /// Assert the optional RESET pin and verify the device responds again.
-  /// The TCA9548A should return with all channels disabled (0x00).
-  /// @return Status::Ok() on success, UNSUPPORTED if no hard-reset callback exists
+  /// Invoke RESET once with resetTimeoutMs and, on callback success, perform one
+  /// verification read with i2cTimeoutMs. Success requires exactly 0x00; no
+  /// prior mask is restored. A mismatch returns RESET_STATE_MISMATCH with the
+  /// observed byte in detail and retains it as READBACK_OBSERVED.
   Status hardReset();
 
-  // =========================================================================
-  // Channel Control
-  // =========================================================================
+  /// Select one channel, disabling every other channel (one write).
+  Status selectChannel(Channel channel);
 
-  /// Select a single channel (0-7), disabling all others
-  /// @param channel Channel number (0-7)
-  /// @return Status::Ok() on success, INVALID_PARAM if channel > 7
-  Status selectChannel(uint8_t channel);
+  /// Apply an arbitrary channel mask (one write).
+  Status writeChannelMask(ChannelMask mask);
 
-  /// Write a raw channel bitmask to the control register
-  /// @param mask Bitmask where bit N enables channel N
-  /// @return Status::Ok() on success
-  Status setChannelMask(uint8_t mask);
-
-  /// Write the control register directly.
-  /// Alias for setChannelMask() to match register-oriented sibling libraries.
-  Status writeControlRegister(uint8_t mask) { return setChannelMask(mask); }
-
-  /// Convenience read-modify-write helper: enable one or more channels without
-  /// changing others. Prefer setChannelMask() when the caller owns a cached mask.
-  /// @param mask Bitmask of channels to enable (ORed with current state)
-  /// @return Status::Ok() on success
-  Status enableChannels(uint8_t mask);
-
-  /// Convenience read-modify-write helper: disable one or more channels without
-  /// changing others. Prefer setChannelMask() when the caller owns a cached mask.
-  /// @param mask Bitmask of channels to disable (cleared from current state)
-  /// @return Status::Ok() on success
-  Status disableChannels(uint8_t mask);
-
-  /// Disable all downstream channels (write 0x00)
-  /// @return Status::Ok() on success
+  /// Disable every downstream channel (one write of 0x00).
   Status disableAll();
 
-  /// Read the current control register value
-  /// @param[out] mask Current channel bitmask
-  /// @return Status::Ok() on success
-  Status readChannelMask(uint8_t& mask);
+  /// Observe the applied channel mask (one read-only transaction).
+  Status readChannelMask(ChannelMask& mask);
 
-  /// Read the single control byte through the register-oriented compatibility API.
-  /// TCA9548A has no addressed register map and no register-address byte is sent
-  /// on the bus. `reg` is only a logical identifier and must be `cmd::CONTROL_REG`.
-  /// Prefer readChannelMask() or readControlRegister() for new TCA9548A code.
-  /// @param reg Logical register identifier (must be `cmd::CONTROL_REG`)
-  /// @param[out] value Current control-register value
-  /// @return Status::Ok() on success, INVALID_PARAM if reg is invalid
-  Status readRegister(uint8_t reg, uint8_t& value);
-
-  /// Read the control register directly.
-  /// Alias for readChannelMask() to match register-oriented sibling libraries.
-  Status readControlRegister(uint8_t& mask) { return readChannelMask(mask); }
-
-  /// Write the single control byte through the register-oriented compatibility API.
-  /// TCA9548A has no addressed register map and no register-address byte is sent
-  /// on the bus. `reg` is only a logical identifier and must be `cmd::CONTROL_REG`.
-  /// Prefer setChannelMask() or writeControlRegister() for new TCA9548A code.
-  /// @param reg Logical register identifier (must be `cmd::CONTROL_REG`)
-  /// @param value New control-register value
-  /// @return Status::Ok() on success, INVALID_PARAM if reg is invalid
-  Status writeRegister(uint8_t reg, uint8_t value);
-
-  /// Convenience read helper: check if a specific channel is currently enabled.
-  /// Prefer readChannelMask() when the caller needs more than one bit.
-  /// @param channel Channel number (0-7)
-  /// @param[out] enabled True if channel is enabled
-  /// @return Status::Ok() on success, INVALID_PARAM if channel > 7
-  Status isChannelEnabled(uint8_t channel, bool& enabled);
-
-  // =========================================================================
-  // Driver State
-  // =========================================================================
-
-  /// Get current driver state
   DriverState state() const { return _driverState; }
-
-  /// Uniform alias for state() used by sibling I2C libraries
   DriverState driverState() const { return state(); }
+  /// True after a valid Config has been bound, even if begin() presence failed.
+  bool isBound() const { return _bound; }
 
-  /// Check if begin() has completed successfully
+  /// True after the initial presence read or a tracked operation succeeds.
+  /// A diagnostic probe() deliberately does not change health/lifecycle state.
   bool isInitialized() const { return _initialized; }
-
-  /// Check if driver is ready for operations
   bool isOnline() const {
-    return _driverState == DriverState::READY ||
-           _driverState == DriverState::DEGRADED;
+    return _initialized && _driverState != DriverState::OFFLINE;
   }
 
-  /// Get a copy of the active configuration
   const Config& getConfig() const { return _config; }
-
-  /// Get a snapshot of current configuration/runtime state (no I2C)
   Status getSettings(SettingsSnapshot& out) const;
 
-  // =========================================================================
-  // Health Tracking
-  // =========================================================================
-
-  /// Timestamp of last successful I2C operation
+  /// Timestamp of the most recent successful tracked transport operation.
   uint32_t lastOkMs() const { return _lastOkMs; }
 
-  /// Timestamp of last failed I2C operation
+  /// Timestamp of the most recent failed tracked transport operation.
   uint32_t lastErrorMs() const { return _lastErrorMs; }
 
-  /// Most recent error status
+  /// Most recent failed tracked transport result mapped to public Status.
   Status lastError() const { return _lastError; }
-
-  /// Consecutive failures since last success
   uint8_t consecutiveFailures() const { return _consecutiveFailures; }
-
-  /// Total failure count (lifetime)
   uint32_t totalFailures() const { return _totalFailures; }
-
-  /// Total success count (lifetime)
   uint32_t totalSuccess() const { return _totalSuccess; }
 
-  /// Last known channel mask (cached from last successful read/write)
-  uint8_t lastKnownMask() const { return _lastKnownMask; }
+  ChannelMaskObservation channelMaskObservation() const {
+    return _maskObservation;
+  }
 
-  // =========================================================================
-  // Poll-Chunked Jobs
-  // =========================================================================
-
-  /// Start a one-instruction control-register read job.
-  /// @param[out] mask Storage that must remain valid until the job completes
-  Status startReadTca9548aMaskJob(uint8_t& mask);
-
-  /// Start a one-instruction control-register write job.
-  Status startSetTca9548aMaskJob(uint8_t mask);
-
-  /// Start a two-step read-modify-write enable helper job.
-  Status startEnableTca9548aChannelsJob(uint8_t mask);
-
-  /// Start a two-step read-modify-write disable helper job.
-  Status startDisableTca9548aChannelsJob(uint8_t mask);
-
-  /// Start a select/downstream/restore job using a single channel.
-  Status startSelectTca9548aChannelJob(uint8_t channel,
-                                       uint8_t restoreMask,
-                                       PollDownstreamFn downstreamPoll,
-                                       void* downstreamUser);
-
-  /// Start a select/downstream/restore job using a raw channel mask.
-  Status startSelectTca9548aMaskJob(uint8_t selectMask,
-                                    uint8_t restoreMask,
-                                    PollDownstreamFn downstreamPoll,
-                                    void* downstreamUser);
-
-  /// Start a chunked recovery job.
-  Status startRecoverTca9548aJob();
-
-  /// Poll the active chunked job.
-  /// @param nowMs Current timestamp in milliseconds
-  /// @param maxInstructions Maximum instructions to execute in this call
-  /// @param[out] result Instruction accounting and completion state
-  /// @return OK when complete/no active job, IN_PROGRESS when work remains,
-  ///         or the terminal error from the job.
-  Status pollJob(uint32_t nowMs, uint8_t maxInstructions,
-                 PollJobResult& result);
-
-  /// True if a poll-chunked job is active.
-  bool pollJobActive() const;
-
-  /// Cancel an active poll-chunked job without doing bus I/O.
-  void cancelPollJob();
+  /// Invalidate cached mask truth after external RESET/POR, controller recovery,
+  /// backend reinitialization, or any other out-of-band hardware action.
+  void invalidateChannelMask();
 
 private:
-  enum class PollJobKind : uint8_t {
-    NONE,
-    READ_MASK,
-    SET_MASK,
-    ENABLE_CHANNELS,
-    DISABLE_CHANNELS,
-    SELECT_RESTORE,
-    RECOVER
-  };
+  Status _requireBound() const;
 
-  enum class PollJobPhase : uint8_t {
-    IDLE,
-    READ_MASK,
-    WRITE_MASK,
-    SELECT_MASK,
-    DOWNSTREAM,
-    RESTORE_MASK,
-    RECOVER_BACKOFF,
-    RECOVER_HARD_RESET,
-    RECOVER_WRITE_KNOWN,
-    RECOVER_VERIFY,
-    RECOVER_RESTORE
-  };
-
-  // =========================================================================
-  // Transport Wrappers
-  // =========================================================================
-
-  /// Raw I2C write (no health tracking)
   Status _i2cWriteRaw(const uint8_t* buf, size_t len);
-
-  /// Raw I2C write-read (no health tracking)
   Status _i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
                           uint8_t* rxBuf, size_t rxLen);
-
-  /// Tracked I2C write (updates health)
-  Status _i2cWriteTracked(const uint8_t* buf, size_t len,
-                          bool allowOffline = false);
-
-  /// Tracked I2C write-read (updates health)
+  Status _i2cWriteTracked(const uint8_t* buf, size_t len);
   Status _i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
-                              uint8_t* rxBuf, size_t rxLen,
-                              bool allowOffline = false);
-
-  // =========================================================================
-  // Health Management
-  // =========================================================================
-
-  /// Update health counters and state based on operation result
-  /// Called ONLY from tracked transport wrappers
+                              uint8_t* rxBuf, size_t rxLen);
   Status _updateHealth(const Status& st);
 
-  /// Reassert OFFLINE after a failed explicit recovery that started OFFLINE
-  void _reassertOfflineLatchIfNeeded(bool startedOffline);
-
-  /// Reset poll job state to idle
-  void _clearPollJob();
-
-  /// Return a standard IN_PROGRESS status
-  static Status _inProgressStatus();
-
-  /// Initialize a poll job after shared precondition checks
-  Status _startPollJob(PollJobKind kind, PollJobPhase phase);
-
-  // =========================================================================
-  // Internal Helpers
-  // =========================================================================
-
-  /// Write a value to the control register (tracked)
-  Status _writeControlReg(uint8_t value, bool allowOffline = false);
-
-  /// Read the control register (tracked)
-  Status _readControlReg(uint8_t& value, bool allowOffline = false);
-
-  /// Read the control register (raw, untracked)
-  Status _readControlRegRaw(uint8_t& value);
-
-  // =========================================================================
-  // State
-  // =========================================================================
+  Status _writeControlByte(ChannelMask mask);
+  Status _readControlByte(ChannelMask& mask);
+  Status _readControlByteRaw(ChannelMask& mask);
+  void _recordMask(ChannelMask mask, MaskProvenance provenance);
+  void _resetState();
 
   Config _config;
+  bool _bound = false;
   bool _initialized = false;
   DriverState _driverState = DriverState::UNINIT;
 
-  // Health counters
   uint32_t _lastOkMs = 0;
   uint32_t _lastErrorMs = 0;
   Status _lastError = Status::Ok();
@@ -346,27 +248,7 @@ private:
   uint32_t _totalFailures = 0;
   uint32_t _totalSuccess = 0;
 
-  // Recovery
-  uint32_t _lastRecoverMs = 0;
-  bool _lastRecoverValid = false;
-
-  // Cached channel state
-  uint8_t _lastKnownMask = cmd::NO_CHANNELS;
-
-  // Poll job state
-  PollJobKind _pollJobKind = PollJobKind::NONE;
-  PollJobPhase _pollJobPhase = PollJobPhase::IDLE;
-  uint8_t _pollRequestedMask = cmd::NO_CHANNELS;
-  uint8_t _pollTargetMask = cmd::NO_CHANNELS;
-  uint8_t _pollCurrentMask = cmd::NO_CHANNELS;
-  uint8_t _pollRestoreMask = cmd::NO_CHANNELS;
-  uint8_t _pollRecoverDesiredMask = cmd::NO_CHANNELS;
-  uint8_t* _pollReadMaskOut = nullptr;
-  PollDownstreamFn _pollDownstream = nullptr;
-  void* _pollDownstreamUser = nullptr;
-  Status _pollPendingStatus = Status::Ok();
-  bool _pollStartedOffline = false;
-  bool _pollRecoverUseHardReset = false;
+  ChannelMaskObservation _maskObservation{};
 };
 
 } // namespace TCA9548A
