@@ -2,33 +2,52 @@
 
 ## Supported Versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.0.x   | :white_check_mark: |
+Only the latest published `2.0.x` patch is supported with security fixes. The
+untagged 1.0.0 baseline and older 2.0.x patches are retained for history and are
+not supported.
+
+| Version | Supported |
+| --- | --- |
+| Latest 2.0.x patch | Yes |
+| Older 2.0.x patches | No |
+| 1.0.0 baseline | No |
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability within this library, please follow responsible disclosure:
+Do not open a public issue for a suspected vulnerability. Email
+`info@thymos.cz` with:
 
-1. **Do NOT** open a public GitHub issue.
-2. Email the maintainer at: `info@thymos.cz`.
-3. Include:
-   - A description of the vulnerability
-   - Steps to reproduce
-   - Potential impact
-   - Any suggested fixes (optional)
+- the affected version or exact commit;
+- a concise description and potential impact;
+- reproduction steps or a minimal test case; and
+- any suggested mitigation, if available.
 
-We will acknowledge receipt within 48 hours and aim to provide a fix or mitigation within 14 days for critical issues.
+The maintainers target acknowledgement within 48 hours and a fix or mitigation
+plan within 14 days for confirmed critical issues. Actual timing can depend on
+hardware reproduction and coordinated disclosure requirements.
 
-## Scope
+## Security Boundary
 
-This library is designed for embedded systems. Security considerations include:
-- No dynamic memory allocation in steady state (reduces attack surface)
-- No network code (networking is out of scope for this library)
-- No persistent storage (TCA9548A has no non-volatile memory)
+This library controls an I2C switch; it does not authenticate devices, encrypt
+traffic, validate downstream payloads, or recover the shared controller. The
+application remains responsible for bus serialization, callback lifetime,
+deadline enforcement, retry/admission policy, watchdogs, board-level RESET,
+safe route cleanup, and validation of any externally supplied channel or mask.
 
-## Security Best Practices for Users
+Relevant defensive properties are:
 
-- Always validate external inputs before passing to `Config`
-- Use hardware watchdogs in production deployments
-- Keep dependencies updated
+- no dynamic allocation in steady-state library paths;
+- no network, filesystem, persistent-storage, logging, or task dependency;
+- finite callback counts and caller-supplied timeouts for hardware operations;
+- distinct transport errors and explicit ambiguous-mask provenance; and
+- no automatic reconnect of a previous route after recovery or RESET.
+
+Transport callbacks are trusted code. They must honor the supplied timeout,
+complete STOP before returning success, preserve the documented error mapping,
+and remain valid until `end()`. The driver is not thread-safe, reentrant, or
+ISR-safe.
+
+Users should pin a reviewed full commit SHA as described in
+[README.md](README.md), qualify the real electrical topology, and run live HIL
+for routing, isolation, RESET, stuck-bus recovery, and soak behavior before
+production deployment.

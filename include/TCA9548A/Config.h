@@ -15,25 +15,39 @@ namespace TCA9548A {
 /// Driver lifecycle or scheduling states such as NOT_INITIALIZED, BUSY, and
 /// IN_PROGRESS cannot cross the transport boundary.
 enum class TransportErr : uint8_t {
-  OK = 0,
-  NACK_ADDR,
-  NACK_DATA,
-  TIMEOUT,
-  BUS,
-  OTHER
+  OK = 0,    ///< Complete transaction, including STOP, succeeded
+  NACK_ADDR, ///< Address phase was not acknowledged
+  NACK_DATA, ///< Data phase was not acknowledged
+  TIMEOUT,   ///< Physical transfer exceeded its deadline
+  BUS,       ///< Arbitration, stuck-line, or controller/bus fault
+  OTHER      ///< Truthful failure with no narrower exposed cause
 };
 
 /// Result returned by an injected I2C transport.
 struct TransportStatus {
-  TransportErr code = TransportErr::OK;
+  TransportErr code = TransportErr::OK; ///< Narrow transport outcome
   int32_t detail = 0; ///< Optional backend-specific diagnostic value
 
   constexpr TransportStatus() = default;
+
+  /// Construct an explicit transport result.
+  /// @param error Narrow transport outcome.
+  /// @param detailCode Optional backend-specific diagnostic value.
   constexpr TransportStatus(TransportErr error, int32_t detailCode)
       : code(error), detail(detailCode) {}
 
+  /// Test whether the complete physical transaction succeeded.
+  /// @return true only when code is TransportErr::OK.
   constexpr bool ok() const { return code == TransportErr::OK; }
+
+  /// Create a successful transport result.
+  /// @return Transport result with code OK and detail zero.
   static constexpr TransportStatus Ok() { return {}; }
+
+  /// Create a failed transport result.
+  /// @param error Narrow truthful failure code to store.
+  /// @param detailCode Optional backend-specific diagnostic value.
+  /// @return Transport result containing the supplied failure information.
   static constexpr TransportStatus Error(TransportErr error,
                                          int32_t detailCode = 0) {
     return TransportStatus{error, detailCode};

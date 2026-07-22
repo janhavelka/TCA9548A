@@ -6,6 +6,31 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Expanded Doxygen coverage for every public type, field, helper, lifecycle
+  method, status, and generated version override; undocumented public API and
+  missing parameter documentation now fail documentation builds.
+- Consolidated current documentation ownership, validation, release, security,
+  transport, and hardware-source guidance.
+- Added an explicit package export list so focused hardware and porting guides
+  ship with the library while CI-only files remain outside the archive.
+
+### Removed
+
+- Removed completed task prompts, the superseded TunnelMonitor suitability
+  audit, and an obsolete COM8 dry-run report that contained no executed hardware
+  tests. Durable contracts and conclusions remain in the current owner docs.
+- Removed the redundant `docs/README.md` index after consolidating its current
+  validation and integration guidance into the repository README and focused
+  guides.
+
+### Fixed
+
+- Corrected the supported-version policy, removed a nonexistent formatting-file
+  reference, repaired changelog tag links, and made the generated LICENSE link
+  resolvable.
+
 ## [2.0.2] - 2026-07-19
 
 ### Fixed
@@ -119,6 +144,6 @@ manifest version. Version 2.0.0 is the first release intended to have a verified
 immutable tag.
 
 [Unreleased]: https://github.com/janhavelka/TCA9548A/compare/v2.0.2...HEAD
-[2.0.2]: https://github.com/janhavelka/TCA9548A/releases/tag/v2.0.2
-[2.0.1]: https://github.com/janhavelka/TCA9548A/releases/tag/v2.0.1
-[2.0.0]: https://github.com/janhavelka/TCA9548A/releases/tag/v2.0.0
+[2.0.2]: https://github.com/janhavelka/TCA9548A/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/janhavelka/TCA9548A/compare/v2.0.0...v2.0.1
+[2.0.0]: https://github.com/janhavelka/TCA9548A/tree/v2.0.0

@@ -41,6 +41,27 @@
   "headers": [
     "TCA9548A/TCA9548A.h"
   ],
+  "export": {
+    "include": [
+      "AGENTS.md",
+      "CHANGELOG.md",
+      "CONTRIBUTING.md",
+      "Doxyfile",
+      "LICENSE",
+      "README.md",
+      "SECURITY.md",
+      "docs/HARDWARE_NOTES.md",
+      "docs/PORTING.md",
+      "examples/01_basic_bringup_cli/main.cpp",
+      "examples/common/*.h",
+      "include/TCA9548A/*.h",
+      "library.json",
+      "platformio.ini",
+      "scripts/generate_version.py",
+      "src/*.cpp",
+      "tools/tca9548a_hil.py"
+    ]
+  },
   "build": {
     "includeDir": "include",
     "srcDir": "src"

@@ -29,6 +29,13 @@ The driver makes only these protocol requests:
 Each callback must make one physical attempt, finish within `timeoutMs`, and
 return `NACK_ADDR`, `NACK_DATA`, `TIMEOUT`, `BUS`, or `OTHER` without retrying
 or collapsing the cause. The driver maps that narrow result to public `Status`.
+The timeout is a callback contract, not a preemption mechanism: this synchronous
+driver cannot interrupt a backend that ignores it.
+
+`TransportStatus::detail` is an opaque signed backend diagnostic preserved in
+the mapped public `Status::detail`. Applications must branch on the typed error
+code, not on `detail` or the human-readable `Status::msg`, unless a specific
+adapter separately defines stable detail values.
 
 The callback context is borrowed until `end()`. One external owner must lock or
 serialize all access. Driver calls and callbacks are not thread-safe, reentrant,
@@ -81,6 +88,10 @@ the callback timeout as the physical-operation cap and map platform outcomes:
 Do not expose `esp_err_t` as the public code; retain it in
 `TransportStatus::detail` when useful.
 
+If the backend cannot distinguish address NACK from data NACK, or timeout from a
+generic failure, return the narrowest truthful result it actually exposes.
+Never infer a more specific fault from elapsed time or a short byte count alone.
+
 ## Arduino Adapter Shape
 
 The example adapter under `examples/common/I2cTransport.h` configures `Wire`
@@ -107,4 +118,6 @@ python -m platformio run -e esp32s2dev
 
 Also verify exact address, lengths, data byte, timeout propagation, STOP
 completion, distinct error mapping, failed-write observation invalidation, and
-that no direct framework includes enter `src/` or public headers.
+that no direct framework includes enter `src/` or public headers. Run
+`doxygen Doxyfile` after changing a public declaration; undocumented public API
+and incomplete parameter/return documentation fail the documentation build.

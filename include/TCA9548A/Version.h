@@ -12,30 +12,37 @@
 #include <stdint.h>
 
 #ifndef TCA9548A_VERSION_STRING
+/// Semantic version override; defaults to the library.json version.
 #define TCA9548A_VERSION_STRING "2.0.2"
 #endif
 
 #ifndef TCA9548A_BUILD_DATE
+/// Build-date override; defaults to the compiler-provided date.
 #define TCA9548A_BUILD_DATE __DATE__
 #endif
 
 #ifndef TCA9548A_BUILD_TIME
+/// Build-time override; defaults to the compiler-provided time.
 #define TCA9548A_BUILD_TIME __TIME__
 #endif
 
 #ifndef TCA9548A_BUILD_TIMESTAMP
+/// Combined build timestamp override.
 #define TCA9548A_BUILD_TIMESTAMP TCA9548A_BUILD_DATE " " TCA9548A_BUILD_TIME
 #endif
 
 #ifndef TCA9548A_GIT_COMMIT
+/// Source-revision override supplied by an optional build integration.
 #define TCA9548A_GIT_COMMIT "unknown"
 #endif
 
 #ifndef TCA9548A_GIT_STATUS
+/// Source-tree status override supplied by an optional build integration.
 #define TCA9548A_GIT_STATUS "unknown"
 #endif
 
 #ifndef TCA9548A_VERSION_FULL
+/// Full display-version override combining version and build metadata.
 #define TCA9548A_VERSION_FULL TCA9548A_VERSION_STRING " (" TCA9548A_GIT_COMMIT ", " TCA9548A_BUILD_TIMESTAMP ", " TCA9548A_GIT_STATUS ")"
 #endif
 

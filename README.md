@@ -23,6 +23,17 @@ control protocol and truthful local diagnostics.
   authority from the application.
 - Configurable address across `0x70` through `0x77`.
 
+## Documentation Map
+
+- Public API reference: `include/TCA9548A/TCA9548A.h` - lifecycle, operations,
+  state, observations, and bounds
+- [Porting guide](docs/PORTING.md) - transport callbacks and owner integration
+- [Hardware notes](docs/HARDWARE_NOTES.md) - protocol, RESET, topology, and
+  electrical constraints
+- Example firmware: `examples/01_basic_bringup_cli/` - bounded Arduino bring-up
+  CLI and HIL firmware contract
+- [Contributing](CONTRIBUTING.md) and [security policy](SECURITY.md)
+
 ## Installation
 
 For reproducible production builds, pin a reviewed full commit SHA rather than
@@ -163,6 +174,31 @@ such as ESP-IDF should preserve the more precise cause when it is available.
 The application must serialize access. The class is non-copyable,
 non-movable, not thread-safe, not reentrant, and not ISR-safe.
 
+## Status Contract
+
+All fallible driver APIs return `Status`. Make control-flow decisions from
+`Status::code`; `Status::msg` is a static diagnostic string, not a stable
+machine-readable interface. `Status::detail` preserves backend diagnostics for
+transport failures and contains the observed byte for
+`RESET_STATE_MISMATCH`.
+
+The core emits these result classes:
+
+| Result | Meaning |
+| --- | --- |
+| `OK` | Operation completed successfully. |
+| `NOT_INITIALIZED` | No valid configuration is bound. |
+| `INVALID_CONFIG`, `INVALID_PARAM`, `BUSY`, `UNSUPPORTED` | Configuration, argument, lifecycle, or optional-feature precondition failed without I2C. |
+| `I2C_NACK_ADDR`, `I2C_NACK_DATA`, `I2C_TIMEOUT`, `I2C_BUS`, `I2C_ERROR` | Exact mapped transport outcome; inspect `detail` for backend context. |
+| `TIMEOUT` | A bounded non-I2C callback, currently hardware RESET, reported its own timeout. |
+| `RESET_STATE_MISMATCH` | RESET callback completed, but readback observed a nonzero control byte. |
+
+`DEVICE_NOT_FOUND` and `IN_PROGRESS` remain append-only compatibility values;
+the synchronous core does not synthesize them. Device absence is reported as
+the exact transport failure, normally `I2C_NACK_ADDR`. An asynchronous
+`IN_PROGRESS` result from the RESET callback violates its terminal contract and
+is returned as `INVALID_CONFIG`.
+
 ## Operation Classes And Bounds
 
 ### Steady-state primitives
@@ -258,7 +294,10 @@ edit it manually.
 Serial.println(TCA9548A::VERSION);
 ```
 
-## Validation
+## Repository Validation
+
+These maintainer checks require a full Git checkout. Installed library packages
+intentionally omit CI and native-test scaffolding.
 
 ```bash
 python scripts/generate_version.py check
@@ -267,7 +306,14 @@ python -m platformio run -e native_core_no_arduino
 python -m platformio run -e esp32s3dev
 python -m platformio run -e esp32s2dev
 python tools/tca9548a_hil.py --parser-self-test
+doxygen Doxyfile
+python -m platformio pkg pack . --output .pio/TCA9548A.tar.gz
+git diff --check
 ```
+
+Generated Doxygen HTML is written to `docs/doxygen/html/` and is intentionally
+ignored by Git. CI repeats documentation and package generation with pinned
+tool versions and treats Doxygen warnings as errors.
 
 Live HIL requires an attached ESP32 and TCA9548A fixture:
 

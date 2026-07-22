@@ -180,7 +180,8 @@ Transport callbacks (Config::i2cWrite, i2cWriteRead)
 
 ## Versioning and Releases
 
-Single source of truth: `library.json`. `Version.h` is auto-generated and must never be edited.
+Single source of truth: `library.json`. `Version.h` is auto-generated and must
+never be edited. The version generator also synchronizes `Doxyfile`.
 
 SemVer:
 - MAJOR: breaking API/Config/enum changes.
@@ -188,10 +189,19 @@ SemVer:
 - PATCH: bug fixes, refactors, docs.
 
 Release steps:
-1. Update `library.json`.
-2. Update `CHANGELOG.md` (Added/Changed/Fixed/Removed).
-3. Update `README.md` if API or examples changed.
-4. Commit and tag: `Release vX.Y.Z`.
+1. Run `python scripts/generate_version.py set X.Y.Z`; do not edit generated
+   version fields by hand.
+2. Update `CHANGELOG.md` (Added/Changed/Fixed/Removed) and update `README.md`
+   plus focused guides when API, examples, hardware guidance, or validation
+   changes.
+3. Run the complete validation documented in `CONTRIBUTING.md` and require the
+   release-candidate branch CI to pass.
+4. Commit with subject `Release vX.Y.Z`, then create an annotated `vX.Y.Z` tag
+   at that exact reviewed commit.
+5. Push the tag, require tag CI to pass, and record both the tag object and its
+   peeled commit in release evidence. Never move or recreate a published tag.
+6. Product repositories resolve the annotated tag and pin its full peeled
+   commit SHA; they do not depend on a branch or tag name.
 
 ---
 
