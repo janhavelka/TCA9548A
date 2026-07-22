@@ -6,6 +6,8 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.0.3] - 2026-07-22
+
 ### Changed
 
 - Expanded Doxygen coverage for every public type, field, helper, lifecycle
@@ -143,7 +145,8 @@ release was published; later additions remained on `main` under the same
 manifest version. Version 2.0.0 is the first release intended to have a verified
 immutable tag.
 
-[Unreleased]: https://github.com/janhavelka/TCA9548A/compare/v2.0.2...HEAD
+[Unreleased]: https://github.com/janhavelka/TCA9548A/compare/v2.0.3...HEAD
+[2.0.3]: https://github.com/janhavelka/TCA9548A/compare/v2.0.2...v2.0.3
 [2.0.2]: https://github.com/janhavelka/TCA9548A/compare/v2.0.1...v2.0.2
 [2.0.1]: https://github.com/janhavelka/TCA9548A/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/janhavelka/TCA9548A/tree/v2.0.0
