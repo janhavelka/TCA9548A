@@ -1,71 +1,149 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-- `SettingsSnapshot`, `getSettings()`, `isInitialized()`, and `getConfig()` for repo-family runtime/config inspection
-- Explicit `hardReset()` API and direct control-register aliases (`readControlRegister()` / `writeControlRegister()`)
-- `Config::resetUser` as a separate context pointer for the hard-reset callback
-- `readRegister()` and `writeRegister()` register-address-based access methods for sibling-library uniformity
-- `Status::is(Err)` method for type-safe error code comparison
-- `Status::inProgress()` method for in-progress checks
-- `Status::operator bool()` explicit conversion for concise success checks
-- `Err::BUSY` and `Err::IN_PROGRESS` error codes
-- Missing example helper files `examples/common/CommandHandler.h` and `examples/common/TransportAdapter.h`
-- Native core compile environment that builds the library without Arduino/Wire include paths
-- Poll-chunked job API with `pollJob(nowMs, maxInstructions, result)` instruction accounting
-- Budgeted jobs for raw mask read/write, read-modify-write enable/disable, select/downstream/restore, and recovery
-- Host-side HIL runner with parser self-test, dry-run planning, bounded serial execution, and Markdown report output
-
 ### Changed
-- Core driver code is framework-neutral and no longer includes Arduino or falls back to `millis()`
-- Without `Config::nowMs`, timestamps remain `0` and recovery backoff is not enforced
-- Documentation is consolidated under `docs/README.md`, `docs/HARDWARE_NOTES.md`, and `docs/PORTING.md`; vendored datasheet, application-note, and audit extraction artifacts were removed
-- `OFFLINE` now latches normal channel/control APIs, returning `BUSY` without bus I/O until explicit recovery
-- `recover()` now keeps/reasserts `OFFLINE` if a recovery attempt that started offline fails partway
-- `recover()` now restores the last known channel mask after a successful probe/reset
-- `probe()` now reports `NOT_INITIALIZED` before `begin()` and normalizes transport absence to `DEVICE_NOT_FOUND`
-- `enableChannels()`, `disableChannels()`, and `isChannelEnabled()` are documented as compound convenience helpers; raw-mask APIs remain the preferred integration surface
-- Synchronous bus-touching APIs now return `BUSY` while a poll-chunked job is active
-- The CLI example now exposes `read/dump`, `read reg` / `rreg`, `write reg` / `wreg`, `on/all`, `reset/hardreset`, and help entries for `health` / `state`
-- The example `Wire` transport now validates buffers and maps transport failures into health-tracked I2C error codes consistently
-- README now documents protocol limits, recovery semantics, and the example/public boundary more clearly
-- Example stress, self-test, and downstream scan commands now abort before mutating the mux if the original mask cannot be read
+
+- Expanded Doxygen coverage for every public type, field, helper, lifecycle
+  method, status, and generated version override; undocumented public API and
+  missing parameter documentation now fail documentation builds.
+- Consolidated current documentation ownership, validation, release, security,
+  transport, and hardware-source guidance.
+- Added an explicit package export list so focused hardware and porting guides
+  ship with the library while CI-only files remain outside the archive.
+
+### Removed
+
+- Removed completed task prompts, the superseded TunnelMonitor suitability
+  audit, and an obsolete COM8 dry-run report that contained no executed hardware
+  tests. Durable contracts and conclusions remain in the current owner docs.
+- Removed the redundant `docs/README.md` index after consolidating its current
+  validation and integration guidance into the repository README and focused
+  guides.
 
 ### Fixed
-- `end()` skips best-effort all-off bus I/O while `OFFLINE`
-- `recover()` no longer falls through to a normal probe path after hard-reset callback failure
-- Hard reset callbacks no longer reuse the transport `i2cUser` context
-- The example `Wire` write-read adapter now checks write byte counts and read availability
-- Native tests now include the Arduino/Wire stubs required by the `native` PlatformIO environment
-- Native coverage now exercises settings snapshots, explicit hard reset, probe normalization, recover backoff behavior, and poll-job instruction budgets
-- Previously defined `test_status_helpers()` and `test_register_helpers()` are now registered in the native test runner
-- CLI command input is bounded and overlong serial lines are discarded until newline
-- Example mutating diagnostics now report mux-mask restore failures instead of silently leaving state uncertain
 
-## [1.0.0] - 2026-07-07
+- Corrected the supported-version policy, removed a nonexistent formatting-file
+  reference, repaired changelog tag links, and made the generated LICENSE link
+  resolvable.
+
+## [2.0.2] - 2026-07-19
+
+### Fixed
+
+- Installation guidance now resolves an annotated release tag to its peeled
+  commit before exact-pinning that SHA. This avoids embedding the preceding
+  release's pin in a newly immutable release artifact.
+
+## [2.0.1] - 2026-07-19
+
+### Changed
+
+- Health success/failure totals now retain their documented object-lifetime
+  meaning across `end()` and rebinding; binding-scoped state still resets.
+- Public `Err` values are explicit and regression-tested to preserve their
+  established append-only numeric mapping.
+- The example owner forces verified all-off at startup and after HIL/stress
+  diagnostics instead of restoring a possibly faulted prior route.
+- The example Wire adapter applies each callback's requested timeout before the
+  physical attempt; maintenance scan/stress loops yield after each transaction.
+- `Doxyfile` project version is now checked and synchronized from
+  `library.json` by the existing version generator.
+
+### Fixed
+
+- Live HIL requires RESET validation by default, requires scan completion rather
+  than only scan start, treats silent soak commands as failures, and recognizes
+  nonzero soak failure counts.
+- HIL reports now label free-form change and verification text as unexecuted
+  operator assertions instead of captured evidence.
+- A failed example `Wire.begin()` no longer falls through into a device
+  transaction on an unavailable controller.
+- Invalid-parameter and raw-probe tests now lock all required no-health side
+  effects, and lifecycle tests lock lifetime-counter continuity.
+
+## [2.0.0] - 2026-07-19
 
 ### Added
-- **First stable release**
-- Complete TCA9548A 8-channel I2C switch driver
-- Injected I2C transport architecture (no Wire dependency in library)
-- Health monitoring with automatic state tracking (READY/DEGRADED/OFFLINE)
-- Channel control: selectChannel, setChannelMask, enableChannels, disableChannels, disableAll
-- Read-modify-write helpers with no-op optimization
-- Channel readback and single-channel query
-- Hardware reset callback support via Config
-- Manual recovery with backoff enforcement
-- Non-blocking tick-based lifecycle
-- Address configurability (0x70–0x77)
-- Basic CLI example (`01_basic_bringup_cli`)
-- Comprehensive Doxygen documentation in public headers
-- Unity-based native host tests
-- MIT License
 
-[Unreleased]: https://github.com/janhavelka/TCA9548A/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/janhavelka/TCA9548A/releases/tag/v1.0.0
+- Typed `Channel` and one-byte `ChannelMask` value types with constexpr mask
+  composition and address-pin helpers.
+- `ChannelMaskObservation` with `UNKNOWN`, `WRITE_COMPLETED`, and
+  `READBACK_OBSERVED` provenance, plus explicit invalidation for out-of-band
+  RESET, POR, power, or controller recovery.
+- Narrow `TransportStatus` callback result so transport code can return only
+  address NACK, data NACK, timeout, bus, generic failure, or success.
+- Independent `Config::resetTimeoutMs` and a timeout-aware hardware RESET
+  callback.
+- `Err::RESET_STATE_MISMATCH` for a completed RESET whose verification read is
+  not exactly `0x00`.
+- GitHub Actions coverage for native tests, framework-neutral compilation,
+  strict host warnings, documentation, package creation, and ESP32-S2/S3
+  example builds.
+
+### Changed
+
+- **Breaking:** transport callbacks now return `TransportStatus` rather than
+  public driver `Status`.
+- **Breaking:** channel operations now accept or return typed `Channel` and
+  `ChannelMask` values.
+- `begin()` validates and binds configuration, performs exactly one presence
+  read, and preserves a valid binding after transport failure so later owner
+  retries do not require reboot or rebind.
+- `end()` is bus-silent. Applications that require all-off shutdown must call
+  and check `disableAll()` first.
+- `recover()` is one explicit all-off write. It never retries, asserts RESET,
+  enforces backoff, probes, or restores an old mask.
+- `hardReset()` invalidates mask evidence first, invokes RESET once with its
+  explicit timeout, verifies an exact `0x00`, and never restores an old mask.
+- Health state and counters are passive diagnostics only. `OFFLINE` no longer
+  blocks transport operations or owns application admission/recovery policy.
+- Probe preserves exact transport errors, performs one read, updates observed
+  mask evidence on success, and remains excluded from health accounting.
+- The example CLI now uses fixed command storage and the compact typed API.
+- Live HIL returns failure when required cases are `NOT_RUN` unless the caller
+  explicitly supplies `--allow-not-run`; FAIL and UNKNOWN always fail.
+
+### Removed
+
+- Library-owned recovery backoff and automatic hard-reset policy fields.
+- Automatic restoration of a previously selected mask after recovery or RESET.
+- Read-modify-write `enableChannels()`, `disableChannels()`, and
+  `isChannelEnabled()` operations.
+- Raw/register compatibility aliases and redundant control-register methods.
+- Poll-chunked mux jobs, downstream callbacks, instruction accounting,
+  cancellation, and their internal scheduler state.
+- Obsolete example wrappers and health/CLI compatibility helpers.
+
+### Fixed
+
+- Failed or ambiguous writes can no longer present the requested mask as known
+  applied hardware state.
+- RESET success now requires the datasheet reset value instead of accepting any
+  responding control byte.
+- Address NACK, data NACK, timeout, bus, and generic transport failures retain
+  their distinct causes.
+- The example `Wire` adapter no longer mislabels Arduino's generic write error
+  as a bus fault and documents that short reads expose no precise cause.
+- A failed initial presence read no longer makes the driver unusable until
+  application restart.
+- Invalid or repeated binding cannot silently replace an existing valid
+  configuration.
+
+## 1.0.0 - 2026-07-07 (untagged baseline)
+
+The original managed synchronous driver baseline introduced injected I2C,
+channel-mask control, health tracking, RESET support, recovery helpers, an
+Arduino CLI example, and native tests. No immutable `v1.0.0` tag or GitHub
+release was published; later additions remained on `main` under the same
+manifest version. Version 2.0.0 is the first release intended to have a verified
+immutable tag.
+
+[Unreleased]: https://github.com/janhavelka/TCA9548A/compare/v2.0.2...HEAD
+[2.0.2]: https://github.com/janhavelka/TCA9548A/compare/v2.0.1...v2.0.2
+[2.0.1]: https://github.com/janhavelka/TCA9548A/compare/v2.0.0...v2.0.1
+[2.0.0]: https://github.com/janhavelka/TCA9548A/tree/v2.0.0

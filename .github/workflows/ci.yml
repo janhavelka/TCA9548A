@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PLATFORMIO_CORE_VERSION: "6.1.19"
+  DOXYGEN_VERSION: "1.17.0"
+  DOXYGEN_SHA256: "75419ef4f446fc1c24ef12514b574e66e898ee6f527c6ae2ad84f91a905823c2"
+
+jobs:
+  host:
+    name: Host contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('platformio.ini') }}
+
+      - name: Install validation tools
+        run: |
+          python -m pip install --disable-pip-version-check "platformio==${PLATFORMIO_CORE_VERSION}"
+          curl --fail --location --silent --show-error \
+            "https://github.com/doxygen/doxygen/releases/download/Release_${DOXYGEN_VERSION//./_}/doxygen-${DOXYGEN_VERSION}.linux.bin.tar.gz" \
+            --output "${RUNNER_TEMP}/doxygen.tar.gz"
+          echo "${DOXYGEN_SHA256}  ${RUNNER_TEMP}/doxygen.tar.gz" | sha256sum --check --strict
+          mkdir -p "${RUNNER_TEMP}/doxygen"
+          tar --extract --gzip --file "${RUNNER_TEMP}/doxygen.tar.gz" \
+            --directory "${RUNNER_TEMP}/doxygen" --strip-components=1
+          echo "${RUNNER_TEMP}/doxygen/bin" >> "${GITHUB_PATH}"
+
+      - name: Check generated version header
+        run: python scripts/generate_version.py check
+
+      - name: Run native tests
+        run: python -m platformio test -e native
+
+      - name: Build framework-neutral core
+        run: python -m platformio run -e native_core_no_arduino
+
+      - name: Enforce strict host warnings
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Wpedantic -Wconversion \
+            -Wsign-conversion -Werror \
+            -Iinclude src/TCA9548A.cpp test/core_no_arduino/compile_main.cpp \
+            -o "${RUNNER_TEMP}/tca9548a-core"
+          "${RUNNER_TEMP}/tca9548a-core"
+
+      - name: Run HIL parser contract tests
+        run: python tools/tca9548a_hil.py --parser-self-test
+
+      - name: Build Doxygen documentation
+        run: doxygen Doxyfile
+
+      - name: Validate package creation
+        run: python -m platformio pkg pack . --output "${RUNNER_TEMP}/TCA9548A.tar.gz"
+
+      - name: Check tracked generated files and whitespace
+        run: |
+          git diff --check
+          git diff --exit-code
+
+  firmware:
+    name: Firmware example (${{ matrix.environment }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        environment:
+          - esp32s2dev
+          - esp32s3dev
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: python -m pip install --disable-pip-version-check "platformio==${PLATFORMIO_CORE_VERSION}"
+
+      - name: Build example
+        run: python -m platformio run -e "${{ matrix.environment }}"
+
+      - name: Check tracked generated files
+        run: git diff --exit-code

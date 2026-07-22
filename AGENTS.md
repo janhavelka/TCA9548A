@@ -124,7 +124,7 @@ The driver follows a **managed synchronous** model with health tracking:
 
 ```cpp
 enum class DriverState : uint8_t {
-  UNINIT,    // begin() not called or end() called
+  UNINIT,    // Unbound, or no tracked I2C success in the current binding
   READY,     // Operational, consecutiveFailures == 0
   DEGRADED,  // 1 <= consecutiveFailures < offlineThreshold
   OFFLINE    // consecutiveFailures >= offlineThreshold
@@ -133,6 +133,7 @@ enum class DriverState : uint8_t {
 
 State transitions:
 - `begin()` success -> READY
+- `begin()` presence-read failure -> binding retained, state remains UNINIT
 - Any I2C failure in READY -> DEGRADED
 - Success in DEGRADED/OFFLINE -> READY
 - Failures reach `offlineThreshold` -> OFFLINE
@@ -155,7 +156,8 @@ Transport callbacks (Config::i2cWrite, i2cWriteRead)
 **Rules:**
 - Public API methods NEVER call `_updateHealth()` directly
 - `probe()` uses RAW wrappers -> no health tracking (diagnostic only)
-- `recover()` tracks probe failures (driver is initialized, so failures count)
+- `recover()` performs one tracked safe-off write; that write updates health.
+  `probe()` remains the only raw, no-health diagnostic operation.
 
 ### Health Tracking Rules
 
@@ -171,13 +173,15 @@ Transport callbacks (Config::i2cWrite, i2cWriteRead)
 - `_lastErrorMs` - timestamp of last failed I2C operation
 - `_lastError` - most recent error Status
 - `_consecutiveFailures` - failures since last success (resets on success)
-- `_totalFailures` / `_totalSuccess` - lifetime counters (wrap at max)
+- `_totalFailures` / `_totalSuccess` - object-lifetime counters (saturate at max;
+  `end()` and rebinding do not reset them)
 
 ---
 
 ## Versioning and Releases
 
-Single source of truth: `library.json`. `Version.h` is auto-generated and must never be edited.
+Single source of truth: `library.json`. `Version.h` is auto-generated and must
+never be edited. The version generator also synchronizes `Doxyfile`.
 
 SemVer:
 - MAJOR: breaking API/Config/enum changes.
@@ -185,10 +189,19 @@ SemVer:
 - PATCH: bug fixes, refactors, docs.
 
 Release steps:
-1. Update `library.json`.
-2. Update `CHANGELOG.md` (Added/Changed/Fixed/Removed).
-3. Update `README.md` if API or examples changed.
-4. Commit and tag: `Release vX.Y.Z`.
+1. Run `python scripts/generate_version.py set X.Y.Z`; do not edit generated
+   version fields by hand.
+2. Update `CHANGELOG.md` (Added/Changed/Fixed/Removed) and update `README.md`
+   plus focused guides when API, examples, hardware guidance, or validation
+   changes.
+3. Run the complete validation documented in `CONTRIBUTING.md` and require the
+   release-candidate branch CI to pass.
+4. Commit with subject `Release vX.Y.Z`, then create an annotated `vX.Y.Z` tag
+   at that exact reviewed commit.
+5. Push the tag, require tag CI to pass, and record both the tag object and its
+   peeled commit in release evidence. Never move or recreate a published tag.
+6. Product repositories resolve the annotated tag and pin its full peeled
+   commit SHA; they do not depend on a branch or tag name.
 
 ---
 

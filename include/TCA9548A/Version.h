@@ -12,52 +12,59 @@
 #include <stdint.h>
 
 #ifndef TCA9548A_VERSION_STRING
-#define TCA9548A_VERSION_STRING "1.0.0"
+/// Semantic version override; defaults to the library.json version.
+#define TCA9548A_VERSION_STRING "2.0.2"
 #endif
 
 #ifndef TCA9548A_BUILD_DATE
+/// Build-date override; defaults to the compiler-provided date.
 #define TCA9548A_BUILD_DATE __DATE__
 #endif
 
 #ifndef TCA9548A_BUILD_TIME
+/// Build-time override; defaults to the compiler-provided time.
 #define TCA9548A_BUILD_TIME __TIME__
 #endif
 
 #ifndef TCA9548A_BUILD_TIMESTAMP
+/// Combined build timestamp override.
 #define TCA9548A_BUILD_TIMESTAMP TCA9548A_BUILD_DATE " " TCA9548A_BUILD_TIME
 #endif
 
 #ifndef TCA9548A_GIT_COMMIT
+/// Source-revision override supplied by an optional build integration.
 #define TCA9548A_GIT_COMMIT "unknown"
 #endif
 
 #ifndef TCA9548A_GIT_STATUS
+/// Source-tree status override supplied by an optional build integration.
 #define TCA9548A_GIT_STATUS "unknown"
 #endif
 
 #ifndef TCA9548A_VERSION_FULL
+/// Full display-version override combining version and build metadata.
 #define TCA9548A_VERSION_FULL TCA9548A_VERSION_STRING " (" TCA9548A_GIT_COMMIT ", " TCA9548A_BUILD_TIMESTAMP ", " TCA9548A_GIT_STATUS ")"
 #endif
 
 namespace TCA9548A {
 
 /// @brief Major version (breaking changes).
-static constexpr uint16_t VERSION_MAJOR = 1;
+static constexpr uint16_t VERSION_MAJOR = 2;
 
 /// @brief Minor version (backward-compatible features).
 static constexpr uint16_t VERSION_MINOR = 0;
 
 /// @brief Patch version (backward-compatible fixes).
-static constexpr uint16_t VERSION_PATCH = 0;
+static constexpr uint16_t VERSION_PATCH = 2;
 
 /// @brief Full semantic version string.
 static constexpr const char* VERSION = TCA9548A_VERSION_STRING;
 
 /// @brief Encoded version for numeric comparison: MAJOR*10000 + MINOR*100 + PATCH.
-static constexpr uint32_t VERSION_CODE = 10000;
+static constexpr uint32_t VERSION_CODE = 20002;
 
 /// @brief Backward-compatible alias used by older repositories.
-static constexpr int VERSION_INT = 10000;
+static constexpr int VERSION_INT = 20002;
 
 /// @brief Build date string.
 static constexpr const char* BUILD_DATE = TCA9548A_BUILD_DATE;

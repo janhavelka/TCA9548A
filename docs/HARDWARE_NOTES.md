@@ -1,7 +1,10 @@
 # Hardware Notes
 
 These notes preserve the driver-relevant facts from the original chip
-documentation extracts without keeping local copies of vendor PDFs.
+documentation extracts without keeping local copies of vendor PDFs. They were
+rechecked against TI datasheet SCPS207H (Rev. H, September 2024); production
+hardware must still be reviewed against the latest vendor revision and the
+actual board voltage, pull-ups, wiring, and device population.
 
 ## Device Model
 
@@ -43,6 +46,13 @@ documentation extracts without keeping local copies of vendor PDFs.
 - RESET releases SDA high within 500 ns maximum after assertion.
 - RESET is the preferred hardware recovery path when a downstream target holds
   SDA low and the mux reset pin is available.
+- The library's explicit `hardReset()` callback is bounded by
+  `Config::resetTimeoutMs`, invalidates cached mask state before RESET, verifies
+  an exact `0x00` control byte afterward, and never reconnects a previous
+  branch.
+- A failed RESET callback leaves mask provenance unknown. A completed read that
+  observes a nonzero byte is retained as verified evidence and reported as
+  `RESET_STATE_MISMATCH`.
 - A full power-cycle reset must drop `VCC` below the POR falling threshold and
   respect the datasheet's minimum time-to-reramp requirement.
 - POR rising threshold is typically 1.2 V and 1.5 V maximum.
@@ -119,12 +129,11 @@ library does not depend on them:
 
 ## Source References
 
-- TI TCA9548A datasheet, SCPS207H.
-- TI SCPA067, "Best Practices: I2C Devices on an I3C Shared Bus".
-- TI SCAA137, "I2C Dynamic Addressing".
-- TI SSZTC18, "How to Simplify I2C Tree When Connecting Multiple Slaves to an
-  I2C Master".
-- TI SCPA058A, "I2C Solutions for Hot Swap Applications".
-- TI SLVA695, "Maximum Clock Frequency of I2C Bus Using Repeaters".
-- TI SLUAAY3, "PassFET Hang Time with TCA39306 I2C/I3C Level Translator".
-- TI SLYT658, "I2C Infographics".
+- [TI TCA9548A datasheet, SCPS207H (Rev. H)](https://www.ti.com/lit/ds/symlink/tca9548a.pdf).
+- [TI SCPA067, "Best Practices: I2C Devices on an I3C Shared Bus"](https://www.ti.com/lit/pdf/SCPA067).
+- [TI SCAA137, "I2C Dynamic Addressing"](https://www.ti.com/lit/pdf/SCAA137).
+- [TI SSZTC18, "How to Simplify I2C Tree When Connecting Multiple Slaves to an I2C Master"](https://www.ti.com/lit/pdf/SSZTC18).
+- [TI SCPA058A, "I2C Solutions for Hot Swap Applications"](https://www.ti.com/lit/pdf/SCPA058A).
+- [TI SLVA695, "Maximum Clock Frequency of I2C Bus Using Repeaters"](https://www.ti.com/lit/pdf/SLVA695).
+- [TI SLUAAY3, "PassFET Hang Time with TCA39306 I2C/I3C Level Translator"](https://www.ti.com/lit/pdf/SLUAAY3).
+- [TI SLYT658, "I2C Infographics"](https://www.ti.com/lit/pdf/SLYT658).

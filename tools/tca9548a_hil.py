@@ -28,6 +28,7 @@ ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 COMMON_FAILURE_PATTERNS = (
     r"\[FAIL\]",
     r"\bfail=[1-9][0-9]*\b",
+    r"\bfailures=[1-9][0-9]*\b",
 )
 STATUS_FAILURE_PATTERNS = (
     r"\bI2C_(?:ERROR|TIMEOUT|BUS|NACK_ADDR|NACK_DATA)\b",
@@ -130,8 +131,8 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
             "TCA-HIL-005",
             "bus",
             "scan",
-            "Upstream I2C scan runs with bounded firmware loop.",
-            ("Scanning I2C bus",),
+            "All 126 bounded upstream address probes complete.",
+            ("Scanning I2C bus", "Scan complete: devices="),
         ),
         Step(
             "TCA-HIL-006",
@@ -153,8 +154,8 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
             "TCA-HIL-008",
             "contract",
             "hil run reset" if args.include_reset else "hil run",
-            "Live safe HIL contract checks run and restore the mux mask.",
-            ("=== TCA9548A HIL RUN ===", "HIL result:"),
+            "Live safe HIL checks run and finish at verified all-off.",
+            ("=== TCA9548A HIL RUN ===", "final verified safe-off", "HIL result:"),
             status_patterns,
         ),
     ]
@@ -239,6 +240,23 @@ def status_counts(results: Iterable[Result]) -> dict[str, int]:
     return counts
 
 
+def result_exit_code(
+    results: Iterable[Result], *, dry_run: bool, allow_not_run: bool
+) -> int:
+    result_list = list(results)
+    counts = status_counts(result_list)
+    if counts[FAIL] or counts[UNKNOWN]:
+        return 1
+
+    required_not_run = any(
+        result.status == NOT_RUN and result.step.live_required
+        for result in result_list
+    )
+    if required_not_run and not dry_run and not allow_not_run:
+        return 1
+    return 0
+
+
 def write_report(
     path: Path,
     args: argparse.Namespace,
@@ -258,6 +276,119 @@ def write_report(
     command_line = subprocess.list2cmdline([sys.executable, *sys.argv])
     live_mode = not args.dry_run and not args.parser_self_test
     port_note = args.port if live_mode else f"{args.port} (not opened in dry-run mode)"
+    executed_results = [result for result in results if result.status != NOT_RUN]
+    session_executed = live_mode and bool(executed_results)
+    probe_result = next(
+        (result for result in results if result.step.command == "probe"), None
+    )
+    soak_result = next(
+        (
+            result
+            for result in results
+            if result.step.command == "<host bounded soak loop>"
+        ),
+        None,
+    )
+
+    if session_executed and probe_result is not None:
+        device_note = (
+            "exact chip identity cannot be proven by the control-byte read; "
+            f"configured-address probe result was {probe_result.status}"
+        )
+    else:
+        device_note = "not established by this run"
+
+    if args.dry_run:
+        hardware_lines = [
+            f"- Fixture: {args.fixture_note}",
+            "- Mode: dry-run; the serial port was not opened.",
+            "- Wiring and electrical behavior were not tested.",
+        ]
+    elif session_executed:
+        hardware_lines = [
+            f"- Fixture note supplied by operator: {args.fixture_note}",
+            "- Mode: live serial commands executed.",
+            "- Wiring and electrical limits were not independently instrumented "
+            "by this runner.",
+        ]
+    else:
+        hardware_lines = [
+            f"- Fixture note supplied by operator: {args.fixture_note}",
+            "- Mode: live serial session unavailable; no live step executed.",
+            "- Wiring and electrical behavior were not tested.",
+        ]
+
+    if transcript_path is not None:
+        transcript_note = f"- Raw serial transcript: `{transcript_path}`"
+    elif session_executed:
+        transcript_note = (
+            "- Raw serial transcript: not persisted; bounded excerpts are "
+            "recorded in the detailed result rows."
+        )
+    else:
+        transcript_note = "- Raw serial transcript: not captured."
+
+    if executed_results:
+        worst_elapsed = max(result.elapsed_s for result in executed_results)
+        sampling_lines = [
+            f"- Live steps executed: `{len(executed_results)}`.",
+            f"- Largest recorded step elapsed time: `{worst_elapsed:.3f}` seconds.",
+            "- Per-step elapsed values and observations are recorded above.",
+        ]
+    else:
+        sampling_lines = ["- No live timing samples were collected."]
+
+    soak_lines = [
+        f"- Requested soak duration: `{args.soak_duration_s}` seconds."
+    ]
+    if soak_result is None:
+        soak_lines.append("- Soak: not requested.")
+    elif soak_result.status == NOT_RUN:
+        soak_lines.extend(
+            [
+                "- Soak: not executed.",
+                f"- Reason: {soak_result.notes}",
+            ]
+        )
+    else:
+        soak_lines.extend(
+            [
+                f"- Soak result: `{soak_result.status}`.",
+                f"- Recorded command time: `{soak_result.elapsed_s:.3f}` seconds.",
+                f"- Runner summary: {soak_result.observed}",
+            ]
+        )
+
+    if args.dry_run:
+        limitation_lines = [
+            f"- {args.not_run_reason}",
+            "- Dry-run validates only the plan; it is not hardware evidence.",
+        ]
+    elif not session_executed:
+        unavailable_note = results[0].notes if results else args.not_run_reason
+        limitation_lines = [
+            f"- No live step executed: {unavailable_note}",
+            "- Firmware upload, boot behavior, routing, RESET, and electrical "
+            "behavior are not evidenced by this report.",
+        ]
+    else:
+        not_run_commands = [
+            result.step.command for result in results if result.status == NOT_RUN
+        ]
+        limitation_lines = [
+            "- Firmware upload and fixture wiring are outside this runner and "
+            "must be evidenced separately.",
+            "- A responding control byte cannot prove exact chip identity.",
+        ]
+        if not_run_commands:
+            limitation_lines.append(
+                "- Live steps not run: " + ", ".join(not_run_commands) + "."
+            )
+        if not args.include_reset:
+            limitation_lines.append(
+                "- RESET validation was explicitly omitted with --skip-reset; "
+                "this run is not release HIL evidence."
+            )
 
     lines = [
         f"# TCA9548A HIL Validation Report - {args.port} - {now:%Y-%m-%d}",
@@ -276,18 +407,13 @@ def write_report(
         f"- Target environment: `{args.target_env}`",
         f"- Serial port: `{port_note}`",
         f"- Baud rate: `{args.baud}`",
-        "- Device identity/address: `TCA9548A at configured address 0x70, "
-        "not detected in this run`",
+        f"- Device identity/address: {device_note}.",
         "",
         "## Hardware Setup",
         "",
-        f"- Fixture: {args.fixture_note}",
-        "- Wiring: not verified in this run.",
-        "- Electrical limits: no live electrical tests were performed.",
-        "- Safety assumption: no board with this chip is attached, so live HIL, "
-        "flash, reset, and soak steps are marked `NOT_RUN`.",
+        *hardware_lines,
         "",
-        "## Exact Commands",
+        "## Reference And Generation Commands",
         "",
         "```powershell",
         "python tools\\tca9548a_hil.py --parser-self-test",
@@ -337,37 +463,21 @@ def write_report(
             "",
             "## Transcript",
             "",
-            (
-                f"- Raw serial transcript: `{transcript_path}`"
-                if transcript_path is not None
-                else "- Raw serial transcript: not captured; serial port was not opened."
-            ),
+            transcript_note,
             "",
             "## Sampling And Timing",
             "",
-            "- Sampling/timing highlights: not measured without hardware.",
+            *sampling_lines,
             "",
             "## Soak Summary",
             "",
-            f"- Requested soak duration: `{args.soak_duration_s}` seconds.",
-            "- Actual soak duration: `0` seconds.",
-            "- Command mix: not run.",
-            "- Sample counts: `0`.",
-            "- Error counts: not observed.",
-            "- Reset/recovery counts: not observed.",
-            "- Worst observed latency: not measured.",
-            "- Health-state changes: not observed.",
-            "- Script adjustments during run: none.",
+            *soak_lines,
             "",
             "## Limitations And Tests Not Run",
             "",
-            f"- {args.not_run_reason}",
-            "- Firmware upload was not attempted.",
-            "- Boot transcript and prompt responsiveness were not captured.",
-            "- Live scan, probe, mask mutation, recover, reset, stress, and soak "
-            "steps were not run.",
+            *limitation_lines,
             "",
-            "## Fixes Implemented During This Pass",
+            "## Operator-Supplied Change Notes (Not Executed By Runner)",
             "",
         ]
     )
@@ -377,7 +487,9 @@ def write_report(
     else:
         lines.append("- None recorded by the runner.")
 
-    lines.extend(["", "## Final Verification", ""])
+    lines.extend(
+        ["", "## Operator-Supplied Verification Assertions (Not Executed By Runner)", ""]
+    )
     if args.verification_result:
         lines.extend(f"- {item}" for item in args.verification_result)
     else:
@@ -468,7 +580,9 @@ def run_soak(runner: SerialRunner, args: argparse.Namespace) -> tuple[str, float
         transcript_parts.append(f"\n$ {command}\n{text}")
         counts[command] += 1
         latencies.append(elapsed)
-        if first_failure(text, COMMON_FAILURE_PATTERNS + STATUS_FAILURE_PATTERNS):
+        if not strip_ansi(text).strip() or first_failure(
+            text, COMMON_FAILURE_PATTERNS + STATUS_FAILURE_PATTERNS
+        ):
             failures += 1
 
     worst = max(latencies) if latencies else 0.0
@@ -479,10 +593,26 @@ def run_soak(runner: SerialRunner, args: argparse.Namespace) -> tuple[str, float
     return summary + "".join(transcript_parts), sum(latencies)
 
 
+def append_not_run_results(
+    results: list[Result], plan: list[Step], reason: str
+) -> None:
+    """Complete an interrupted plan without duplicating finished test IDs."""
+    for step in plan[len(results) :]:
+        results.append(
+            Result(
+                step=step,
+                status=NOT_RUN,
+                observed="not executed",
+                notes=reason,
+            )
+        )
+
+
 def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
     transcript_path = Path(args.transcript) if args.transcript else None
     transcript_parts: list[str] = []
     results: list[Result] = []
+    plan = build_plan(args)
 
     try:
         with SerialRunner(args) as runner:
@@ -490,7 +620,7 @@ def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
             if boot:
                 transcript_parts.append("$ boot\n" + boot)
 
-            for step in build_plan(args):
+            for step in plan:
                 if step.command == "<host bounded soak loop>":
                     text, elapsed = run_soak(runner, args)
                 else:
@@ -511,15 +641,9 @@ def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
                     print(f"\n$ {step.command}\n{text}")
                 time.sleep(args.command_delay_s)
     except (OSError, RuntimeError) as exc:
-        for step in build_plan(args):
-            results.append(
-                Result(
-                    step=step,
-                    status=NOT_RUN,
-                    observed="not executed",
-                    notes=f"serial session unavailable: {exc}",
-                )
-            )
+        append_not_run_results(
+            results, plan, f"serial session unavailable: {exc}"
+        )
 
     if transcript_path is not None:
         transcript_path.parent.mkdir(parents=True, exist_ok=True)
@@ -539,7 +663,7 @@ def parser_self_test(args: argparse.Namespace) -> int:
             return 1
 
     pass_status, _ = classify(
-        "=== Version Info ===\n  Library: 1.0.0\n",
+        "=== Version Info ===\n  Library: 2.0.0\n",
         plan[0],
     )
     fail_status, _ = classify(
@@ -548,11 +672,66 @@ def parser_self_test(args: argparse.Namespace) -> int:
     )
     unknown_status, _ = classify("unrelated output\n", plan[0])
 
-    if pass_status != PASS or fail_status != FAIL or unknown_status != UNKNOWN:
+    scan_started_only, _ = classify("Scanning I2C bus...\n", plan[4])
+    scan_complete, _ = classify(
+        "Scanning I2C bus...\nScan complete: devices=1\n", plan[4]
+    )
+    soak_failure = first_failure(
+        "soak complete counts={} failures=1 worst_latency_s=5.000",
+        COMMON_FAILURE_PATTERNS,
+    )
+
+    if (
+        pass_status != PASS
+        or fail_status != FAIL
+        or unknown_status != UNKNOWN
+        or scan_started_only != UNKNOWN
+        or scan_complete != PASS
+        or soak_failure is None
+        or plan[7].command != "hil run reset"
+    ):
         print(
             "Parser self-test: FAIL - "
             f"pass={pass_status} fail={fail_status} unknown={unknown_status}"
         )
+        return 1
+
+    required_not_run = [
+        Result(
+            step=plan[0],
+            status=NOT_RUN,
+            observed="not executed",
+            notes="fixture unavailable",
+        )
+    ]
+    failed = [
+        Result(step=plan[0], status=FAIL, observed="failure")
+    ]
+    if (
+        result_exit_code(required_not_run, dry_run=True, allow_not_run=False)
+        != 0
+        or result_exit_code(
+            required_not_run, dry_run=False, allow_not_run=False
+        )
+        != 1
+        or result_exit_code(required_not_run, dry_run=False, allow_not_run=True)
+        != 0
+        or result_exit_code(failed, dry_run=False, allow_not_run=True) != 1
+    ):
+        print("Parser self-test: FAIL - invalid NOT_RUN exit semantics")
+        return 1
+
+    partial_results = [
+        Result(step=plan[0], status=PASS, observed="version observed")
+    ]
+    append_not_run_results(partial_results, plan, "session interrupted")
+    if (
+        len(partial_results) != len(plan)
+        or partial_results[0].status != PASS
+        or any(result.status != NOT_RUN for result in partial_results[1:])
+        or len({result.step.test_id for result in partial_results}) != len(plan)
+    ):
+        print("Parser self-test: FAIL - interrupted-session result identity")
         return 1
 
     print(f"Parser self-test: PASS ({len(plan)} planned step(s))")
@@ -580,7 +759,28 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--boot-settle-s", type=float, default=1.0)
     parser.add_argument("--command-delay-s", type=float, default=0.05)
     parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--include-reset", action="store_true")
+    parser.add_argument(
+        "--allow-not-run",
+        action="store_true",
+        help=(
+            "allow required live cases to remain NOT_RUN; FAIL and UNKNOWN "
+            "still fail"
+        ),
+    )
+    reset_mode = parser.add_mutually_exclusive_group()
+    reset_mode.add_argument(
+        "--include-reset",
+        dest="include_reset",
+        action="store_true",
+        default=True,
+        help="require live RESET validation (default)",
+    )
+    reset_mode.add_argument(
+        "--skip-reset",
+        dest="include_reset",
+        action="store_false",
+        help="explicitly omit RESET validation; this is not release HIL evidence",
+    )
     parser.add_argument("--sample-count", type=int, default=0)
     parser.add_argument("--stress-count", type=int, default=0)
     parser.add_argument("--soak-duration-s", type=float, default=0.0)
@@ -592,7 +792,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--fixture-note",
-        default="No board with TCA9548A attached; live HIL was intentionally skipped.",
+        default="Fixture details not supplied; use --fixture-note to record them.",
     )
     parser.add_argument("--fix-note", action="append", default=[])
     parser.add_argument("--verification-result", action="append", default=[])
@@ -622,10 +822,11 @@ def main(argv: list[str]) -> int:
         write_report(args.report, args, results, transcript_path)
         print(f"Report written: {args.report}")
 
-    counts = status_counts(results)
-    if counts[FAIL] or counts[UNKNOWN]:
-        return 1
-    return 0
+    return result_exit_code(
+        results,
+        dry_run=args.dry_run,
+        allow_not_run=args.allow_not_run,
+    )
 
 
 if __name__ == "__main__":

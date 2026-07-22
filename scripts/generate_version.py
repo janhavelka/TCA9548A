@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Synchronize Version.h from library.json and expose build metadata via macros.
+"""Synchronize generated version fields and Doxygen from library.json.
 
 Default behavior:
-- when run by PlatformIO as an extra script: sync generated headers if needed
-- when run standalone: sync generated headers if needed
+- when run by PlatformIO as an extra script: sync generated outputs if needed
+- when run standalone: sync generated outputs if needed
 
 Standalone commands:
   sync
-      Regenerate generated headers only if source metadata changed.
+      Regenerate outputs only if source metadata changed.
   check
-      Exit with code 1 when generated headers are out of date.
+      Exit with code 1 when generated outputs are out of date.
   bump patch|minor|major
-      Update library.json, then regenerate generated headers.
+      Update library.json, then regenerate generated outputs.
   set X.Y.Z
-      Set an explicit semantic version, then regenerate generated headers.
+      Set an explicit semantic version, then regenerate generated outputs.
 """
 
 from __future__ import annotations
@@ -32,6 +32,9 @@ except Exception:
     ENV = None
 
 SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+DOXYGEN_PROJECT_NUMBER_RE = re.compile(
+    r"^(PROJECT_NUMBER\s*=\s*).*$", re.MULTILINE
+)
 
 
 def _find_project_root(start_dir: Path) -> Path:
@@ -114,30 +117,37 @@ def _render_version_header(namespace: str, version: str) -> str:
 #include <stdint.h>
 
 #ifndef {prefix}_VERSION_STRING
+/// Semantic version override; defaults to the library.json version.
 #define {prefix}_VERSION_STRING "{version}"
 #endif
 
 #ifndef {prefix}_BUILD_DATE
+/// Build-date override; defaults to the compiler-provided date.
 #define {prefix}_BUILD_DATE __DATE__
 #endif
 
 #ifndef {prefix}_BUILD_TIME
+/// Build-time override; defaults to the compiler-provided time.
 #define {prefix}_BUILD_TIME __TIME__
 #endif
 
 #ifndef {prefix}_BUILD_TIMESTAMP
+/// Combined build timestamp override.
 #define {prefix}_BUILD_TIMESTAMP {prefix}_BUILD_DATE " " {prefix}_BUILD_TIME
 #endif
 
 #ifndef {prefix}_GIT_COMMIT
+/// Source-revision override supplied by an optional build integration.
 #define {prefix}_GIT_COMMIT "unknown"
 #endif
 
 #ifndef {prefix}_GIT_STATUS
+/// Source-tree status override supplied by an optional build integration.
 #define {prefix}_GIT_STATUS "unknown"
 #endif
 
 #ifndef {prefix}_VERSION_FULL
+/// Full display-version override combining version and build metadata.
 #define {prefix}_VERSION_FULL {prefix}_VERSION_STRING " (" {prefix}_GIT_COMMIT ", " {prefix}_BUILD_TIMESTAMP ", " {prefix}_GIT_STATUS ")"
 #endif
 
@@ -188,8 +198,17 @@ def _expected_outputs(project_root: Path) -> Dict[Path, str]:
     library_data = _load_library_json(library_json)
     version = str(library_data.get("version", "0.0.0"))
     namespace = "TCA9548A"
+    doxyfile = project_root / "Doxyfile"
+    doxyfile_text = _read_text(doxyfile)
+    expected_doxyfile, replacements = DOXYGEN_PROJECT_NUMBER_RE.subn(
+        rf'\g<1>"{version}"', doxyfile_text
+    )
+    if replacements != 1:
+        raise ValueError("Doxyfile must contain exactly one PROJECT_NUMBER field")
+
     return {
         project_root / "include" / namespace / "Version.h": _render_version_header(namespace, version),
+        doxyfile: expected_doxyfile,
     }
 
 
