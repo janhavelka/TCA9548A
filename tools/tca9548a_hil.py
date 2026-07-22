@@ -663,7 +663,7 @@ def parser_self_test(args: argparse.Namespace) -> int:
             return 1
 
     pass_status, _ = classify(
-        "=== Version Info ===\n  Library: 2.0.0\n",
+        "=== Version Info ===\n  Library: 1.0.0\n",
         plan[0],
     )
     fail_status, _ = classify(

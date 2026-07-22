@@ -2,15 +2,13 @@
 
 ## Supported Versions
 
-Only the latest published `2.0.x` patch is supported with security fixes. The
-untagged 1.0.0 baseline and older 2.0.x patches are retained for history and are
-not supported.
+Only the latest published `1.0.x` patch is supported with security fixes.
+Development commits and superseded patches are not supported releases.
 
 | Version | Supported |
 | --- | --- |
-| Latest 2.0.x patch | Yes |
-| Older 2.0.x patches | No |
-| 1.0.0 baseline | No |
+| Latest 1.0.x patch | Yes |
+| Older releases and development commits | No |
 
 ## Reporting a Vulnerability
 
