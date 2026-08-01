@@ -30,10 +30,9 @@ inline TransportStatus mapWireResult(uint8_t result) {
 /// @param timeoutMs Wire timeout in milliseconds
 /// @return true if initialized
 inline bool initWire(int sda, int scl, uint32_t freqHz, uint32_t timeoutMs) {
-  if (!Wire.begin(sda, scl)) {
+  if (!Wire.begin(sda, scl, freqHz)) {
     return false;
   }
-  Wire.setClock(freqHz);
   Wire.setTimeOut(timeoutMs);
   return true;
 }

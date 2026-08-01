@@ -105,6 +105,14 @@ void printObservation() {
 
 void printVersionInfo() {
   Serial.printf("%s=== Version Info ===%s\n", LOG_COLOR_CYAN, LOG_COLOR_RESET);
+  Serial.printf("  MCU: %s rev %u, flash %lu bytes, PSRAM %s (%lu bytes)\n",
+                ESP.getChipModel(),
+                static_cast<unsigned>(ESP.getChipRevision()),
+                static_cast<unsigned long>(ESP.getFlashChipSize()),
+                psramFound() ? "ready" : "not available",
+                static_cast<unsigned long>(ESP.getPsramSize()));
+  Serial.printf("  Arduino-ESP32: %s\n", ESP.getCoreVersion());
+  Serial.printf("  ESP-IDF: %s\n", ESP.getSdkVersion());
   Serial.printf("  Library: %s\n", TCA9548A::VERSION);
   Serial.printf("  Full: %s\n", TCA9548A::VERSION_FULL);
   Serial.printf("  Code: %lu\n",

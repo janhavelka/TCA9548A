@@ -6,6 +6,22 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Exact-pinned the ESP32-S2/S3 example and HIL builds to pioarduino
+  `platform-espressif32` `55.03.311` (Arduino-ESP32 `3.3.11`, ESP-IDF `5.5.5`,
+  GCC `14.2.0`) instead of PlatformIO Espressif32 `7.0.1` (Arduino-ESP32
+  `2.0.17`, ESP-IDF `4.4.7`, GCC `8.4.0`).
+- Made the example ESP32-S3 QSPI PSRAM configuration explicit, removed the
+  legacy ESP32-only PSRAM cache workaround flag, stopped forcing Arduino 3.x
+  below its packaged GNU C++20 dialect, updated the S2 reset-mode spelling for
+  esptool 5, and added runtime MCU, flash, PSRAM, Arduino, and ESP-IDF identity
+  to the example CLI's version report. Native builds continue to enforce the
+  library's C++17 contract.
+- Initialize the example `Wire` bus at the configured frequency in its bounded
+  `begin()` call instead of applying the clock through a separate unchecked
+  reconfiguration call.
+
 ## [1.0.0] - 2026-07-22
 
 ### Added

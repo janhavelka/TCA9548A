@@ -299,6 +299,15 @@ Serial.println(TCA9548A::VERSION);
 These maintainer checks require a full Git checkout. Installed library packages
 intentionally omit CI and native-test scaffolding.
 
+The ESP32-S2/S3 example environments exact-pin pioarduino
+`platform-espressif32` `55.03.311`, which supplies Arduino-ESP32 `3.3.11`,
+ESP-IDF `5.5.5`, and GCC `14.2.0`. This pin applies only to repository example
+and HIL builds; consuming applications continue to own their platform version.
+The `version` CLI command reports the runtime Arduino and ESP-IDF versions so
+hardware evidence can identify the actual framework stack. It also reports MCU,
+flash, and PSRAM identity so the S3 memory configuration can be checked on the
+fixture instead of inferred from a successful compile.
+
 ```bash
 python scripts/generate_version.py check
 python -m platformio test -e native
