@@ -39,6 +39,22 @@ public allocation-free enum names, synchronized component/version metadata,
 and truthful RESET callback failure identity. The core transaction protocol did
 not require a corrective change.
 
+The later feature-completeness pass added a line-by-line
+[SCPS207H feature matrix](FEATURE_MATRIX.md). It confirmed that no chip
+operation was missing from the public core and that a raw multi-byte write API
+would add no reachable device state. It corrected the voltage-translation note
+to use TI's `Vpass(max)` criterion, constrained RESET callbacks to their
+documented `OK`/`TIMEOUT`/`RESET_ERROR` result domain, and made invalid callback
+codes observable as `INVALID_CONFIG` with the original numeric code in
+`Status::detail`.
+
+Both CLIs now print the observed active mask before a bounded bus scan so the
+operator knows which downstream topology is visible. Their live self-test
+captures the entry mask, verifies all eight one-hot selections plus arbitrary
+multi-channel and recovery behavior, and performs verified restoration on
+every exit after capture. The separate stress commands remain bounded at 1,000
+operations and deliberately finish at verified all-off.
+
 An independent second pass found one native CLI defect outside the driver core:
 direct `fgets()` use assumed blocking, whole-line standard input, while the
 default ESP-IDF UART VFS can return nonblocking partial input (see Espressif's
@@ -53,10 +69,11 @@ separately rather than accepting tokens found anywhere in a source file.
 
 The repository validation suite covers exact transaction address/length/data,
 STOP-complete write contracts, read-only control access, all strap addresses,
-all channel masks, output assignment only on success, distinct transport error
-mapping, cache provenance/invalidation, lifecycle behavior, passive health
-transitions/counters/timestamps, bounded recovery, RESET verification, and the
-shared fixed-line CLI parser's boundary/recovery behavior.
+all channel masks, SCPS207H protocol/timing constants, output assignment only
+on success, distinct transport error mapping, cache provenance/invalidation,
+lifecycle behavior, passive health transitions/counters/timestamps, bounded
+recovery, RESET verification, and the shared fixed-line CLI parser's
+boundary/recovery behavior.
 
 Run the current gates from the repository root:
 

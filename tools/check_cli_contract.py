@@ -55,9 +55,11 @@ PUBLIC_SURFACE = (
     ".readChannelMask(",
     ".getSettings(",
     ".state(",
+    ".driverState(",
     ".isBound(",
     ".isInitialized(",
     ".isOnline(",
+    ".getConfig(",
     ".lastOkMs(",
     ".lastErrorMs(",
     ".lastError(",
@@ -77,18 +79,23 @@ PARITY_OUTPUTS = (
     "nowMs hook:",
     "RESET callback:",
     "Offline threshold:",
+    "Config reference parity:",
+    "State alias parity:",
     "probe no-health-side-effects",
+    "capture original mask readback",
     "disableAll write",
     "disableAll readback",
-    "select CH3",
-    "select CH3 readback",
+    "all eight one-hot channels",
     "write mask 0xA5",
     "read mask 0xA5",
     "recover safe-off write",
     "recover readback 0x00",
     "hardReset exact-zero verification",
     "hardReset leaves verified all-off",
-    "final verified safe-off",
+    "final verified mask restore",
+    "Scan topology:",
+    "active_mask=",
+    "select a one-hot mask before scan to isolate a branch",
     "Snapshot:",
     "read: ",
     " mask=",
@@ -159,16 +166,62 @@ def require_commands(label: str, text: str, errors: list[str]) -> None:
             errors.append(f"{label} CLI dispatch missing command: {token}")
 
 
+def require_executable_public_surface(
+    label: str, text: str, entry_signature: str, errors: list[str]
+) -> None:
+    owner_signatures = (
+        "void printObservation()",
+        "void printConfig()",
+        "void printHealth()",
+        "void beginDriver()",
+        "bool safeOffVerified()",
+        "void scanBus()",
+        "bool restoreMaskVerified(",
+        "void runHil(",
+        "void runStress(",
+        "void processCommand(",
+        entry_signature,
+    )
+    executable = "\n".join(
+        function_body(text, signature, label, errors)
+        for signature in owner_signatures
+    )
+    for token in PUBLIC_SURFACE:
+        if token not in executable:
+            errors.append(
+                f"{label} CLI has no executable owner for public API: {token}"
+            )
+
+    run_hil = function_body(text, "void runHil(", label, errors)
+    restore = function_body(text, "bool restoreMaskVerified(", label, errors)
+    scan = function_body(text, "void scanBus()", label, errors)
+    for token in (
+        "readChannelMask(originalMask)",
+        "index < TCA9548A::cmd::NUM_CHANNELS",
+        "finishHilRestored(counts, originalMask)",
+    ):
+        if token not in run_hil:
+            errors.append(f"{label} live selftest missing executable step: {token}")
+    for token in ("writeChannelMask(originalMask)", "readChannelMask(observed)"):
+        if token not in restore:
+            errors.append(f"{label} live selftest restore missing step: {token}")
+    if "readChannelMask(visibleMask)" not in scan:
+        errors.append(f"{label} scan does not observe active topology")
+
+
 def main() -> int:
     errors: list[str] = []
     arduino = read(ARDUINO_MAIN, errors)
     idf = read(IDF_MAIN, errors)
 
-    for label, text in (("Arduino", arduino), ("ESP-IDF", idf)):
+    for label, text, entry_signature in (
+        ("Arduino", arduino, "void loop()"),
+        ("ESP-IDF", idf, 'extern "C" void app_main(void)'),
+    ):
         require_commands(label, text, errors)
-        for token in PUBLIC_SURFACE:
-            if token not in text:
-                errors.append(f"{label} CLI does not expose public API: {token}")
+        require_executable_public_surface(
+            label, text, entry_signature, errors
+        )
         for token in PARITY_OUTPUTS:
             if token not in text:
                 errors.append(f"{label} CLI missing parity output/check: {token}")
@@ -203,6 +256,8 @@ def main() -> int:
         errors.append("Arduino CLI does not use the shared shell/style helpers")
     if "char command[128]" not in arduino:
         errors.append("Arduino CLI must retain fixed command storage")
+    if "MAX_STRESS_COUNT = 1000" not in arduino:
+        errors.append("Arduino CLI must retain the strict 1000-operation stress cap")
     for token in (
         "char line[LINE_LEN]",
         "pollConsoleLine",
@@ -214,6 +269,20 @@ def main() -> int:
             errors.append(f"ESP-IDF CLI missing bounded input token: {token}")
     if "fgets(" in idf:
         errors.append("ESP-IDF CLI must not dispatch partial nonblocking fgets input")
+    if "MAX_STRESS_COUNT = 1000" not in idf:
+        errors.append("ESP-IDF CLI must retain the strict 1000-operation stress cap")
+    for label, text in (("Arduino", arduino), ("ESP-IDF", idf)):
+        for command in ("stress", "stress_mix"):
+            pattern = (
+                rf'parseUnsignedArgument\(\s*command,\s*"{command}",'
+                rf'\s*MAX_STRESS_COUNT,\s*value\s*\)\s*&&\s*value\s*>\s*0U'
+            )
+            if re.search(pattern, text) is None:
+                errors.append(
+                    f"{label} {command} parser is not strictly bounded to 1..1000"
+                )
+        if "completed < count" not in text:
+            errors.append(f"{label} stress loop is not count-bounded")
     tests = read(ROOT / "test" / "test_driver.cpp", errors)
     if "test_fixed_cli_line_buffer_is_trimmed_bounded_and_recoverable" not in tests:
         errors.append("shared fixed-line parser lacks its native regression test")

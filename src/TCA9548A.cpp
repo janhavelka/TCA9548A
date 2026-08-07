@@ -117,9 +117,11 @@ Status TCA9548A::hardReset() {
   invalidateChannelMask();
   Status resetStatus =
       _config.hardReset(_config.resetTimeoutMs, _config.resetUser);
-  if (resetStatus.inProgress()) {
+  if (!resetStatus.ok() && !resetStatus.is(Err::TIMEOUT) &&
+      !resetStatus.is(Err::RESET_ERROR)) {
     return Status::Error(Err::INVALID_CONFIG,
-                         "Hard-reset callback must return a terminal Status");
+                         "Hard-reset callback returned invalid Status code",
+                         static_cast<int32_t>(resetStatus.code));
   }
   if (!resetStatus.ok()) {
     return resetStatus;

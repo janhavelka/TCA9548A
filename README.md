@@ -30,6 +30,8 @@ control protocol and truthful local diagnostics.
 - [Porting guide](docs/PORTING.md) - transport callbacks and owner integration
 - [Hardware notes](docs/HARDWARE_NOTES.md) - protocol, RESET, topology, and
   electrical constraints
+- [Feature matrix](docs/FEATURE_MATRIX.md) - SCPS207H behavior mapped to the
+  core API, both CLIs, automated evidence, and open physical gates
 - Example firmware: `examples/01_basic_bringup_cli/` - bounded Arduino bring-up
   CLI and HIL firmware contract
 - Native ESP-IDF example: `examples/espidf_basic/` - the same command surface
@@ -206,9 +208,11 @@ The core emits these result classes:
 
 `DEVICE_NOT_FOUND` and `IN_PROGRESS` remain append-only compatibility values;
 the synchronous core does not synthesize them. Device absence is reported as
-the exact transport failure, normally `I2C_NACK_ADDR`. An asynchronous
-`IN_PROGRESS` result from the RESET callback violates its terminal contract and
-is returned as `INVALID_CONFIG`.
+the exact transport failure, normally `I2C_NACK_ADDR`.
+The RESET callback may return only `OK`, `TIMEOUT`, or `RESET_ERROR`; valid
+failures preserve the callback detail and static message. Any other code
+violates the callback contract and is returned as `INVALID_CONFIG`, with the
+original numeric callback code in `Status::detail`.
 
 ## Operation Classes And Bounds
 
@@ -380,11 +384,14 @@ nonblocking; it does not use `fgets()` to dispatch whatever partial bytes happen
 to be ready.
 
 `scan`, `stress`, and `stress_mix` are explicit maintenance diagnostics: they
-are finite, yield after each transaction, block command processing until
-complete, and always finish stress at verified all-off. Scan makes exactly 126
-probes. Stress makes at most the requested 1,000 operations plus one safe-off
+are finite, block command processing until complete, and always finish stress
+at verified all-off. Scan first reports the observed active mask, then makes
+exactly 126 probes; use `select N` before `scan` to isolate one downstream
+branch. Live self-test captures its entry mask, checks all eight one-hot
+selections, and restores that mask with readback on every terminal path after
+capture. Stress makes at most the requested 1,000 operations plus one safe-off
 write and one verification read; with the default 50 ms timeout its transport
-bound is 50.1 seconds.
+bound is 50.1 seconds. The examples yield after each stress transaction.
 
 ## License
 

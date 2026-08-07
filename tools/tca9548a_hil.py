@@ -132,8 +132,8 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
             "TCA-HIL-005",
             "bus",
             "scan",
-            "All 126 bounded upstream address probes complete.",
-            ("Scanning I2C bus", "Scan complete: devices="),
+            "All 126 bounded probes of the reported active topology complete.",
+            ("Scan topology:", "Scanning I2C bus", "Scan complete: devices="),
         ),
         Step(
             "TCA-HIL-006",
@@ -155,8 +155,13 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
             "TCA-HIL-008",
             "contract",
             "hil run reset" if args.include_reset else "hil run",
-            "Live safe HIL checks run and finish at verified all-off.",
-            ("=== TCA9548A HIL RUN ===", "final verified safe-off", "HIL result:"),
+            "Live HIL checks run and restore the verified entry mask.",
+            (
+                "=== TCA9548A HIL RUN ===",
+                "all eight one-hot channels",
+                "final verified mask restore",
+                "HIL result:",
+            ),
             status_patterns,
         ),
     ]
@@ -673,9 +678,14 @@ def parser_self_test(args: argparse.Namespace) -> int:
     )
     unknown_status, _ = classify("unrelated output\n", plan[0])
 
-    scan_started_only, _ = classify("Scanning I2C bus...\n", plan[4])
+    scan_started_only, _ = classify(
+        "Scan topology: OK active_mask=0x00 [none]\nScanning I2C bus...\n",
+        plan[4],
+    )
     scan_complete, _ = classify(
-        "Scanning I2C bus...\nScan complete: devices=1\n", plan[4]
+        "Scan topology: OK active_mask=0x00 [none]\n"
+        "Scanning I2C bus...\nScan complete: devices=1\n",
+        plan[4],
     )
     soak_failure = first_failure(
         "soak complete counts={} failures=1 worst_latency_s=5.000",

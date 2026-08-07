@@ -23,6 +23,7 @@ namespace {
 TCA9548A::TCA9548A device;
 TCA9548A::Config config;
 bool i2cReady = false;
+constexpr unsigned long MAX_STRESS_COUNT = 1000UL;
 
 bool safeOffVerified();
 using TCA9548A::errorName;
@@ -83,10 +84,13 @@ void printVersionInfo() {
 
 void printHealth() {
   cli::printSection("Driver Health");
+  const bool stateAliasMatches = device.driverState() == device.state();
   Serial.printf("  State: %s%s%s (passive; never gates I2C)\n",
                 cli::stateColor(device.isInitialized(), device.isOnline(),
                                 device.consecutiveFailures()),
                 driverStateName(device.state()), LOG_COLOR_RESET);
+  Serial.printf("  State alias parity: %s\n",
+                stateAliasMatches ? "yes" : "no");
   Serial.printf("  Bound: %s\n", device.isBound() ? "yes" : "no");
   Serial.printf("  Initialized: %s\n",
                 device.isInitialized() ? "yes" : "no");
@@ -105,6 +109,13 @@ void printHealth() {
 void printConfig() {
   TCA9548A::SettingsSnapshot snapshot;
   const auto status = device.getSettings(snapshot);
+  const TCA9548A::Config& boundConfig = device.getConfig();
+  const bool configReferenceMatches =
+      !snapshot.bound ||
+      (boundConfig.i2cAddress == snapshot.i2cAddress &&
+       boundConfig.i2cTimeoutMs == snapshot.i2cTimeoutMs &&
+       boundConfig.resetTimeoutMs == snapshot.resetTimeoutMs &&
+       boundConfig.offlineThreshold == snapshot.offlineThreshold);
   cli::printSection("Configuration");
   Serial.printf("  Bound: %s\n", snapshot.bound ? "yes" : "no");
   Serial.printf("  Initialized: %s\n", snapshot.initialized ? "yes" : "no");
@@ -119,6 +130,8 @@ void printConfig() {
                 snapshot.hasHardReset ? "configured" : "not configured");
   Serial.printf("  Offline threshold: %u (diagnostic only)\n",
                 static_cast<unsigned>(snapshot.offlineThreshold));
+  Serial.printf("  Config reference parity: %s\n",
+                configReferenceMatches ? "yes" : "no");
   Serial.print(F("  Snapshot: "));
   printStatus(status);
   Serial.println();
@@ -138,10 +151,10 @@ void printHelp() {
   Serial.println(F("  reset / hardreset              RESET then verify 0x00"));
   Serial.println(F("  invalidate                     Mark cached mask unknown"));
   Serial.println(F("  begin / end                    Bind+probe / bus-silent unbind"));
-  Serial.println(F("  scan                           Maintenance: 126 probes"));
-  Serial.println(F("  stress <1-1000>                Maintenance select sample"));
-  Serial.println(F("  stress_mix <1-1000>            Maintenance primitive mix"));
-  Serial.println(F("  selftest                       Live primitive contract checks"));
+  Serial.println(F("  scan                           Scan active topology: 126 probes"));
+  Serial.println(F("  stress <1-1000>                Select sample, finish all-off"));
+  Serial.println(F("  stress_mix <1-1000>            Primitive mix, finish all-off"));
+  Serial.println(F("  selftest                       Live checks, restore entry mask"));
   Serial.println(F("  hil [dry|parser|run|run reset] HIL contract entry point"));
   Serial.println(F("  help / ?                       This help"));
 }
@@ -248,6 +261,26 @@ bool safeOffVerified() {
   return true;
 }
 
+void scanBus() {
+  if (!i2cReady) {
+    Serial.println(F("scan: NOT_INITIALIZED (I2C controller unavailable)"));
+    return;
+  }
+
+  TCA9548A::ChannelMask visibleMask;
+  const auto topologyStatus = device.readChannelMask(visibleMask);
+  Serial.print(F("Scan topology: "));
+  printStatus(topologyStatus);
+  if (topologyStatus.ok()) {
+    Serial.print(F(" active_mask="));
+    printMask(visibleMask);
+  } else {
+    Serial.print(F(" active_mask=unknown"));
+  }
+  Serial.println(F(" (select a one-hot mask before scan to isolate a branch)"));
+  (void)i2c::scan();
+}
+
 struct HilCounts {
   uint16_t passed = 0;
   uint16_t failed = 0;
@@ -282,8 +315,35 @@ void printHilResult(const HilCounts& counts) {
                 static_cast<unsigned>(counts.skipped));
 }
 
-void finishHilSafe(HilCounts& counts) {
-  reportCheck(counts, "final verified safe-off", safeOffVerified());
+bool restoreMaskVerified(TCA9548A::ChannelMask originalMask) {
+  const auto writeStatus = device.writeChannelMask(originalMask);
+  if (!writeStatus.ok()) {
+    Serial.print(F("restore write: "));
+    printStatus(writeStatus);
+    Serial.println();
+  }
+
+  TCA9548A::ChannelMask observed;
+  const auto readStatus = device.readChannelMask(observed);
+  const bool matched = readStatus.ok() && observed.raw() == originalMask.raw();
+  if (!matched) {
+    Serial.print(F("restore readback: "));
+    printStatus(readStatus);
+    if (readStatus.ok()) {
+      Serial.print(F(" expected="));
+      printMask(originalMask);
+      Serial.print(F(" observed="));
+      printMask(observed);
+    }
+    Serial.println();
+  }
+  return writeStatus.ok() && matched;
+}
+
+void finishHilRestored(HilCounts& counts,
+                       TCA9548A::ChannelMask originalMask) {
+  reportCheck(counts, "final verified mask restore",
+              restoreMaskVerified(originalMask));
   printHilResult(counts);
 }
 
@@ -321,7 +381,17 @@ void runHil(bool dryRun, bool includeReset) {
       device.totalFailures() == failureBeforeProbe;
   reportCheck(counts, "probe no-health-side-effects", probeHealthUnchanged);
   if (!probeOk || !probeHealthUnchanged) {
-    finishHilSafe(counts);
+    printHilResult(counts);
+    return;
+  }
+
+  TCA9548A::ChannelMask originalMask;
+  status = device.readChannelMask(originalMask);
+  const bool originalCaptured = status.ok();
+  reportCheck(counts, "capture original mask readback", originalCaptured,
+              errorName(status.code));
+  if (!originalCaptured) {
+    printHilResult(counts);
     return;
   }
 
@@ -329,7 +399,7 @@ void runHil(bool dryRun, bool includeReset) {
   const bool disableOk = status.ok();
   reportCheck(counts, "disableAll write", disableOk, errorName(status.code));
   if (!disableOk) {
-    finishHilSafe(counts);
+    finishHilRestored(counts, originalMask);
     return;
   }
   TCA9548A::ChannelMask observed;
@@ -338,26 +408,35 @@ void runHil(bool dryRun, bool includeReset) {
   reportCheck(counts, "disableAll readback", disableVerified,
               errorName(status.code));
   if (!disableVerified) {
-    finishHilSafe(counts);
+    finishHilRestored(counts, originalMask);
     return;
   }
 
-  status = device.selectChannel(TCA9548A::Channel::CH3);
-  const bool selectOk = status.ok();
-  reportCheck(counts, "select CH3", selectOk, errorName(status.code));
-  if (!selectOk) {
-    finishHilSafe(counts);
-    return;
+  bool allOneHotVerified = true;
+  char oneHotDetail[48] = {};
+  for (uint8_t index = 0U; index < TCA9548A::cmd::NUM_CHANNELS; ++index) {
+    const auto channel = static_cast<TCA9548A::Channel>(index);
+    status = device.selectChannel(channel);
+    if (!status.ok()) {
+      std::snprintf(oneHotDetail, sizeof(oneHotDetail), "CH%u write: %s",
+                    static_cast<unsigned>(index), errorName(status.code));
+      allOneHotVerified = false;
+      break;
+    }
+    status = device.readChannelMask(observed);
+    if (!status.ok() ||
+        observed.raw() != TCA9548A::ChannelMask::one(channel).raw()) {
+      std::snprintf(oneHotDetail, sizeof(oneHotDetail),
+                    "CH%u readback: %s", static_cast<unsigned>(index),
+                    status.ok() ? "MISMATCH" : errorName(status.code));
+      allOneHotVerified = false;
+      break;
+    }
   }
-  status = device.readChannelMask(observed);
-  const bool selectVerified =
-      status.ok() &&
-      observed.raw() ==
-          TCA9548A::ChannelMask::one(TCA9548A::Channel::CH3).raw();
-  reportCheck(counts, "select CH3 readback", selectVerified,
-              errorName(status.code));
-  if (!selectVerified) {
-    finishHilSafe(counts);
+  reportCheck(counts, "all eight one-hot channels", allOneHotVerified,
+              oneHotDetail);
+  if (!allOneHotVerified) {
+    finishHilRestored(counts, originalMask);
     return;
   }
 
@@ -366,7 +445,7 @@ void runHil(bool dryRun, bool includeReset) {
   reportCheck(counts, "write mask 0xA5", maskWriteOk,
               errorName(status.code));
   if (!maskWriteOk) {
-    finishHilSafe(counts);
+    finishHilRestored(counts, originalMask);
     return;
   }
   status = device.readChannelMask(observed);
@@ -374,7 +453,7 @@ void runHil(bool dryRun, bool includeReset) {
   reportCheck(counts, "read mask 0xA5", maskVerified,
               errorName(status.code));
   if (!maskVerified) {
-    finishHilSafe(counts);
+    finishHilRestored(counts, originalMask);
     return;
   }
 
@@ -383,7 +462,7 @@ void runHil(bool dryRun, bool includeReset) {
   reportCheck(counts, "recover safe-off write", recoverOk,
               errorName(status.code));
   if (!recoverOk) {
-    finishHilSafe(counts);
+    finishHilRestored(counts, originalMask);
     return;
   }
   status = device.readChannelMask(observed);
@@ -391,7 +470,7 @@ void runHil(bool dryRun, bool includeReset) {
   reportCheck(counts, "recover readback 0x00", recoverVerified,
               errorName(status.code));
   if (!recoverVerified) {
-    finishHilSafe(counts);
+    finishHilRestored(counts, originalMask);
     return;
   }
 
@@ -408,7 +487,7 @@ void runHil(bool dryRun, bool includeReset) {
                                  resetObservation.mask.isNone();
       reportCheck(counts, "hardReset leaves verified all-off", resetVerified);
       if (!resetOk || !resetVerified) {
-        finishHilSafe(counts);
+        finishHilRestored(counts, originalMask);
         return;
       }
     }
@@ -416,7 +495,7 @@ void runHil(bool dryRun, bool includeReset) {
     reportSkip(counts, "hardReset", "use 'hil run reset' to include RESET");
   }
 
-  finishHilSafe(counts);
+  finishHilRestored(counts, originalMask);
 }
 
 void runStress(unsigned long count, bool mixed) {
@@ -529,11 +608,7 @@ void processCommand(const char* command) {
     device.end();
     Serial.println(F("end: OK (no bus I/O)"));
   } else if (std::strcmp(command, "scan") == 0) {
-    if (i2cReady) {
-      (void)i2c::scan();
-    } else {
-      Serial.println(F("scan: NOT_INITIALIZED (I2C controller unavailable)"));
-    }
+    scanBus();
   } else if (std::strcmp(command, "selftest") == 0 ||
              std::strcmp(command, "hil run") == 0) {
     runHil(false, false);
@@ -557,10 +632,12 @@ void processCommand(const char* command) {
       Serial.printf("mask 0x%02lX: ", value);
       printStatus(status);
       Serial.println();
-    } else if (parseUnsignedArgument(command, "stress_mix", 1000U, value) &&
+    } else if (parseUnsignedArgument(command, "stress_mix", MAX_STRESS_COUNT,
+                                     value) &&
                value > 0U) {
       runStress(value, true);
-    } else if (parseUnsignedArgument(command, "stress", 1000U, value) &&
+    } else if (parseUnsignedArgument(command, "stress", MAX_STRESS_COUNT,
+                                     value) &&
                value > 0U) {
       runStress(value, false);
     } else {

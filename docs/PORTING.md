@@ -72,6 +72,20 @@ controller recovery, POR, power cycling, and GPIO RESET must call
 `invalidateChannelMask()` unless a subsequent library read already observed the
 hardware state.
 
+For a dedicated sole I2C task, store the driver and callback context inside the
+owner and call the synchronous primitives only from that task. Queue application
+intent to the owner; do not call the same driver instance from producers. The
+owner must prevent callback re-entry, may split route selection, downstream
+work, and route restoration across separate polls, and retains the end-to-end
+deadline and cancellation identity across those calls. The driver adds no task,
+lock, queue, route lease, or bus-recovery policy of its own.
+
+The maintained Arduino and native ESP-IDF CLIs are direct-owner bring-up
+examples: while a command runs, that example owns the controller and no second
+caller accesses it. In a production system with an existing sole I2C task, CLI
+handlers must enqueue bounded intent to that owner and consume copied results;
+they must not call this driver or the controller from the console task.
+
 ## ESP-IDF Adapter Shape
 
 The maintained native example under `examples/espidf_basic/` targets ESP-IDF

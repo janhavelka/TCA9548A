@@ -14,15 +14,18 @@ All notable changes are documented here. The format follows
 - Added cross-framework CLI and ESP-IDF boundary contract checkers, plus a
   durable validation-status report that records the TI SCPS207H audit and
   explicit no-hardware limitations.
+- Added an SCPS207H feature matrix mapping every chip behavior and board-only
+  electrical constraint to core ownership, both CLIs, automated evidence, and
+  open physical-validation gates.
 - Added allocation-free public names for every `Err`, `DriverState`, and
   `MaskProvenance` value, including unknown-enum handling, and appended the
   `RESET_ERROR` status for non-timeout RESET callback failures.
 
 ### Changed
 
-- Bumped the manifest/component API version to `1.1.1` for the backward-
-  compatible ESP-IDF/status-name feature set and the native CLI input fix; no
-  release tag is created by this audit.
+- Bumped the manifest/component API version to `1.1.2` for the backward-
+  compatible ESP-IDF/status-name feature set, native CLI input fix, and RESET
+  callback/diagnostic hardening; no release tag is created by this audit.
 - Replaced the Arduino-only command handler with reusable fixed-buffer
   `CliShell` and `CliStyle` helpers, aligned status/state coloring, exposed
   explicit cache invalidation, and made configuration output report the actual
@@ -52,6 +55,15 @@ All notable changes are documented here. The format follows
 - Strengthened the CLI contract checker to prove every command appears in both
   help and actual dispatch, enforce the bounded native input path, and preserve
   matching status/mask formatting across the two frameworks.
+- Enforced the documented RESET callback result domain. Valid `TIMEOUT` and
+  `RESET_ERROR` details remain intact, while arbitrary driver/lifecycle codes
+  are reported as `INVALID_CONFIG` with the original numeric code in detail.
+- Expanded both live self-tests from one channel to all eight one-hot masks and
+  verified entry-mask restoration on every exit after capture. Bus scans now
+  print the active topology, and native tests exercise all 256 control masks
+  plus the SCPS207H protocol/timing constants.
+- Corrected voltage-translation guidance to use TI's `Vpass(max)` criterion
+  instead of treating `VCC` itself as the pass-gate clamp voltage.
 
 ## [1.0.0] - 2026-07-22
 

@@ -99,6 +99,10 @@ using I2cWriteReadFn = TransportStatus (*)(uint8_t addr,
 /// at most once per hardReset() call and must itself have a finite, documented
 /// execution bound; the driver performs no delay or retry. Return Err::TIMEOUT
 /// when the bound expires and Err::RESET_ERROR for another GPIO/reset failure.
+/// Any other non-OK code violates the callback contract and hardReset() maps it
+/// to Err::INVALID_CONFIG with the original numeric Err value in Status::detail.
+/// Valid TIMEOUT and RESET_ERROR results are returned unchanged, including the
+/// callback's detail and static message.
 /// @param timeoutMs Maximum time allowed for the complete RESET operation
 /// @param user User context pointer (Config::resetUser)
 /// @return Status indicating success or failure

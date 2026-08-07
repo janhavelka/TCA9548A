@@ -257,6 +257,24 @@ void test_address_helpers_cover_all_straps_and_boundaries() {
   }
 }
 
+void test_scps207h_protocol_and_timing_constants_are_exact() {
+  TEST_ASSERT_EQUAL_UINT8(8U, TCA9548A::cmd::NUM_ADDRESSES);
+  TEST_ASSERT_EQUAL_UINT8(8U, TCA9548A::cmd::NUM_CHANNELS);
+  TEST_ASSERT_EQUAL_UINT8(8U, TCA9548A::cmd::MAX_DEVICES_PER_BUS);
+  TEST_ASSERT_EQUAL_UINT8(0U, TCA9548A::cmd::CONTROL_REG_ADDR_BYTES);
+  TEST_ASSERT_EQUAL_UINT32(1U, TCA9548A::cmd::CONTROL_REG_LEN);
+  TEST_ASSERT_EQUAL_HEX8(0x00U, TCA9548A::cmd::CONTROL_REG_DEFAULT);
+  TEST_ASSERT_EQUAL_UINT32(100000U,
+                           TCA9548A::cmd::I2C_STANDARD_MODE_HZ);
+  TEST_ASSERT_EQUAL_UINT32(400000U, TCA9548A::cmd::I2C_FAST_MODE_HZ);
+  TEST_ASSERT_EQUAL_UINT32(400U,
+                           TCA9548A::cmd::MAX_BUS_CAPACITANCE_PF);
+  TEST_ASSERT_EQUAL_UINT32(6U, TCA9548A::cmd::RESET_MIN_LOW_NS);
+  TEST_ASSERT_EQUAL_UINT32(0U, TCA9548A::cmd::RESET_RECOVERY_NS);
+  TEST_ASSERT_EQUAL_UINT32(500U,
+                           TCA9548A::cmd::RESET_SDA_RELEASE_MAX_NS);
+}
+
 void test_channel_mask_helpers_are_exact() {
   TEST_ASSERT_EQUAL_HEX8(0x00, ChannelMask::none().raw());
   TEST_ASSERT_EQUAL_HEX8(0xFF, ChannelMask::all().raw());
@@ -533,20 +551,20 @@ void test_invalid_channel_is_rejected_without_io_or_cache_change() {
   assertStatus(mux.lastError(), lastErrorBefore.code, lastErrorBefore.detail);
 }
 
-void test_write_masks_are_exact_one_byte_transactions() {
-  const uint8_t masks[] = {0x00, 0x01, 0x02, 0x04, 0x08, 0x10,
-                           0x20, 0x40, 0x80, 0xA5, 0xFF};
+void test_write_every_mask_is_an_exact_one_byte_transaction() {
   Driver mux;
   beginOk(mux);
   gTransport.clearHistory();
 
-  for (size_t index = 0; index < sizeof(masks); ++index) {
+  for (uint16_t raw = 0; raw <= 0xFFU; ++raw) {
+    const uint8_t mask = static_cast<uint8_t>(raw);
     TEST_ASSERT_TRUE(
-        mux.writeChannelMask(ChannelMask::fromRaw(masks[index])).ok());
-    assertWriteCall(gTransport.call(index), masks[index]);
+        mux.writeChannelMask(ChannelMask::fromRaw(mask)).ok());
+    assertWriteCall(gTransport.call(raw), mask);
   }
-  TEST_ASSERT_EQUAL_UINT32(static_cast<uint32_t>(sizeof(masks)),
+  TEST_ASSERT_EQUAL_UINT32(256U,
                            static_cast<uint32_t>(gTransport.callCount()));
+  TEST_ASSERT_FALSE(gTransport.overflowed());
 }
 
 void test_disable_all_is_one_safe_off_write() {
@@ -851,7 +869,20 @@ void test_hard_reset_callback_failure_is_terminal_and_indeterminate() {
   gReset.transport = &gTransport;
   gReset.result = Status::Error(Err::IN_PROGRESS, "invalid async reset");
   gReset.applyEffect = false;
-  assertStatus(mux.hardReset(), Err::INVALID_CONFIG);
+  assertStatus(mux.hardReset(), Err::INVALID_CONFIG,
+               static_cast<int32_t>(Err::IN_PROGRESS));
+  TEST_ASSERT_EQUAL_INT(1, gReset.calls);
+  TEST_ASSERT_EQUAL_UINT32(0,
+                           static_cast<uint32_t>(gTransport.callCount()));
+  TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
+
+  gReset = ResetHarness{};
+  gReset.transport = &gTransport;
+  gReset.result = Status::Error(Err::I2C_NACK_ADDR,
+                                "invalid reset callback domain", 77);
+  gReset.applyEffect = false;
+  assertStatus(mux.hardReset(), Err::INVALID_CONFIG,
+               static_cast<int32_t>(Err::I2C_NACK_ADDR));
   TEST_ASSERT_EQUAL_INT(1, gReset.calls);
   TEST_ASSERT_EQUAL_UINT32(0,
                            static_cast<uint32_t>(gTransport.callCount()));
@@ -936,6 +967,7 @@ int main(int, char**) {
   RUN_TEST(test_status_and_transport_helpers);
   RUN_TEST(test_fixed_cli_line_buffer_is_trimmed_bounded_and_recoverable);
   RUN_TEST(test_address_helpers_cover_all_straps_and_boundaries);
+  RUN_TEST(test_scps207h_protocol_and_timing_constants_are_exact);
   RUN_TEST(test_channel_mask_helpers_are_exact);
   RUN_TEST(test_config_defaults_are_bounded);
   RUN_TEST(test_begin_rejects_invalid_config_without_io);
@@ -948,7 +980,7 @@ int main(int, char**) {
   RUN_TEST(test_unbound_hardware_apis_do_no_work);
   RUN_TEST(test_select_channel_encodes_every_one_hot_value);
   RUN_TEST(test_invalid_channel_is_rejected_without_io_or_cache_change);
-  RUN_TEST(test_write_masks_are_exact_one_byte_transactions);
+  RUN_TEST(test_write_every_mask_is_an_exact_one_byte_transaction);
   RUN_TEST(test_disable_all_is_one_safe_off_write);
   RUN_TEST(test_read_is_read_only_and_assigns_output_only_on_success);
   RUN_TEST(test_all_transport_errors_remain_distinct);

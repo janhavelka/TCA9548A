@@ -247,6 +247,9 @@ public:
   /// verification read with i2cTimeoutMs. Success requires exactly 0x00; no
   /// prior mask is restored. A mismatch returns RESET_STATE_MISMATCH with the
   /// observed byte in detail and retains it as READBACK_OBSERVED.
+  /// The callback may return only OK, TIMEOUT, or RESET_ERROR. TIMEOUT and
+  /// RESET_ERROR are preserved exactly; another code returns INVALID_CONFIG
+  /// with the invalid callback code in detail and performs no verification I2C.
   /// @return Terminal RESET callback or verification-read result.
   Status hardReset();
 

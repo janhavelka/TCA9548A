@@ -64,8 +64,10 @@ actual board voltage, pull-ups, wiring, and device population.
 
 - Supported bus modes are Standard-mode and Fast-mode only, up to 400 kHz.
 - `VCC` range is 1.65 V to 5.5 V.
-- For level translation, set TCA9548A `VCC` at or below the lowest bus voltage
-  that must pass through the switch.
+- For level translation, choose `VCC` so the datasheet's resulting
+  `Vpass(max)` is at or below the lowest bus pull-up voltage. `VCC` itself is
+  not the clamp voltage; TI's example uses 3.3 V `VCC` with a 2.7 V lowest
+  bus. Verify the current `Vpass` curve for the selected supply and temperature.
 - Each upstream and downstream bus segment needs its own pull-up resistors.
 - Size pull-ups per segment:
   - `Rp(min) = (Vpullup - VOL(max)) / IOL`

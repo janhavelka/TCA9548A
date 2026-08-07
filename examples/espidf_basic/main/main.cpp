@@ -296,6 +296,13 @@ void printVersion() {
 void printConfig() {
   TCA9548A::SettingsSnapshot snapshot;
   const TCA9548A::Status status = gDevice.getSettings(snapshot);
+  const TCA9548A::Config& boundConfig = gDevice.getConfig();
+  const bool configReferenceMatches =
+      !snapshot.bound ||
+      (boundConfig.i2cAddress == snapshot.i2cAddress &&
+       boundConfig.i2cTimeoutMs == snapshot.i2cTimeoutMs &&
+       boundConfig.resetTimeoutMs == snapshot.resetTimeoutMs &&
+       boundConfig.offlineThreshold == snapshot.offlineThreshold);
   printSection("Configuration");
   printf("  Bound: %s\n", snapshot.bound ? "yes" : "no");
   printf("  Initialized: %s\n", snapshot.initialized ? "yes" : "no");
@@ -311,6 +318,8 @@ void printConfig() {
          snapshot.hasHardReset ? "configured" : "not configured");
   printf("  Offline threshold: %u (diagnostic only)\n",
          static_cast<unsigned>(snapshot.offlineThreshold));
+  printf("  Config reference parity: %s\n",
+         configReferenceMatches ? "yes" : "no");
   fputs("  Snapshot: ", stdout);
   printStatusValue(status);
   putchar('\n');
@@ -318,6 +327,7 @@ void printConfig() {
 
 void printHealth() {
   const bool online = gDevice.isOnline();
+  const bool stateAliasMatches = gDevice.driverState() == gDevice.state();
   const char* stateColor = !gDevice.isInitialized()
                                ? COLOR_GRAY
                                : (online ? (gDevice.consecutiveFailures() == 0U
@@ -327,6 +337,7 @@ void printHealth() {
   printSection("Driver Health");
   printf("  State: %s%s%s (passive; never gates I2C)\n", stateColor,
          driverStateName(gDevice.state()), COLOR_RESET);
+  printf("  State alias parity: %s\n", stateAliasMatches ? "yes" : "no");
   printf("  Bound: %s\n", gDevice.isBound() ? "yes" : "no");
   printf("  Initialized: %s\n", gDevice.isInitialized() ? "yes" : "no");
   printf("  Consecutive failures: %u\n",
@@ -355,10 +366,10 @@ void printHelp() {
   puts("  reset / hardreset              RESET then verify 0x00");
   puts("  invalidate                     Mark cached mask unknown");
   puts("  begin / end                    Bind+probe / bus-silent unbind");
-  puts("  scan                           Maintenance: 126 probes");
-  puts("  stress <1-1000>                Maintenance select sample");
-  puts("  stress_mix <1-1000>            Maintenance primitive mix");
-  puts("  selftest                       Live primitive contract checks");
+  puts("  scan                           Scan active topology: 126 probes");
+  puts("  stress <1-1000>                Select sample, finish all-off");
+  puts("  stress_mix <1-1000>            Primitive mix, finish all-off");
+  puts("  selftest                       Live checks, restore entry mask");
   puts("  hil [dry|parser|run|run reset] HIL contract entry point");
   puts("  help / ?                       This help");
 }
@@ -411,6 +422,18 @@ void scanBus() {
     puts("scan: NOT_INITIALIZED (I2C controller unavailable)");
     return;
   }
+  TCA9548A::ChannelMask visibleMask;
+  const TCA9548A::Status topologyStatus =
+      gDevice.readChannelMask(visibleMask);
+  fputs("Scan topology: ", stdout);
+  printStatusValue(topologyStatus);
+  if (topologyStatus.ok()) {
+    fputs(" active_mask=", stdout);
+    printMask(visibleMask);
+  } else {
+    fputs(" active_mask=unknown", stdout);
+  }
+  puts(" (select a one-hot mask before scan to isolate a branch)");
   puts("Scanning I2C bus (126 bounded probes)...");
   unsigned found = 0U;
   for (uint16_t address = 1U; address <= 126U; ++address) {
@@ -457,8 +480,33 @@ void printHilResult(const HilCounts& counts) {
          static_cast<unsigned>(counts.skipped));
 }
 
-void finishHilSafe(HilCounts& counts) {
-  reportCheck(counts, "final verified safe-off", safeOffVerified());
+bool restoreMaskVerified(TCA9548A::ChannelMask originalMask) {
+  const TCA9548A::Status writeStatus =
+      gDevice.writeChannelMask(originalMask);
+  if (!writeStatus.ok()) {
+    printStatus("restore write", writeStatus);
+  }
+  TCA9548A::ChannelMask observed;
+  const TCA9548A::Status readStatus = gDevice.readChannelMask(observed);
+  const bool matched =
+      readStatus.ok() && observed.raw() == originalMask.raw();
+  if (!matched) {
+    printStatus("restore readback", readStatus);
+    if (readStatus.ok()) {
+      fputs("  expected=", stdout);
+      printMask(originalMask);
+      fputs(" observed=", stdout);
+      printMask(observed);
+      putchar('\n');
+    }
+  }
+  return writeStatus.ok() && matched;
+}
+
+void finishHilRestored(HilCounts& counts,
+                       TCA9548A::ChannelMask originalMask) {
+  reportCheck(counts, "final verified mask restore",
+              restoreMaskVerified(originalMask));
   printHilResult(counts);
 }
 
@@ -494,7 +542,17 @@ void runHil(bool dryRun, bool includeReset) {
       gDevice.totalFailures() == failuresBefore;
   reportCheck(counts, "probe no-health-side-effects", probeHealthUnchanged);
   if (!probeOk || !probeHealthUnchanged) {
-    finishHilSafe(counts);
+    printHilResult(counts);
+    return;
+  }
+
+  TCA9548A::ChannelMask originalMask;
+  status = gDevice.readChannelMask(originalMask);
+  const bool originalCaptured = status.ok();
+  reportCheck(counts, "capture original mask readback", originalCaptured,
+              errorName(status.code));
+  if (!originalCaptured) {
+    printHilResult(counts);
     return;
   }
 
@@ -502,7 +560,7 @@ void runHil(bool dryRun, bool includeReset) {
   const bool disableOk = status.ok();
   reportCheck(counts, "disableAll write", disableOk, errorName(status.code));
   if (!disableOk) {
-    finishHilSafe(counts);
+    finishHilRestored(counts, originalMask);
     return;
   }
   TCA9548A::ChannelMask observed;
@@ -511,26 +569,35 @@ void runHil(bool dryRun, bool includeReset) {
   reportCheck(counts, "disableAll readback", disableVerified,
               errorName(status.code));
   if (!disableVerified) {
-    finishHilSafe(counts);
+    finishHilRestored(counts, originalMask);
     return;
   }
 
-  status = gDevice.selectChannel(TCA9548A::Channel::CH3);
-  const bool selectOk = status.ok();
-  reportCheck(counts, "select CH3", selectOk, errorName(status.code));
-  if (!selectOk) {
-    finishHilSafe(counts);
-    return;
+  bool allOneHotVerified = true;
+  char oneHotDetail[48] = {};
+  for (uint8_t index = 0U; index < TCA9548A::cmd::NUM_CHANNELS; ++index) {
+    const auto channel = static_cast<TCA9548A::Channel>(index);
+    status = gDevice.selectChannel(channel);
+    if (!status.ok()) {
+      snprintf(oneHotDetail, sizeof(oneHotDetail), "CH%u write: %s",
+               static_cast<unsigned>(index), errorName(status.code));
+      allOneHotVerified = false;
+      break;
+    }
+    status = gDevice.readChannelMask(observed);
+    if (!status.ok() ||
+        observed.raw() != TCA9548A::ChannelMask::one(channel).raw()) {
+      snprintf(oneHotDetail, sizeof(oneHotDetail), "CH%u readback: %s",
+               static_cast<unsigned>(index),
+               status.ok() ? "MISMATCH" : errorName(status.code));
+      allOneHotVerified = false;
+      break;
+    }
   }
-  status = gDevice.readChannelMask(observed);
-  const bool selectVerified =
-      status.ok() &&
-      observed.raw() ==
-          TCA9548A::ChannelMask::one(TCA9548A::Channel::CH3).raw();
-  reportCheck(counts, "select CH3 readback", selectVerified,
-              errorName(status.code));
-  if (!selectVerified) {
-    finishHilSafe(counts);
+  reportCheck(counts, "all eight one-hot channels", allOneHotVerified,
+              oneHotDetail);
+  if (!allOneHotVerified) {
+    finishHilRestored(counts, originalMask);
     return;
   }
 
@@ -539,7 +606,7 @@ void runHil(bool dryRun, bool includeReset) {
   reportCheck(counts, "write mask 0xA5", maskWriteOk,
               errorName(status.code));
   if (!maskWriteOk) {
-    finishHilSafe(counts);
+    finishHilRestored(counts, originalMask);
     return;
   }
   status = gDevice.readChannelMask(observed);
@@ -547,7 +614,7 @@ void runHil(bool dryRun, bool includeReset) {
   reportCheck(counts, "read mask 0xA5", maskVerified,
               errorName(status.code));
   if (!maskVerified) {
-    finishHilSafe(counts);
+    finishHilRestored(counts, originalMask);
     return;
   }
 
@@ -556,7 +623,7 @@ void runHil(bool dryRun, bool includeReset) {
   reportCheck(counts, "recover safe-off write", recoverOk,
               errorName(status.code));
   if (!recoverOk) {
-    finishHilSafe(counts);
+    finishHilRestored(counts, originalMask);
     return;
   }
   status = gDevice.readChannelMask(observed);
@@ -564,7 +631,7 @@ void runHil(bool dryRun, bool includeReset) {
   reportCheck(counts, "recover readback 0x00", recoverVerified,
               errorName(status.code));
   if (!recoverVerified) {
-    finishHilSafe(counts);
+    finishHilRestored(counts, originalMask);
     return;
   }
 
@@ -581,14 +648,14 @@ void runHil(bool dryRun, bool includeReset) {
           resetObservation.verified() && resetObservation.mask.isNone();
       reportCheck(counts, "hardReset leaves verified all-off", resetVerified);
       if (!resetOk || !resetVerified) {
-        finishHilSafe(counts);
+        finishHilRestored(counts, originalMask);
         return;
       }
     }
   } else {
     reportSkip(counts, "hardReset", "use 'hil run reset' to include RESET");
   }
-  finishHilSafe(counts);
+  finishHilRestored(counts, originalMask);
 }
 
 void runStress(uint32_t count, bool mixed) {
