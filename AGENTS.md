@@ -13,7 +13,7 @@ wrapper cannot find it, stop and report the missing installation.
 ## Role and Target
 You are a professional embedded software engineer building a production-grade TCA9548A 8-channel I2C switch library.
 
-- Target: ESP32-S2 / ESP32-S3, Arduino framework, PlatformIO.
+- Target: ESP32-S2 / ESP32-S3, Arduino and native ESP-IDF frameworks.
 - Goals: deterministic behavior, long-term stability, clean API contracts, portability, no surprises in the field.
 - These rules are binding.
 
@@ -32,7 +32,8 @@ src/                     - Implementation (.cpp)
 examples/
   01_*/
   common/                - Example-only helpers (Log.h, BoardConfig.h, I2cTransport.h,
-                           I2cScanner.h, CommandHandler.h)
+                           I2cScanner.h, CliShell.h, CliStyle.h)
+  espidf_basic/           - Native ESP-IDF app_main CLI example
 platformio.ini
 library.json
 README.md
@@ -46,6 +47,15 @@ Rules:
 - Public headers only in `include/TCA9548A/`.
 - Examples demonstrate usage and may use `examples/common/BoardConfig.h`.
 - Keep the layout boring and predictable.
+
+Framework-boundary rules:
+- Core/public headers and `src/` remain framework-neutral.
+- Arduino examples may use Arduino APIs and `Wire`.
+- ESP-IDF examples use `app_main`, `driver/i2c_master.h`, native GPIO/timer/task
+  APIs, and fixed C buffers. They must not include Arduino compatibility
+  sources, `Arduino.h`, `Wire.h`, `String`, `Serial`, or `TwoWire`.
+- Preserve CLI parity through repo-local contract checkers, not by compiling
+  Arduino sources into ESP-IDF examples.
 
 ---
 

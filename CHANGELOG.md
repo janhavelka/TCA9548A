@@ -6,8 +6,29 @@ All notable changes are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Added a native ESP-IDF 5.4/5.5 component and fixed-buffer `app_main` CLI for
+  ESP32-S2/S3 with full parity to the Arduino command surface and no Arduino
+  compatibility layer.
+- Added cross-framework CLI and ESP-IDF boundary contract checkers, plus a
+  durable validation-status report that records the TI SCPS207H audit and
+  explicit no-hardware limitations.
+- Added allocation-free public names for every `Err`, `DriverState`, and
+  `MaskProvenance` value, including unknown-enum handling, and appended the
+  `RESET_ERROR` status for non-timeout RESET callback failures.
+
 ### Changed
 
+- Bumped the manifest/component API version to `1.1.0` for the backward-
+  compatible ESP-IDF and status-name feature set; no release tag is created by
+  this audit.
+- Replaced the Arduino-only command handler with reusable fixed-buffer
+  `CliShell` and `CliStyle` helpers, aligned status/state coloring, exposed
+  explicit cache invalidation, and made configuration output report the actual
+  driver snapshot rather than the desired global configuration.
+- Synchronized `Version.h`, Doxygen, and ESP-IDF component versions from
+  `library.json` in the version generator.
 - Exact-pinned the ESP32-S2/S3 example and HIL builds to pioarduino
   `platform-espressif32` `55.03.311` (Arduino-ESP32 `3.3.11`, ESP-IDF `5.5.5`,
   GCC `14.2.0`) instead of PlatformIO Espressif32 `7.0.1` (Arduino-ESP32

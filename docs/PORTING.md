@@ -48,8 +48,10 @@ passive diagnostic timestamps. Omitting it leaves those timestamps at zero.
 
 `hardReset(resetTimeoutMs, resetUser)` is an optional callback that owns the
 active-low GPIO pulse. It must return only after RESET is released and must
-honor the supplied finite timeout. `hardReset()` invokes it once, then performs
-one exact-zero verification read. The library never restores the previous mask.
+honor the supplied finite timeout. Return `Err::TIMEOUT` when that bound expires
+and `Err::RESET_ERROR` for another GPIO/reset failure. `hardReset()` invokes it
+once, then performs one exact-zero verification read. The library never restores
+the previous mask.
 
 ## Owner Integration Pattern
 
@@ -72,7 +74,8 @@ hardware state.
 
 ## ESP-IDF Adapter Shape
 
-An ESP-IDF adapter typically maps one-byte writes to
+The maintained native example under `examples/espidf_basic/` targets ESP-IDF
+5.4/5.5 and maps one-byte writes to
 `i2c_master_transmit()` and read-only requests to `i2c_master_receive()`. Use
 the callback timeout as the physical-operation cap and map platform outcomes:
 
@@ -110,6 +113,8 @@ Run the repository checks for every maintained adapter:
 
 ```bash
 python scripts/generate_version.py check
+python tools/check_cli_contract.py
+python tools/check_idf_example_contract.py
 python -m platformio test -e native
 python -m platformio run -e native_core_no_arduino
 python -m platformio run -e esp32s3dev

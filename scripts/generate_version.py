@@ -35,6 +35,9 @@ SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 DOXYGEN_PROJECT_NUMBER_RE = re.compile(
     r"^(PROJECT_NUMBER\s*=\s*).*$", re.MULTILINE
 )
+IDF_COMPONENT_VERSION_RE = re.compile(
+    r'^(version:\s*)["\']?[^"\'\s]+["\']?\s*$', re.MULTILINE
+)
 
 
 def _find_project_root(start_dir: Path) -> Path:
@@ -206,9 +209,20 @@ def _expected_outputs(project_root: Path) -> Dict[Path, str]:
     if replacements != 1:
         raise ValueError("Doxyfile must contain exactly one PROJECT_NUMBER field")
 
+    idf_component = project_root / "idf_component.yml"
+    idf_component_text = _read_text(idf_component)
+    expected_idf_component, replacements = IDF_COMPONENT_VERSION_RE.subn(
+        rf'\g<1>"{version}"', idf_component_text
+    )
+    if replacements != 1:
+        raise ValueError(
+            "idf_component.yml must contain exactly one top-level version field"
+        )
+
     return {
         project_root / "include" / namespace / "Version.h": _render_version_header(namespace, version),
         doxyfile: expected_doxyfile,
+        idf_component: expected_idf_component,
     }
 
 

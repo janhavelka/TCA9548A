@@ -32,6 +32,10 @@ control protocol and truthful local diagnostics.
   electrical constraints
 - Example firmware: `examples/01_basic_bringup_cli/` - bounded Arduino bring-up
   CLI and HIL firmware contract
+- Native ESP-IDF example: `examples/espidf_basic/` - the same command surface
+  using `app_main` and `driver/i2c_master.h`, with no Arduino facade
+- [Validation status](docs/VALIDATION_STATUS.md) - reviewed datasheet revision,
+  static/build evidence, and explicit no-hardware limitations
 - [Contributing](CONTRIBUTING.md) and [security policy](SECURITY.md)
 
 ## Installation
@@ -182,6 +186,11 @@ machine-readable interface. `Status::detail` preserves backend diagnostics for
 transport failures and contains the observed byte for
 `RESET_STATE_MISMATCH`.
 
+Use `errorName(Err)` (or its `toString(Err)` alias) for allocation-free symbolic
+display. Driver-state and mask-provenance enums have matching
+`driverStateName()` / `maskProvenanceName()` helpers and `toString()` overloads,
+so Arduino and ESP-IDF CLIs cannot drift into separate string tables.
+
 The core emits these result classes:
 
 | Result | Meaning |
@@ -192,6 +201,7 @@ The core emits these result classes:
 | `I2C_NACK_ADDR`, `I2C_NACK_DATA`, `I2C_TIMEOUT`, `I2C_BUS`, `I2C_ERROR` | Exact mapped transport outcome; inspect `detail` for backend context. |
 | `TIMEOUT` | A bounded non-I2C callback, currently hardware RESET, reported its own timeout. |
 | `RESET_STATE_MISMATCH` | RESET callback completed, but readback observed a nonzero control byte. |
+| `RESET_ERROR` | The application-owned RESET callback failed for a non-timeout reason. |
 
 `DEVICE_NOT_FOUND` and `IN_PROGRESS` remain append-only compatibility values;
 the synchronous core does not synthesize them. Device absence is reported as
@@ -286,8 +296,10 @@ See [Hardware Notes](docs/HARDWARE_NOTES.md) and the
 
 ## Versioning
 
-`library.json` is the version source of truth. `Version.h` is generated; do not
-edit it manually.
+`library.json` is the version source of truth. `Version.h`, Doxygen's project
+number, and `idf_component.yml` are synchronized by
+`scripts/generate_version.py`; do not edit their generated version fields
+manually.
 
 ```cpp
 #include "TCA9548A/Version.h"
@@ -310,6 +322,8 @@ fixture instead of inferred from a successful compile.
 
 ```bash
 python scripts/generate_version.py check
+python tools/check_cli_contract.py
+python tools/check_idf_example_contract.py
 python -m platformio test -e native
 python -m platformio run -e native_core_no_arduino
 python -m platformio run -e esp32s3dev
@@ -318,6 +332,16 @@ python tools/tca9548a_hil.py --parser-self-test
 doxygen Doxyfile
 python -m platformio pkg pack . --output .pio/TCA9548A.tar.gz
 git diff --check
+```
+
+When ESP-IDF 5.4 or 5.5 is installed, also build the native example for both
+maintained targets:
+
+```sh
+cd examples/espidf_basic
+idf.py set-target esp32s3 && idf.py build
+idf.py fullclean
+idf.py set-target esp32s2 && idf.py build
 ```
 
 Generated Doxygen HTML is written to `docs/doxygen/html/` and is intentionally
@@ -338,15 +362,20 @@ only the plan and never counts as hardware evidence.
 
 ## Example
 
-`examples/01_basic_bringup_cli/` provides a fixed-buffer Arduino bring-up CLI.
-Its `Wire` transport and board pins live under `examples/common/` and are not
-part of the public library API. The CLI exposes typed mask operations, passive
-health, safe-off recovery, and the HIL contract. `scan`, `stress`, and
-`stress_mix` are explicit maintenance diagnostics: they are finite, yield after
-each transaction, block command processing until complete, and always finish
-stress at verified all-off. Scan makes exactly 126 probes. Stress makes at most
-the requested 1,000 operations plus one safe-off write and one verification
-read; with the default 50 ms Wire timeout its transport bound is 50.1 seconds.
+`examples/01_basic_bringup_cli/` and `examples/espidf_basic/` provide matching
+fixed-buffer Arduino and native ESP-IDF bring-up CLIs. The Arduino `Wire`
+transport and board pins live under `examples/common/`; the IDF adapter lives
+entirely under its example. Neither is part of the public driver core. Both
+CLIs expose every public hardware primitive, typed mask operations, cache
+invalidation, passive health, safe-off recovery, and the HIL contract.
+`tools/check_cli_contract.py` prevents their command/API surfaces from drifting.
+
+`scan`, `stress`, and `stress_mix` are explicit maintenance diagnostics: they
+are finite, yield after each transaction, block command processing until
+complete, and always finish stress at verified all-off. Scan makes exactly 126
+probes. Stress makes at most the requested 1,000 operations plus one safe-off
+write and one verification read; with the default 50 ms timeout its transport
+bound is 50.1 seconds.
 
 ## License
 

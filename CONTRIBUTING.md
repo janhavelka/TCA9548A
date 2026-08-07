@@ -39,7 +39,8 @@ this repository.
   including parameters, return values, ownership, side effects, and I/O bounds
   where relevant.
 - `library.json` is the version source of truth. Never edit generated
-  `include/TCA9548A/Version.h` or `PROJECT_NUMBER` in `Doxyfile` directly.
+  `include/TCA9548A/Version.h`, `PROJECT_NUMBER` in `Doxyfile`, or the version
+  field in `idf_component.yml` directly.
 - Keep [README.md](README.md) task-oriented. Put electrical details in
   [docs/HARDWARE_NOTES.md](docs/HARDWARE_NOTES.md) and adapter details in
   [docs/PORTING.md](docs/PORTING.md).
@@ -55,6 +56,8 @@ Run the repository checks from its root:
 
 ```bash
 python scripts/generate_version.py check
+python tools/check_cli_contract.py
+python tools/check_idf_example_contract.py
 python -m platformio test -e native
 python -m platformio run -e native_core_no_arduino
 python -m platformio run -e esp32s3dev
@@ -64,6 +67,10 @@ doxygen Doxyfile
 python -m platformio pkg pack . --output .pio/TCA9548A.tar.gz
 git diff --check
 ```
+
+With ESP-IDF 5.4 or 5.5 installed, build `examples/espidf_basic` for both
+`esp32s2` and `esp32s3`. CI performs those native-IDF builds even when a local
+ESP-IDF installation is unavailable.
 
 The CI workflow additionally compiles the framework-neutral core with strict
 C++17 warnings. CI pins PlatformIO and Doxygen versions; when local tool

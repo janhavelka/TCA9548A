@@ -53,6 +53,12 @@ jobs:
       - name: Check generated version header
         run: python scripts/generate_version.py check
 
+      - name: Enforce cross-framework CLI contract
+        run: python tools/check_cli_contract.py
+
+      - name: Enforce native ESP-IDF example contract
+        run: python tools/check_idf_example_contract.py
+
       - name: Run native tests
         run: python -m platformio test -e native
 
@@ -115,3 +121,25 @@ jobs:
 
       - name: Check tracked generated files
         run: git diff --exit-code
+
+  idf-example:
+    name: Native ESP-IDF example (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - esp32s2
+          - esp32s3
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Build native ESP-IDF example
+        uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
+        with:
+          esp_idf_version: v5.5.5
+          target: ${{ matrix.target }}
+          path: examples/espidf_basic

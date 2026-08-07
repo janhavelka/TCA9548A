@@ -5,11 +5,13 @@
 #include <Wire.h>
 
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 #include "examples/common/BoardConfig.h"
-#include "examples/common/CommandHandler.h"
+#include "examples/common/CliShell.h"
+#include "examples/common/CliStyle.h"
 #include "examples/common/I2cScanner.h"
 #include "examples/common/I2cTransport.h"
 #include "examples/common/Log.h"
@@ -23,57 +25,17 @@ TCA9548A::Config config;
 bool i2cReady = false;
 
 bool safeOffVerified();
-
-const char* errorName(TCA9548A::Err error) {
-  using TCA9548A::Err;
-  switch (error) {
-    case Err::OK: return "OK";
-    case Err::NOT_INITIALIZED: return "NOT_INITIALIZED";
-    case Err::INVALID_CONFIG: return "INVALID_CONFIG";
-    case Err::I2C_ERROR: return "I2C_ERROR";
-    case Err::TIMEOUT: return "TIMEOUT";
-    case Err::INVALID_PARAM: return "INVALID_PARAM";
-    case Err::DEVICE_NOT_FOUND: return "DEVICE_NOT_FOUND";
-    case Err::UNSUPPORTED: return "UNSUPPORTED";
-    case Err::I2C_NACK_ADDR: return "I2C_NACK_ADDR";
-    case Err::I2C_NACK_DATA: return "I2C_NACK_DATA";
-    case Err::I2C_TIMEOUT: return "I2C_TIMEOUT";
-    case Err::I2C_BUS: return "I2C_BUS";
-    case Err::BUSY: return "BUSY";
-    case Err::IN_PROGRESS: return "IN_PROGRESS";
-    case Err::RESET_STATE_MISMATCH: return "RESET_STATE_MISMATCH";
-  }
-  return "UNKNOWN";
-}
-
-const char* stateName(TCA9548A::DriverState state) {
-  using TCA9548A::DriverState;
-  switch (state) {
-    case DriverState::UNINIT: return "UNINIT";
-    case DriverState::READY: return "READY";
-    case DriverState::DEGRADED: return "DEGRADED";
-    case DriverState::OFFLINE: return "OFFLINE";
-  }
-  return "UNKNOWN";
-}
-
-const char* provenanceName(TCA9548A::MaskProvenance provenance) {
-  using TCA9548A::MaskProvenance;
-  switch (provenance) {
-    case MaskProvenance::UNKNOWN: return "UNKNOWN";
-    case MaskProvenance::WRITE_COMPLETED: return "WRITE_COMPLETED";
-    case MaskProvenance::READBACK_OBSERVED: return "READBACK_OBSERVED";
-  }
-  return "UNKNOWN";
-}
+using TCA9548A::errorName;
+using TCA9548A::driverStateName;
+using TCA9548A::maskProvenanceName;
 
 void printStatus(const TCA9548A::Status& status) {
-  if (status.ok()) {
-    Serial.print(F("OK"));
-    return;
+  Serial.printf("%s%s%s", cli::resultColor(status.ok()),
+                errorName(status.code), LOG_COLOR_RESET);
+  if (!status.ok()) {
+    Serial.printf(" (detail=%ld, %s)", static_cast<long>(status.detail),
+                  status.msg);
   }
-  Serial.printf("%s (detail=%ld, %s)", errorName(status.code),
-                static_cast<long>(status.detail), status.msg);
 }
 
 void printMask(TCA9548A::ChannelMask mask) {
@@ -96,7 +58,7 @@ void printMask(TCA9548A::ChannelMask mask) {
 void printObservation() {
   const auto observation = device.channelMaskObservation();
   Serial.printf("Mask cache: %s known=%s verified=%s value=",
-                provenanceName(observation.provenance),
+                maskProvenanceName(observation.provenance),
                 observation.known() ? "yes" : "no",
                 observation.verified() ? "yes" : "no");
   printMask(observation.mask);
@@ -104,7 +66,7 @@ void printObservation() {
 }
 
 void printVersionInfo() {
-  Serial.printf("%s=== Version Info ===%s\n", LOG_COLOR_CYAN, LOG_COLOR_RESET);
+  cli::printSection("Version Info");
   Serial.printf("  MCU: %s rev %u, flash %lu bytes, PSRAM %s (%lu bytes)\n",
                 ESP.getChipModel(),
                 static_cast<unsigned>(ESP.getChipRevision()),
@@ -120,10 +82,11 @@ void printVersionInfo() {
 }
 
 void printHealth() {
-  Serial.printf("%s=== Driver Health ===%s\n", LOG_COLOR_CYAN,
-                LOG_COLOR_RESET);
-  Serial.printf("  State: %s (passive; never gates I2C)\n",
-                stateName(device.state()));
+  cli::printSection("Driver Health");
+  Serial.printf("  State: %s%s%s (passive; never gates I2C)\n",
+                cli::stateColor(device.isInitialized(), device.isOnline(),
+                                device.consecutiveFailures()),
+                driverStateName(device.state()), LOG_COLOR_RESET);
   Serial.printf("  Bound: %s\n", device.isBound() ? "yes" : "no");
   Serial.printf("  Initialized: %s\n",
                 device.isInitialized() ? "yes" : "no");
@@ -142,25 +105,27 @@ void printHealth() {
 void printConfig() {
   TCA9548A::SettingsSnapshot snapshot;
   const auto status = device.getSettings(snapshot);
-  Serial.printf("%s=== Configuration ===%s\n", LOG_COLOR_CYAN,
-                LOG_COLOR_RESET);
-  Serial.printf("  I2C address: 0x%02X\n", config.i2cAddress);
+  cli::printSection("Configuration");
+  Serial.printf("  Bound: %s\n", snapshot.bound ? "yes" : "no");
+  Serial.printf("  Initialized: %s\n", snapshot.initialized ? "yes" : "no");
+  Serial.printf("  I2C address: 0x%02X\n", snapshot.i2cAddress);
   Serial.printf("  I2C timeout: %lu ms\n",
-                static_cast<unsigned long>(config.i2cTimeoutMs));
+                static_cast<unsigned long>(snapshot.i2cTimeoutMs));
   Serial.printf("  RESET timeout: %lu ms\n",
-                static_cast<unsigned long>(config.resetTimeoutMs));
+                static_cast<unsigned long>(snapshot.resetTimeoutMs));
+  Serial.printf("  nowMs hook: %s\n",
+                snapshot.hasNowMsHook ? "configured" : "not configured");
   Serial.printf("  RESET callback: %s\n",
-                config.hardReset != nullptr ? "configured" : "not configured");
+                snapshot.hasHardReset ? "configured" : "not configured");
   Serial.printf("  Offline threshold: %u (diagnostic only)\n",
-                static_cast<unsigned>(config.offlineThreshold));
+                static_cast<unsigned>(snapshot.offlineThreshold));
   Serial.print(F("  Snapshot: "));
   printStatus(status);
   Serial.println();
 }
 
 void printHelp() {
-  Serial.printf("%s=== TCA9548A CLI Help ===%s\n", LOG_COLOR_CYAN,
-                LOG_COLOR_RESET);
+  cli::printSection("TCA9548A CLI Help");
   Serial.println(F("  version / ver                  Version information"));
   Serial.println(F("  cfg                            Bound configuration"));
   Serial.println(F("  health / drv / state           Passive diagnostics"));
@@ -171,13 +136,14 @@ void printHelp() {
   Serial.println(F("  probe                          Raw diagnostic read"));
   Serial.println(F("  recover                        One safe-off write"));
   Serial.println(F("  reset / hardreset              RESET then verify 0x00"));
+  Serial.println(F("  invalidate                     Mark cached mask unknown"));
   Serial.println(F("  begin / end                    Bind+probe / bus-silent unbind"));
   Serial.println(F("  scan                           Maintenance: 126 probes"));
   Serial.println(F("  stress <1-1000>                Maintenance select sample"));
   Serial.println(F("  stress_mix <1-1000>            Maintenance primitive mix"));
   Serial.println(F("  selftest                       Live primitive contract checks"));
   Serial.println(F("  hil [dry|parser|run|run reset] HIL contract entry point"));
-  Serial.println(F("  help                           This help"));
+  Serial.println(F("  help / ?                       This help"));
 }
 
 uint32_t nowMs(void*) {
@@ -293,7 +259,8 @@ void reportCheck(HilCounts& counts, const char* name, bool passed,
   } else {
     ++counts.failed;
   }
-  Serial.printf("  [%s] %s", passed ? "PASS" : "FAIL", name);
+  Serial.printf("  [%s%s%s] %s", cli::resultColor(passed),
+                passed ? "PASS" : "FAIL", LOG_COLOR_RESET, name);
   if (detail != nullptr && detail[0] != '\0') {
     Serial.printf(" - %s", detail);
   }
@@ -302,7 +269,8 @@ void reportCheck(HilCounts& counts, const char* name, bool passed,
 
 void reportSkip(HilCounts& counts, const char* name, const char* detail) {
   ++counts.skipped;
-  Serial.printf("  [SKIP] %s - %s\n", name, detail);
+  Serial.printf("  [%sSKIP%s] %s - %s\n", LOG_COLOR_YELLOW,
+                LOG_COLOR_RESET, name, detail);
 }
 
 void printHilResult(const HilCounts& counts) {
@@ -318,8 +286,10 @@ void finishHilSafe(HilCounts& counts) {
 }
 
 void runHil(bool dryRun, bool includeReset) {
-  Serial.printf("%s=== TCA9548A HIL %s ===%s\n", LOG_COLOR_CYAN,
-                dryRun ? "DRY-RUN" : "RUN", LOG_COLOR_RESET);
+  char title[40];
+  std::snprintf(title, sizeof(title), "TCA9548A HIL %s",
+                dryRun ? "DRY-RUN" : "RUN");
+  cli::printSection(title);
   HilCounts counts;
 
   reportCheck(counts, "typed ChannelMask is one byte",
@@ -502,7 +472,7 @@ void runStress(unsigned long count, bool mixed) {
 }
 
 void processCommand(const char* command) {
-  if (std::strcmp(command, "help") == 0) {
+  if (std::strcmp(command, "help") == 0 || std::strcmp(command, "?") == 0) {
     printHelp();
   } else if (std::strcmp(command, "version") == 0 ||
              std::strcmp(command, "ver") == 0) {
@@ -534,6 +504,7 @@ void processCommand(const char* command) {
     Serial.print(F("probe: "));
     printStatus(status);
     Serial.println();
+    printObservation();
   } else if (std::strcmp(command, "recover") == 0) {
     const auto status = device.recover();
     Serial.print(F("recover (safe-off write): "));
@@ -546,13 +517,21 @@ void processCommand(const char* command) {
     printStatus(status);
     Serial.println();
     printObservation();
+  } else if (std::strcmp(command, "invalidate") == 0) {
+    device.invalidateChannelMask();
+    Serial.println(F("invalidate: OK (no bus I/O)"));
+    printObservation();
   } else if (std::strcmp(command, "begin") == 0) {
     beginDriver();
   } else if (std::strcmp(command, "end") == 0) {
     device.end();
     Serial.println(F("end: OK (no bus I/O)"));
   } else if (std::strcmp(command, "scan") == 0) {
-    (void)i2c::scan();
+    if (i2cReady) {
+      (void)i2c::scan();
+    } else {
+      Serial.println(F("scan: NOT_INITIALIZED (I2C controller unavailable)"));
+    }
   } else if (std::strcmp(command, "selftest") == 0 ||
              std::strcmp(command, "hil run") == 0) {
     runHil(false, false);
@@ -605,15 +584,17 @@ void setup() {
   configureDriver();
   beginDriver();
   printHelp();
-  Serial.print(F("\n> "));
+  Serial.println();
+  cli::printPrompt();
 }
 
 void loop() {
   device.tick(millis());
 
   char command[128];
-  if (cmd::readLine(command, sizeof(command))) {
+  if (cli_shell::readLine(command, sizeof(command))) {
     processCommand(command);
-    Serial.print(F("\n> "));
+    Serial.println();
+    cli::printPrompt();
   }
 }

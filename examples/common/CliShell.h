@@ -1,5 +1,5 @@
 /**
- * @file CommandHandler.h
+ * @file CliShell.h
  * @brief Fixed-buffer serial command input for the example CLI.
  * @note Example-only helper; not part of the library API.
  */
@@ -11,7 +11,7 @@
 
 #include "examples/common/Log.h"
 
-namespace cmd {
+namespace cli_shell {
 
 inline bool readLine(char* output, size_t capacity) {
   static char buffer[128];
@@ -22,7 +22,6 @@ inline bool readLine(char* output, size_t capacity) {
     return false;
   }
 
-  // Bound serial work per loop iteration even if bytes continue arriving.
   for (size_t processed = 0;
        processed < sizeof(buffer) && LOG_SERIAL.available() > 0;
        ++processed) {
@@ -85,4 +84,4 @@ inline bool readLine(char* output, size_t capacity) {
   return false;
 }
 
-}  // namespace cmd
+}  // namespace cli_shell

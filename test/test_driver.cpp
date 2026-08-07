@@ -112,11 +112,57 @@ void test_status_and_transport_helpers() {
       Err::DEVICE_NOT_FOUND, Err::UNSUPPORTED,      Err::I2C_NACK_ADDR,
       Err::I2C_NACK_DATA,    Err::I2C_TIMEOUT,      Err::I2C_BUS,
       Err::BUSY,             Err::IN_PROGRESS,      Err::RESET_STATE_MISMATCH,
+      Err::RESET_ERROR,
+  };
+  const char* names[] = {
+      "OK",               "NOT_INITIALIZED", "INVALID_CONFIG",
+      "I2C_ERROR",        "TIMEOUT",          "INVALID_PARAM",
+      "DEVICE_NOT_FOUND", "UNSUPPORTED",      "I2C_NACK_ADDR",
+      "I2C_NACK_DATA",    "I2C_TIMEOUT",      "I2C_BUS",
+      "BUSY",             "IN_PROGRESS",      "RESET_STATE_MISMATCH",
+      "RESET_ERROR",
   };
   for (size_t index = 0; index < sizeof(errors) / sizeof(errors[0]); ++index) {
     TEST_ASSERT_EQUAL_INT(static_cast<int>(index),
                           static_cast<int>(errors[index]));
+    TEST_ASSERT_EQUAL_STRING(names[index], TCA9548A::errorName(errors[index]));
+    TEST_ASSERT_EQUAL_STRING(names[index], TCA9548A::toString(errors[index]));
   }
+  TEST_ASSERT_EQUAL_STRING(
+      "UNKNOWN", TCA9548A::errorName(static_cast<Err>(0xFFU)));
+
+  const DriverState states[] = {DriverState::UNINIT, DriverState::READY,
+                                DriverState::DEGRADED, DriverState::OFFLINE};
+  const char* stateNames[] = {"UNINIT", "READY", "DEGRADED", "OFFLINE"};
+  for (size_t index = 0; index < sizeof(states) / sizeof(states[0]); ++index) {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(index),
+                          static_cast<int>(states[index]));
+    TEST_ASSERT_EQUAL_STRING(stateNames[index],
+                             TCA9548A::driverStateName(states[index]));
+    TEST_ASSERT_EQUAL_STRING(stateNames[index], TCA9548A::toString(states[index]));
+  }
+  TEST_ASSERT_EQUAL_STRING(
+      "UNKNOWN",
+      TCA9548A::driverStateName(static_cast<DriverState>(0xFFU)));
+
+  const MaskProvenance provenance[] = {
+      MaskProvenance::UNKNOWN, MaskProvenance::WRITE_COMPLETED,
+      MaskProvenance::READBACK_OBSERVED};
+  const char* provenanceNames[] = {"UNKNOWN", "WRITE_COMPLETED",
+                                   "READBACK_OBSERVED"};
+  for (size_t index = 0; index < sizeof(provenance) / sizeof(provenance[0]);
+       ++index) {
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(index),
+                          static_cast<int>(provenance[index]));
+    TEST_ASSERT_EQUAL_STRING(
+        provenanceNames[index],
+        TCA9548A::maskProvenanceName(provenance[index]));
+    TEST_ASSERT_EQUAL_STRING(provenanceNames[index],
+                             TCA9548A::toString(provenance[index]));
+  }
+  TEST_ASSERT_EQUAL_STRING(
+      "UNKNOWN",
+      TCA9548A::maskProvenanceName(static_cast<MaskProvenance>(0xFFU)));
 }
 
 void test_address_helpers_cover_all_straps_and_boundaries() {
@@ -711,6 +757,16 @@ void test_hard_reset_callback_failure_is_terminal_and_indeterminate() {
   TEST_ASSERT_EQUAL_UINT32(0,
                            static_cast<uint32_t>(gTransport.callCount()));
   TEST_ASSERT_EQUAL_HEX8(0x00, gTransport.hardwareMask);
+  TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
+
+  gReset = ResetHarness{};
+  gReset.transport = &gTransport;
+  gReset.result = Status::Error(Err::RESET_ERROR, "reset GPIO error", 18);
+  gReset.applyEffect = false;
+  assertStatus(mux.hardReset(), Err::RESET_ERROR, 18);
+  TEST_ASSERT_EQUAL_INT(1, gReset.calls);
+  TEST_ASSERT_EQUAL_UINT32(0,
+                           static_cast<uint32_t>(gTransport.callCount()));
   TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
 
   gReset = ResetHarness{};

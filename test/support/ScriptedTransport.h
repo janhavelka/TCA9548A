@@ -192,7 +192,7 @@ struct ResetHarness {
   static TCA9548A::Status reset(uint32_t timeoutMs, void* user) {
     auto* self = static_cast<ResetHarness*>(user);
     if (self == nullptr) {
-      return TCA9548A::Status::Error(TCA9548A::Err::I2C_ERROR,
+      return TCA9548A::Status::Error(TCA9548A::Err::RESET_ERROR,
                                      "Null reset context", -2000);
     }
     ++self->calls;

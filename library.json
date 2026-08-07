@@ -1,7 +1,7 @@
 {
   "name": "TCA9548A",
-  "version": "1.0.0",
-  "description": "Production-grade TCA9548A 8-channel I2C switch driver.",
+  "version": "1.1.0",
+  "description": "Framework-neutral production-grade TCA9548A 8-channel I2C switch driver.",
   "keywords": [
     "tca9548a",
     "i2c",
@@ -11,6 +11,8 @@
     "bus",
     "esp32",
     "arduino",
+    "espidf",
+    "esp-idf",
     "platformio"
   ],
   "authors": [
@@ -33,7 +35,8 @@
   "license": "MIT",
   "homepage": "https://www.thymos.cz",
   "frameworks": [
-    "arduino"
+    "arduino",
+    "espidf"
   ],
   "platforms": [
     "espressif32"
@@ -45,6 +48,7 @@
     "include": [
       "AGENTS.md",
       "CHANGELOG.md",
+      "CMakeLists.txt",
       "CONTRIBUTING.md",
       "Doxyfile",
       "LICENSE",
@@ -52,13 +56,17 @@
       "SECURITY.md",
       "docs/HARDWARE_NOTES.md",
       "docs/PORTING.md",
+      "docs/VALIDATION_STATUS.md",
       "examples/01_basic_bringup_cli/main.cpp",
       "examples/common/*.h",
+      "examples/espidf_basic/**",
       "include/TCA9548A/*.h",
       "library.json",
       "platformio.ini",
       "scripts/generate_version.py",
       "src/*.cpp",
+      "tools/check_cli_contract.py",
+      "tools/check_idf_example_contract.py",
       "tools/tca9548a_hil.py"
     ]
   },

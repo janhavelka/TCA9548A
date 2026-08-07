@@ -97,7 +97,8 @@ using I2cWriteReadFn = TransportStatus (*)(uint8_t addr,
 /// Implementations must assert RESET low for at least cmd::RESET_MIN_LOW_NS,
 /// release it, and return only after RESET is complete. The callback is invoked
 /// at most once per hardReset() call and must itself have a finite, documented
-/// execution bound; the driver performs no delay or retry.
+/// execution bound; the driver performs no delay or retry. Return Err::TIMEOUT
+/// when the bound expires and Err::RESET_ERROR for another GPIO/reset failure.
 /// @param timeoutMs Maximum time allowed for the complete RESET operation
 /// @param user User context pointer (Config::resetUser)
 /// @return Status indicating success or failure

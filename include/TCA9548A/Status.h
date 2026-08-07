@@ -26,8 +26,39 @@ enum class Err : uint8_t {
   I2C_BUS = 11,                ///< I2C bus error (SDA stuck, arbitration, etc.)
   BUSY = 12,                   ///< Operation cannot start because state is busy
   IN_PROGRESS = 13,            ///< Reserved for sibling-driver compatibility
-  RESET_STATE_MISMATCH = 14    ///< RESET completed but byte was not 0x00
+  RESET_STATE_MISMATCH = 14,   ///< RESET completed but byte was not 0x00
+  RESET_ERROR = 15             ///< Hardware RESET callback failed
 };
+
+/// Return the stable allocation-free display name for an error code.
+/// @param error Error code to describe.
+/// @return Static-lifetime symbolic name, or "UNKNOWN" for an invalid cast.
+constexpr const char* errorName(Err error) {
+  switch (error) {
+    case Err::OK: return "OK";
+    case Err::NOT_INITIALIZED: return "NOT_INITIALIZED";
+    case Err::INVALID_CONFIG: return "INVALID_CONFIG";
+    case Err::I2C_ERROR: return "I2C_ERROR";
+    case Err::TIMEOUT: return "TIMEOUT";
+    case Err::INVALID_PARAM: return "INVALID_PARAM";
+    case Err::DEVICE_NOT_FOUND: return "DEVICE_NOT_FOUND";
+    case Err::UNSUPPORTED: return "UNSUPPORTED";
+    case Err::I2C_NACK_ADDR: return "I2C_NACK_ADDR";
+    case Err::I2C_NACK_DATA: return "I2C_NACK_DATA";
+    case Err::I2C_TIMEOUT: return "I2C_TIMEOUT";
+    case Err::I2C_BUS: return "I2C_BUS";
+    case Err::BUSY: return "BUSY";
+    case Err::IN_PROGRESS: return "IN_PROGRESS";
+    case Err::RESET_STATE_MISMATCH: return "RESET_STATE_MISMATCH";
+    case Err::RESET_ERROR: return "RESET_ERROR";
+  }
+  return "UNKNOWN";
+}
+
+/// Compatibility alias for errorName().
+/// @param error Error code to describe.
+/// @return Static-lifetime symbolic name.
+constexpr const char* toString(Err error) { return errorName(error); }
 
 /// Status structure returned by all fallible operations
 struct Status {

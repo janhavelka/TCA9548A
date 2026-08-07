@@ -35,6 +35,7 @@ STATUS_FAILURE_PATTERNS = (
     r"\bDEVICE_NOT_FOUND\b",
     r"\bNOT_INITIALIZED\b",
     r"\bINVALID_(?:CONFIG|PARAM)\b",
+    r"\bRESET_(?:ERROR|STATE_MISMATCH)\b",
 )
 
 
@@ -663,7 +664,7 @@ def parser_self_test(args: argparse.Namespace) -> int:
             return 1
 
     pass_status, _ = classify(
-        "=== Version Info ===\n  Library: 1.0.0\n",
+        "=== Version Info ===\n  Library: 1.1.0\n",
         plan[0],
     )
     fail_status, _ = classify(

@@ -107,6 +107,25 @@ enum class MaskProvenance : uint8_t {
   READBACK_OBSERVED    ///< Successful control-byte read observed this value
 };
 
+/// Return the stable allocation-free display name for mask evidence.
+/// @param provenance Evidence classification to describe.
+/// @return Static-lifetime symbolic name, or "UNKNOWN" for an invalid cast.
+constexpr const char* maskProvenanceName(MaskProvenance provenance) {
+  switch (provenance) {
+    case MaskProvenance::UNKNOWN: return "UNKNOWN";
+    case MaskProvenance::WRITE_COMPLETED: return "WRITE_COMPLETED";
+    case MaskProvenance::READBACK_OBSERVED: return "READBACK_OBSERVED";
+  }
+  return "UNKNOWN";
+}
+
+/// Compatibility overload for maskProvenanceName().
+/// @param provenance Evidence classification to describe.
+/// @return Static-lifetime symbolic name.
+constexpr const char* toString(MaskProvenance provenance) {
+  return maskProvenanceName(provenance);
+}
+
 /// Truthful cached channel-mask value and its provenance.
 struct ChannelMaskObservation {
   ChannelMask mask = ChannelMask::none(); ///< Last retained control-byte value
@@ -134,6 +153,26 @@ enum class DriverState : uint8_t {
   DEGRADED,  ///< 1 <= consecutiveFailures < offlineThreshold
   OFFLINE    ///< consecutiveFailures >= offlineThreshold
 };
+
+/// Return the stable allocation-free display name for a driver state.
+/// @param state Driver state to describe.
+/// @return Static-lifetime symbolic name, or "UNKNOWN" for an invalid cast.
+constexpr const char* driverStateName(DriverState state) {
+  switch (state) {
+    case DriverState::UNINIT: return "UNINIT";
+    case DriverState::READY: return "READY";
+    case DriverState::DEGRADED: return "DEGRADED";
+    case DriverState::OFFLINE: return "OFFLINE";
+  }
+  return "UNKNOWN";
+}
+
+/// Compatibility overload for driverStateName().
+/// @param state Driver state to describe.
+/// @return Static-lifetime symbolic name.
+constexpr const char* toString(DriverState state) {
+  return driverStateName(state);
+}
 
 /// Snapshot of current driver settings/state without performing I2C.
 struct SettingsSnapshot {
