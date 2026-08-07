@@ -33,7 +33,8 @@ control protocol and truthful local diagnostics.
 - Example firmware: `examples/01_basic_bringup_cli/` - bounded Arduino bring-up
   CLI and HIL firmware contract
 - Native ESP-IDF example: `examples/espidf_basic/` - the same command surface
-  using `app_main` and `driver/i2c_master.h`, with no Arduino facade
+  using `app_main` and `driver/i2c_master.h`, with no Arduino facade; both CLIs
+  share one framework-neutral fixed-line accumulator
 - [Validation status](docs/VALIDATION_STATUS.md) - reviewed datasheet revision,
   static/build evidence, and explicit no-hardware limitations
 - [Contributing](CONTRIBUTING.md) and [security policy](SECURITY.md)
@@ -368,7 +369,15 @@ transport and board pins live under `examples/common/`; the IDF adapter lives
 entirely under its example. Neither is part of the public driver core. Both
 CLIs expose every public hardware primitive, typed mask operations, cache
 invalidation, passive health, safe-off recovery, and the HIL contract.
-`tools/check_cli_contract.py` prevents their command/API surfaces from drifting.
+`tools/check_cli_contract.py` separately verifies help and dispatch routing so
+their command/API surfaces cannot pass on token presence alone.
+
+The example-only `CliLineBuffer` accepts commands only after CR or LF, trims
+outer spaces/tabs, accepts at most 127 command bytes, and discards every byte
+of an overlong line through its terminator. The native CLI polls this
+accumulator in bounded chunks because the default ESP-IDF UART VFS may be
+nonblocking; it does not use `fgets()` to dispatch whatever partial bytes happen
+to be ready.
 
 `scan`, `stress`, and `stress_mix` are explicit maintenance diagnostics: they
 are finite, yield after each transaction, block command processing until

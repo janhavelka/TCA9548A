@@ -5,6 +5,12 @@ This example uses native ESP-IDF APIs only: `app_main`, the new
 buffers. It does not include Arduino, `Wire`, `String`, `Serial`, or an Arduino
 compatibility facade.
 
+Console input is polled into the shared example-only 128-byte line accumulator
+instead of dispatching direct `fgets()` results. A command runs only after CR
+or LF; overlong input is discarded through its terminator, and each application
+loop consumes at most 128 available bytes. This remains deterministic with the
+default nonblocking ESP-IDF console VFS and avoids repeated idle prompts.
+
 The command surface matches the Arduino bring-up CLI, including address and
 health diagnostics, mask read/write/select, safe-off recovery, optional RESET,
 bounded scan/stress, and HIL commands. The default RESET GPIO is disabled;

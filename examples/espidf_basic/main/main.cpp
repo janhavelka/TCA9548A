@@ -3,7 +3,6 @@
  * @brief Native ESP-IDF bring-up CLI for TCA9548A.
  */
 
-#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -21,6 +20,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include "examples/common/CliLineBuffer.h"
 #include "TCA9548A/TCA9548A.h"
 
 namespace {
@@ -51,6 +51,7 @@ NativeBus gBus;
 TCA9548A::TCA9548A gDevice;
 TCA9548A::Config gConfig;
 bool gI2cReady = false;
+cli_shell::FixedLineBuffer gLineBuffer;
 using TCA9548A::errorName;
 using TCA9548A::driverStateName;
 using TCA9548A::maskProvenanceName;
@@ -59,12 +60,17 @@ void printSection(const char* title) {
   printf("%s=== %s ===%s\n", COLOR_CYAN, title, COLOR_RESET);
 }
 
-void printStatus(const char* operation, const TCA9548A::Status& status) {
-  printf("%s: %s%s%s", operation, status.ok() ? COLOR_GREEN : COLOR_RED,
+void printStatusValue(const TCA9548A::Status& status) {
+  printf("%s%s%s", status.ok() ? COLOR_GREEN : COLOR_RED,
          errorName(status.code), COLOR_RESET);
   if (!status.ok()) {
     printf(" (detail=%ld, %s)", static_cast<long>(status.detail), status.msg);
   }
+}
+
+void printStatus(const char* operation, const TCA9548A::Status& status) {
+  printf("%s: ", operation);
+  printStatusValue(status);
   putchar('\n');
 }
 
@@ -263,8 +269,9 @@ void beginDriver() {
   }
   const bool wasBound = gDevice.isBound();
   const TCA9548A::Status status = gDevice.begin(gConfig);
-  printStatus("begin", status);
-  printf("  bound=%s\n", gDevice.isBound() ? "yes" : "no");
+  fputs("begin: ", stdout);
+  printStatusValue(status);
+  printf(" (bound=%s)\n", gDevice.isBound() ? "yes" : "no");
   if (!wasBound && gDevice.isBound()) {
     const bool safeOff = safeOffVerified();
     printf("startup safe-off: %s%s%s\n",
@@ -304,7 +311,9 @@ void printConfig() {
          snapshot.hasHardReset ? "configured" : "not configured");
   printf("  Offline threshold: %u (diagnostic only)\n",
          static_cast<unsigned>(snapshot.offlineThreshold));
-  printStatus("snapshot", status);
+  fputs("  Snapshot: ", stdout);
+  printStatusValue(status);
+  putchar('\n');
 }
 
 void printHealth() {
@@ -354,15 +363,25 @@ void printHelp() {
   puts("  help / ?                       This help");
 }
 
-char* trim(char* text) {
-  while (*text != '\0' && isspace(static_cast<unsigned char>(*text)) != 0) {
-    ++text;
+cli_shell::LineResult pollConsoleLine(char* output, size_t capacity) {
+  for (size_t processed = 0U;
+       processed < cli_shell::FixedLineBuffer::CAPACITY; ++processed) {
+    const int input = getchar();
+    if (input == EOF) {
+      clearerr(stdin);
+      return cli_shell::LineResult::NONE;
+    }
+    const cli_shell::LineResult result =
+        gLineBuffer.push(static_cast<char>(input), output, capacity);
+    if (result != cli_shell::LineResult::NONE) {
+      return result;
+    }
   }
-  char* end = text + strlen(text);
-  while (end > text && isspace(static_cast<unsigned char>(end[-1])) != 0) {
-    *--end = '\0';
-  }
-  return text;
+  return cli_shell::LineResult::NONE;
+}
+
+void printPrompt() {
+  printf("%s> %s", COLOR_CYAN, COLOR_RESET);
 }
 
 bool parseUnsignedArgument(const char* command, const char* prefix,
@@ -620,8 +639,7 @@ void runStress(uint32_t count, bool mixed) {
          static_cast<unsigned long>(gDevice.totalFailures() - failuresBefore));
 }
 
-void processCommand(char* line) {
-  const char* command = trim(line);
+void processCommand(const char* command) {
   if (strcmp(command, "help") == 0 || strcmp(command, "?") == 0) {
     printHelp();
   } else if (strcmp(command, "version") == 0 || strcmp(command, "ver") == 0) {
@@ -634,12 +652,13 @@ void processCommand(char* line) {
   } else if (strcmp(command, "read") == 0 || strcmp(command, "dump") == 0) {
     TCA9548A::ChannelMask mask;
     const TCA9548A::Status status = gDevice.readChannelMask(mask);
-    printStatus("read", status);
+    fputs("read: ", stdout);
+    printStatusValue(status);
     if (status.ok()) {
-      fputs("  mask=", stdout);
+      fputs(" mask=", stdout);
       printMask(mask);
-      putchar('\n');
     }
+    putchar('\n');
   } else if (strcmp(command, "off") == 0) {
     printStatus("off", gDevice.disableAll());
   } else if (strcmp(command, "probe") == 0) {
@@ -673,12 +692,15 @@ void processCommand(char* line) {
   } else {
     uint32_t value = 0U;
     if (parseUnsignedArgument(command, "select", 7U, value)) {
-      printStatus("select", gDevice.selectChannel(
-                                static_cast<TCA9548A::Channel>(value)));
+      printf("select %lu: ", static_cast<unsigned long>(value));
+      printStatusValue(gDevice.selectChannel(
+          static_cast<TCA9548A::Channel>(value)));
+      putchar('\n');
     } else if (parseUnsignedArgument(command, "mask", 255U, value)) {
-      printStatus("mask", gDevice.writeChannelMask(
-                              TCA9548A::ChannelMask::fromRaw(
-                                  static_cast<uint8_t>(value))));
+      printf("mask 0x%02lX: ", static_cast<unsigned long>(value));
+      printStatusValue(gDevice.writeChannelMask(
+          TCA9548A::ChannelMask::fromRaw(static_cast<uint8_t>(value))));
+      putchar('\n');
     } else if (parseUnsignedArgument(command, "stress_mix", MAX_STRESS_COUNT,
                                      value) &&
                value > 0U) {
@@ -709,11 +731,25 @@ extern "C" void app_main(void) {
   printHelp();
 
   char line[LINE_LEN] = {};
+  putchar('\n');
+  printPrompt();
   while (true) {
     gDevice.tick(nowMs(nullptr));
-    printf("%s> %s", COLOR_CYAN, COLOR_RESET);
-    if (fgets(line, sizeof(line), stdin) != nullptr) {
+    const cli_shell::LineResult lineResult =
+        pollConsoleLine(line, sizeof(line));
+    if (lineResult == cli_shell::LineResult::READY) {
       processCommand(line);
+      putchar('\n');
+      printPrompt();
+    } else if (lineResult == cli_shell::LineResult::TOO_LONG) {
+      printf("%s[W]%s Command discarded: line exceeds %u bytes\n\n",
+             COLOR_YELLOW, COLOR_RESET,
+             static_cast<unsigned>(cli_shell::FixedLineBuffer::CAPACITY - 1U));
+      printPrompt();
+    } else if (lineResult == cli_shell::LineResult::OUTPUT_TOO_SMALL) {
+      printf("%s[W]%s Command discarded: destination buffer is too small\n\n",
+             COLOR_YELLOW, COLOR_RESET);
+      printPrompt();
     }
     vTaskDelay(pdMS_TO_TICKS(1));
   }

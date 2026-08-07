@@ -1,6 +1,6 @@
 # TCA9548A validation status
 
-Last reviewed: 2026-08-07.
+Last reviewed: 2026-08-08.
 
 ## Authoritative device review
 
@@ -39,13 +39,24 @@ public allocation-free enum names, synchronized component/version metadata,
 and truthful RESET callback failure identity. The core transaction protocol did
 not require a corrective change.
 
+An independent second pass found one native CLI defect outside the driver core:
+direct `fgets()` use assumed blocking, whole-line standard input, while the
+default ESP-IDF UART VFS can return nonblocking partial input (see Espressif's
+[standard I/O and console documentation](https://docs.espressif.com/projects/esp-idf/en/release-v5.5/esp32s2/api-guides/stdio.html)).
+Both CLIs now own the same example-only fixed line accumulator. Regression
+coverage proves trim, CR/LF handling, the exact 127-byte limit, whole-line
+discard at 128 bytes, small destination rejection, and recovery on the
+following command. The contract checker now inspects help and dispatch bodies
+separately rather than accepting tokens found anywhere in a source file.
+
 ## Automated evidence
 
 The repository validation suite covers exact transaction address/length/data,
 STOP-complete write contracts, read-only control access, all strap addresses,
 all channel masks, output assignment only on success, distinct transport error
 mapping, cache provenance/invalidation, lifecycle behavior, passive health
-transitions/counters/timestamps, bounded recovery, and RESET verification.
+transitions/counters/timestamps, bounded recovery, RESET verification, and the
+shared fixed-line CLI parser's boundary/recovery behavior.
 
 Run the current gates from the repository root:
 

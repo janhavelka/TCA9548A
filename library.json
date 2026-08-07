@@ -1,6 +1,6 @@
 {
   "name": "TCA9548A",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Framework-neutral production-grade TCA9548A 8-channel I2C switch driver.",
   "keywords": [
     "tca9548a",

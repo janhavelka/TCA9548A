@@ -7,81 +7,48 @@
 #pragma once
 
 #include <Arduino.h>
-#include <cstring>
 
+#include "examples/common/CliLineBuffer.h"
 #include "examples/common/Log.h"
 
 namespace cli_shell {
 
-inline bool readLine(char* output, size_t capacity) {
-  static char buffer[128];
-  static size_t length = 0;
-  static bool discarding = false;
+inline LineResult pollLine(char* output, size_t capacity) {
+  static FixedLineBuffer lineBuffer;
 
   if (output == nullptr || capacity == 0U) {
-    return false;
+    return LineResult::OUTPUT_TOO_SMALL;
   }
 
   for (size_t processed = 0;
-       processed < sizeof(buffer) && LOG_SERIAL.available() > 0;
+       processed < FixedLineBuffer::CAPACITY && LOG_SERIAL.available() > 0;
        ++processed) {
     const int input = LOG_SERIAL.read();
     if (input < 0) {
       break;
     }
 
-    const char value = static_cast<char>(input);
-    if (value == '\r' || value == '\n') {
-      if (discarding) {
-        discarding = false;
-        length = 0;
-        LOGW("Command discarded: line exceeds %u bytes",
-             static_cast<unsigned>(sizeof(buffer) - 1U));
-        continue;
-      }
-      if (length == 0U) {
-        continue;
-      }
-
-      buffer[length] = '\0';
-      size_t first = 0;
-      while (buffer[first] == ' ' || buffer[first] == '\t') {
-        ++first;
-      }
-      while (length > first &&
-             (buffer[length - 1U] == ' ' || buffer[length - 1U] == '\t')) {
-        --length;
-      }
-
-      const size_t commandLength = length - first;
-      if (commandLength == 0U) {
-        length = 0;
-        continue;
-      }
-      if (commandLength >= capacity) {
-        length = 0;
-        LOGW("Command discarded: destination buffer is too small");
-        continue;
-      }
-
-      std::memmove(output, buffer + first, commandLength);
-      output[commandLength] = '\0';
-      length = 0;
-      return true;
+    const LineResult result =
+        lineBuffer.push(static_cast<char>(input), output, capacity);
+    if (result == LineResult::READY) {
+      return result;
     }
-
-    if (discarding) {
-      continue;
+    if (result == LineResult::TOO_LONG) {
+      LOGW("Command discarded: line exceeds %u bytes",
+           static_cast<unsigned>(FixedLineBuffer::CAPACITY - 1U));
+      return result;
+    } else if (result == LineResult::OUTPUT_TOO_SMALL) {
+      LOGW("Command discarded: destination buffer is too small");
+      return result;
     }
-    if (length >= sizeof(buffer) - 1U) {
-      discarding = true;
-      length = 0;
-      continue;
-    }
-    buffer[length++] = value;
   }
 
-  return false;
+  return LineResult::NONE;
+}
+
+/// Compatibility boolean wrapper for the original example helper.
+inline bool readLine(char* output, size_t capacity) {
+  return pollLine(output, capacity) == LineResult::READY;
 }
 
 }  // namespace cli_shell

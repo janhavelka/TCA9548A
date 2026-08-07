@@ -20,9 +20,9 @@ All notable changes are documented here. The format follows
 
 ### Changed
 
-- Bumped the manifest/component API version to `1.1.0` for the backward-
-  compatible ESP-IDF and status-name feature set; no release tag is created by
-  this audit.
+- Bumped the manifest/component API version to `1.1.1` for the backward-
+  compatible ESP-IDF/status-name feature set and the native CLI input fix; no
+  release tag is created by this audit.
 - Replaced the Arduino-only command handler with reusable fixed-buffer
   `CliShell` and `CliStyle` helpers, aligned status/state coloring, exposed
   explicit cache invalidation, and made configuration output report the actual
@@ -42,6 +42,16 @@ All notable changes are documented here. The format follows
 - Initialize the example `Wire` bus at the configured frequency in its bounded
   `begin()` call instead of applying the clock through a separate unchecked
   reconfiguration call.
+
+### Fixed
+
+- Replaced the native ESP-IDF CLI's direct `fgets()` loop with the same shared,
+  fixed-storage CR/LF accumulator used by Arduino. The default nonblocking
+  ESP-IDF console can no longer spam prompts or dispatch a partial command, and
+  overlong lines are discarded completely before the next command is accepted.
+- Strengthened the CLI contract checker to prove every command appears in both
+  help and actual dispatch, enforce the bounded native input path, and preserve
+  matching status/mask formatting across the two frameworks.
 
 ## [1.0.0] - 2026-07-22
 

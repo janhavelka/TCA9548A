@@ -29,6 +29,7 @@ FORBIDDEN_TOKENS = (
     "String",
     "Serial",
     "TwoWire",
+    "fgets(",
     "examples/01_basic_bringup_cli/main.cpp",
 )
 
@@ -40,7 +41,10 @@ REQUIRED_NATIVE_TOKENS = (
     "i2c_master_receive",
     "esp_timer_get_time",
     "vTaskDelay",
-    "fgets",
+    "getchar",
+    "clearerr(stdin)",
+    "pollConsoleLine",
+    "FixedLineBuffer",
 )
 
 

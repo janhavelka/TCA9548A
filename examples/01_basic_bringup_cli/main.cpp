@@ -195,8 +195,10 @@ void beginDriver() {
   printStatus(status);
   Serial.printf(" (bound=%s)\n", device.isBound() ? "yes" : "no");
   if (!wasBound && device.isBound()) {
-    Serial.printf("startup safe-off: %s\n",
-                  safeOffVerified() ? "OK (verified 0x00)" : "FAILED");
+    const bool safeOff = safeOffVerified();
+    Serial.printf("startup safe-off: %s%s%s\n", cli::resultColor(safeOff),
+                  safeOff ? "OK (verified 0x00)" : "FAILED",
+                  LOG_COLOR_RESET);
   }
 }
 
@@ -592,8 +594,14 @@ void loop() {
   device.tick(millis());
 
   char command[128];
-  if (cli_shell::readLine(command, sizeof(command))) {
+  const cli_shell::LineResult lineResult =
+      cli_shell::pollLine(command, sizeof(command));
+  if (lineResult == cli_shell::LineResult::READY) {
     processCommand(command);
+    Serial.println();
+    cli::printPrompt();
+  } else if (lineResult == cli_shell::LineResult::TOO_LONG ||
+             lineResult == cli_shell::LineResult::OUTPUT_TOO_SMALL) {
     Serial.println();
     cli::printPrompt();
   }
