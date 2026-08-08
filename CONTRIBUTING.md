@@ -48,7 +48,7 @@ this repository.
   dry-run reports as product documentation. Move durable conclusions into the
   current owner document. Retain a HIL report only when it contains useful live
   fixture evidence for a release or investigation.
-- Do not commit generated `docs/doxygen/` output.
+- Do not commit generated `.doxygen/` output.
 
 ## Local Validation
 

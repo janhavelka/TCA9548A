@@ -14,7 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 MARKDOWN_LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 PLATFORMIO_COMMAND = re.compile(r"(?m)^\s*python\s+-m\s+platformio\b")
 MOJIBAKE_MARKERS = ("\u00c3", "\u00e2", "\ufffd")
-FORBIDDEN_PREFIXES = ("docs/doxygen/", "prompts/")
+FORBIDDEN_PREFIXES = (".doxygen/", "docs/doxygen/", "docs/prompts/", "prompts/")
 FORBIDDEN_SUFFIXES = (
     ".pyc",
     ".runner.md",
@@ -88,6 +88,11 @@ def check_artifacts_and_encoding(files: set[str]) -> list[str]:
             errors.append(f"generated/duplicate artifact is tracked: {relative}")
         if "not-run" in name or "not_run" in name:
             errors.append(f"NOT-RUN-only artifact path is tracked: {relative}")
+        if "prompt" in name and pathlib.PurePosixPath(lower).suffix in {
+            ".md",
+            ".txt",
+        }:
+            errors.append(f"completed prompt-like artifact is tracked: {relative}")
         path = ROOT / relative
         if path.is_file() and path.suffix.lower() in text_suffixes:
             try:
@@ -116,6 +121,8 @@ def main() -> int:
     hil = read("tools/tca9548a_hil.py")
     ci = read(".github/workflows/ci.yml")
     doxyfile = read("Doxyfile")
+    gitignore = read(".gitignore")
+    component = read("idf_component.yml")
     manifest = json.loads(read("library.json"))
 
     for token in (
@@ -229,10 +236,19 @@ def main() -> int:
         errors.append("HIL parser fixture embeds a stale library version")
     if 'allow_empty=True' not in hil:
         errors.append("HIL report cannot distinguish a clean Git status")
+    for token in (
+        'parser.add_argument("--report", type=Path)',
+        'parser.add_argument("--transcript", type=Path)',
+        "if args.report is not None:",
+    ):
+        if token not in hil:
+            errors.append(f"HIL evidence output is not explicitly opt-in: {token}")
 
     description = str(manifest.get("description", ""))
     if "production-grade" in description.lower():
         errors.append("library.json implies unproven production readiness")
+    if "production-grade" in component.lower():
+        errors.append("idf_component.yml implies unproven production readiness")
     version = str(manifest.get("version", ""))
     security = read("SECURITY.md")
     if f"The `{version}` manifest is currently staged" not in security:
@@ -249,6 +265,15 @@ def main() -> int:
             errors.append(f"package export omits hygiene artifact: {relative}")
     if "docs/NAMING_HYGIENE.md" not in doxyfile:
         errors.append("Doxygen input omits the naming/hygiene report")
+    if f"Target version: {version}" not in read(report):
+        errors.append("naming/hygiene report target version is stale")
+    if re.search(r"(?m)^OUTPUT_DIRECTORY\s*=\s*\.doxygen\s*$", doxyfile) is None:
+        errors.append("Doxygen output is not owned by root-local .doxygen/")
+    if ".doxygen/" not in gitignore or "docs/doxygen/" in gitignore:
+        errors.append(".gitignore does not match the Doxygen output owner")
+    for relative in ("README.md", "CONTRIBUTING.md"):
+        if "docs/doxygen/" in read(relative):
+            errors.append(f"{relative} documents the obsolete Doxygen output path")
     if "python tools/check_repository_hygiene.py" not in ci:
         errors.append("CI does not run the repository hygiene guard")
     checkout_pin = (

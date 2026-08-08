@@ -4,13 +4,13 @@
 
 Only the latest published `1.0.x` patch is supported with security fixes.
 Development commits and superseded patches are not supported releases.
-The `1.1.3` manifest is currently staged development, not a published or
+The `1.1.4` manifest is currently staged development, not a published or
 supported release.
 
 | Version | Supported |
 | --- | --- |
 | Latest 1.0.x patch | Yes |
-| Staged 1.1.3 development | No |
+| Staged 1.1.4 development | No |
 | Older releases and development commits | No |
 
 ## Reporting a Vulnerability

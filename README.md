@@ -359,7 +359,7 @@ idf.py fullclean
 idf.py set-target esp32s2 && idf.py build
 ```
 
-Generated Doxygen HTML is written to `docs/doxygen/html/` and is intentionally
+Generated Doxygen HTML is written to `.doxygen/html/` and is intentionally
 ignored by Git. CI repeats documentation and package generation with pinned
 tool versions and treats Doxygen warnings as errors.
 
@@ -373,7 +373,9 @@ A live run requires RESET validation by default and exits nonzero if required
 cases are `NOT_RUN`. `--skip-reset` is an explicit diagnostic exception and is
 not release HIL evidence. Use `--allow-not-run` only for an explicitly accepted
 missing-fixture run; FAIL and UNKNOWN remain failures. `--dry-run` validates
-only the plan and never counts as hardware evidence.
+only the plan and never counts as hardware evidence. The runner writes a report
+or raw transcript only when `--report` or `--transcript` is explicitly supplied;
+retain those files only when they contain useful live-fixture evidence.
 
 ## Example
 

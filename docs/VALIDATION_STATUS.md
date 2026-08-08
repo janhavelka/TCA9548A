@@ -61,10 +61,11 @@ clean mature local I2C libraries. It found no compatible public helper or
 private rename gap: existing names remain unchanged. The pass removed only
 repo-wide zero-call example helpers, corrected Windows PlatformIO/HIL command
 surfaces and staged metadata, and added a durable
-[naming/hygiene report](NAMING_HYGIENE.md) plus a CI guard. Ignored generated
-Doxygen output was moved outside the checkout before validation; no completed
-prompt, NOT-RUN-only report, transcript, or generated documentation was
-tracked.
+[naming/hygiene report](NAMING_HYGIENE.md) plus a CI guard. A follow-up cleanup
+moved generated API output from the durable `docs/` tree to ignored
+`.doxygen/`, confirmed that reports/transcripts are opt-in HIL evidence, and
+found no additional uncalled core or example helper. No completed prompt,
+NOT-RUN-only report, transcript, or generated documentation is tracked.
 
 An independent second pass found one native CLI defect outside the driver core:
 direct `fgets()` use assumed blocking, whole-line standard input, while the

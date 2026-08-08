@@ -1,7 +1,7 @@
 # TCA9548A Naming And Repository-Hygiene Audit
 
 Audit date: 2026-08-08
-Target version: 1.1.3
+Target version: 1.1.4
 
 This audit compares TCA9548A read-only with six clean, mature local I2C
 libraries: PCA9555 3.0.2, INA228 3.0.3, INA3221 3.1.0, MB85RC 4.1.0,
@@ -52,12 +52,14 @@ error/info/warning logging paths remain unchanged.
   library version.
 - The package description no longer implies physical production readiness.
   `SECURITY.md` distinguishes the published 1.0.x support line from the staged
-  1.1.3 development manifest.
+  1.1.4 development manifest.
 - ASCII punctuation in `AGENTS.md` avoids mojibake in legacy Windows readers
   without changing its engineering rules.
-- Ignored generated Doxygen output was moved outside the checkout before the
-  pass. No completed prompt, NOT-RUN-only report, serial transcript, generated
-  documentation, bytecode, or editor database is tracked.
+- Generated Doxygen output now has one ignored root-local owner, `.doxygen/`,
+  instead of living under the durable `docs/` source tree. No completed prompt,
+  NOT-RUN-only report, serial transcript, generated documentation, bytecode, or
+  editor database is tracked. HIL reports and transcripts remain explicit,
+  opt-in evidence outputs rather than default checkout residue.
 - CI runs the durable repository-hygiene guard and pins all checkout steps to
   the audited `actions/checkout` v7.0.1 commit.
 
@@ -66,6 +68,12 @@ transport layers, duplicate CLI enum mappers, removed zero-call helpers,
 Windows PlatformIO entry points, staged metadata, local Markdown links,
 tracked generated/one-time artifacts, encoding markers, and the exact checkout
 pin count.
+
+A follow-up repository-wide symbol scan found no additional uncalled core or
+example helper: every remaining private transport, control-byte, cache, parser,
+style, scanner, adapter, and logging path has a concrete caller or framework
+entry point. Cleanup therefore stops at the previously proven zero-call paths
+instead of deleting active code for cosmetic reasons.
 
 ## Evidence Boundary
 

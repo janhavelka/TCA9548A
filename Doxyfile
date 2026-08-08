@@ -2,9 +2,9 @@
 # PROJECT_NUMBER is synchronized from library.json by generate_version.py.
 
 PROJECT_NAME           = "TCA9548A"
-PROJECT_NUMBER         = "1.1.3"
+PROJECT_NUMBER         = "1.1.4"
 PROJECT_BRIEF          = "TCA9548A embedded library API documentation"
-OUTPUT_DIRECTORY       = docs/doxygen
+OUTPUT_DIRECTORY       = .doxygen
 CREATE_SUBDIRS         = NO
 ALLOW_UNICODE_NAMES    = NO
 OUTPUT_LANGUAGE        = English
@@ -46,7 +46,7 @@ INPUT                  = README.md \
 FILE_PATTERNS          = *.h *.md *
 EXTENSION_MAPPING      = no_extension=md
 RECURSIVE              = YES
-EXCLUDE_PATTERNS       = */.pio/* */.git/* */test/*
+EXCLUDE_PATTERNS       = */.doxygen/* */.pio/* */.git/* */test/*
 EXAMPLE_PATH           = examples/01_basic_bringup_cli
 
 USE_MDFILE_AS_MAINPAGE = README.md

@@ -26,6 +26,12 @@ All notable changes are documented here. The format follows
 
 ### Changed
 
+- Bumped the staged manifest/component version to `1.1.4` for a documentation,
+  Doxygen-output, and repository-residue cleanup; public API and device behavior
+  are unchanged and no release tag is created by this audit.
+- Moved generated Doxygen output from the durable `docs/` source tree to the
+  ignored root-local `.doxygen/` owner and documented HIL reports/transcripts as
+  explicit evidence outputs rather than default repository artifacts.
 - Bumped the staged manifest/component version to `1.1.3` for this compatible
   naming and repository-hygiene patch; no public API name changed and no
   release tag is created by this audit.
@@ -57,6 +63,10 @@ All notable changes are documented here. The format follows
 
 ### Fixed
 
+- Strengthened repository hygiene checks for generated Doxygen trees, completed
+  prompts, staged-version documentation, component readiness claims, and the
+  exact generated-output contract. A fresh symbol/call-site audit found no
+  further dead core or example code after the prior zero-call cleanup.
 - Removed zero-call example-only LED, line-reader, logging, color, and
   debug/trace helpers, normalized AGENTS punctuation for Windows readers, and
   replaced the HIL parser's stale example version literal with neutral data.
