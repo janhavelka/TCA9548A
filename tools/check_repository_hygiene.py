@@ -141,6 +141,7 @@ def main() -> int:
         "enum class MaskProvenance : uint8_t",
         "constexpr const char* maskProvenanceName(MaskProvenance provenance)",
         "constexpr const char* toString(MaskProvenance provenance)",
+        "struct SettingsSnapshot",
         "DriverState state() const",
         "DriverState driverState() const",
         "bool isBound() const",
@@ -153,6 +154,7 @@ def main() -> int:
         "uint32_t totalFailures() const",
         "uint32_t totalSuccess() const",
         "ChannelMaskObservation channelMaskObservation() const",
+        "Status getSettings(SettingsSnapshot& out) const",
     ):
         if token not in public:
             errors.append(f"public naming/accessor contract missing: {token}")
@@ -171,6 +173,10 @@ def main() -> int:
     ):
         if token not in public or token not in core:
             errors.append(f"private transport/cache layer missing: {token}")
+    if "Status _updateHealth(const Status& status);" not in public:
+        errors.append("private health helper declaration uses a divergent parameter name")
+    if "Status TCA9548A::_updateHealth(const Status& status)" not in core:
+        errors.append("private health helper definition uses a divergent parameter name")
 
     if "resetHealth" in public or "clearHealth" in public:
         errors.append("unjustified public health-reset surface was added")
@@ -193,8 +199,15 @@ def main() -> int:
         or "static_cast<Err>(0xFFU)" not in tests
         or "static_cast<DriverState>(0xFFU)" not in tests
         or "static_cast<MaskProvenance>(0xFFU)" not in tests
+        or "TCA9548A::toString(static_cast<Err>(0xFFU))" not in tests
+        or "TCA9548A::toString(static_cast<DriverState>(0xFFU))" not in tests
+        or "TCA9548A::toString(static_cast<MaskProvenance>(0xFFU))" not in tests
+        or "static_cast<int>(mux.driverState())" not in tests
+        or "static_cast<int>(snapshot.state)" not in tests
+        or "static_cast<int>(failedBeginSnapshot.state)" not in tests
+        or "static_cast<int>(endedSnapshot.state)" not in tests
     ):
-        errors.append("enum-name/invalid-cast regression is missing or unregistered")
+        errors.append("public naming/state compatibility regression is incomplete")
 
     removed_tokens = (
         "static constexpr int LED",

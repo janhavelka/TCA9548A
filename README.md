@@ -308,6 +308,10 @@ number, and `idf_component.yml` are synchronized by
 `scripts/generate_version.py`; do not edit their generated version fields
 manually.
 
+The stable status, health, lifecycle, cache-provenance, and private transport
+naming decisions are recorded in the
+[naming and repository-hygiene audit](docs/NAMING_HYGIENE.md).
+
 ```cpp
 #include "TCA9548A/Version.h"
 Serial.println(TCA9548A::VERSION);

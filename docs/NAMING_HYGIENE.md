@@ -1,13 +1,14 @@
 # TCA9548A Naming And Repository-Hygiene Audit
 
 Audit date: 2026-08-08
-Target version: 1.1.4
+Target version: 1.1.5
 
 This audit compares TCA9548A read-only with six clean, mature local I2C
 libraries: PCA9555 3.0.2, INA228 3.0.3, INA3221 3.1.0, MB85RC 4.1.0,
-RV3032-C7 3.0.1, and LDC1614 3.1.0. The completed OPT4001 and SCD41 naming
-audits were also used as consistency evidence. Device-specific behavior and
-public source compatibility take precedence over cosmetic uniformity.
+RV3032-C7 3.0.1, and LDC1614 3.1.0. The completed OPT4001 1.2.2 and SCD41
+1.3.2 naming audits were also used as consistency evidence. Device-specific
+behavior and public source compatibility take precedence over cosmetic
+uniformity.
 
 ## Compatibility Rubric
 
@@ -26,6 +27,14 @@ No public type, enum, value, field, method, callback, CLI command, or private
 core helper was renamed, removed, reordered, or aliased in this pass. Adding a
 second name for an already clear operation would increase the compatibility
 surface without adding a real shared capability.
+
+Version 1.1.5 aligns the private `_updateHealth()` parameter name between its
+declaration and definition and strengthens executable evidence for invalid
+`toString()` overloads plus `state()` / `driverState()` / settings-snapshot
+consistency across successful begin, failed begin, and end. The overload
+Doxygen now states that invalid casts share the same `"UNKNOWN"` result as the
+named helpers. These are private naming, documentation, and test-contract
+changes only; public API and health behavior are unchanged.
 
 ## Proven Cleanup
 
@@ -52,7 +61,7 @@ error/info/warning logging paths remain unchanged.
   library version.
 - The package description no longer implies physical production readiness.
   `SECURITY.md` distinguishes the published 1.0.x support line from the staged
-  1.1.4 development manifest.
+  1.1.5 development manifest.
 - ASCII punctuation in `AGENTS.md` avoids mojibake in legacy Windows readers
   without changing its engineering rules.
 - Generated Doxygen output now has one ignored root-local owner, `.doxygen/`,

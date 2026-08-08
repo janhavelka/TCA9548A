@@ -132,6 +132,8 @@ void test_status_and_transport_helpers() {
   }
   TEST_ASSERT_EQUAL_STRING(
       "UNKNOWN", TCA9548A::errorName(static_cast<Err>(0xFFU)));
+  TEST_ASSERT_EQUAL_STRING(
+      "UNKNOWN", TCA9548A::toString(static_cast<Err>(0xFFU)));
 
   const DriverState states[] = {DriverState::UNINIT, DriverState::READY,
                                 DriverState::DEGRADED, DriverState::OFFLINE};
@@ -146,6 +148,8 @@ void test_status_and_transport_helpers() {
   TEST_ASSERT_EQUAL_STRING(
       "UNKNOWN",
       TCA9548A::driverStateName(static_cast<DriverState>(0xFFU)));
+  TEST_ASSERT_EQUAL_STRING(
+      "UNKNOWN", TCA9548A::toString(static_cast<DriverState>(0xFFU)));
 
   const MaskProvenance provenance[] = {
       MaskProvenance::UNKNOWN, MaskProvenance::WRITE_COMPLETED,
@@ -165,6 +169,8 @@ void test_status_and_transport_helpers() {
   TEST_ASSERT_EQUAL_STRING(
       "UNKNOWN",
       TCA9548A::maskProvenanceName(static_cast<MaskProvenance>(0xFFU)));
+  TEST_ASSERT_EQUAL_STRING(
+      "UNKNOWN", TCA9548A::toString(static_cast<MaskProvenance>(0xFFU)));
 }
 
 void test_fixed_cli_line_buffer_is_trimmed_bounded_and_recoverable() {
@@ -402,6 +408,14 @@ void test_failed_begin_preserves_binding_and_exact_error() {
   TEST_ASSERT_FALSE(mux.isOnline());
   TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverState::UNINIT),
                         static_cast<int>(mux.state()));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(mux.state()),
+                        static_cast<int>(mux.driverState()));
+  TCA9548A::SettingsSnapshot failedBeginSnapshot;
+  TEST_ASSERT_TRUE(mux.getSettings(failedBeginSnapshot).ok());
+  TEST_ASSERT_EQUAL(mux.isBound(), failedBeginSnapshot.bound);
+  TEST_ASSERT_EQUAL(mux.isInitialized(), failedBeginSnapshot.initialized);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(mux.state()),
+                        static_cast<int>(failedBeginSnapshot.state));
   TEST_ASSERT_EQUAL_UINT32(1, mux.totalFailures());
   TEST_ASSERT_EQUAL_UINT8(1, mux.consecutiveFailures());
   TEST_ASSERT_EQUAL_UINT32(25, mux.lastErrorMs());
@@ -450,6 +464,14 @@ void test_end_is_bus_silent_and_rebinding_is_repeatable() {
   TEST_ASSERT_FALSE(mux.isInitialized());
   TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverState::UNINIT),
                         static_cast<int>(mux.state()));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(mux.state()),
+                        static_cast<int>(mux.driverState()));
+  TCA9548A::SettingsSnapshot endedSnapshot;
+  TEST_ASSERT_TRUE(mux.getSettings(endedSnapshot).ok());
+  TEST_ASSERT_EQUAL(mux.isBound(), endedSnapshot.bound);
+  TEST_ASSERT_EQUAL(mux.isInitialized(), endedSnapshot.initialized);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(mux.state()),
+                        static_cast<int>(endedSnapshot.state));
   TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
 
   gTransport.hardwareMask = 0x11;
@@ -950,6 +972,10 @@ void test_settings_snapshot_is_io_free_and_truthful() {
                            static_cast<uint32_t>(gTransport.callCount()));
   TEST_ASSERT_TRUE(snapshot.bound);
   TEST_ASSERT_TRUE(snapshot.initialized);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(mux.state()),
+                        static_cast<int>(mux.driverState()));
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(mux.state()),
+                        static_cast<int>(snapshot.state));
   TEST_ASSERT_EQUAL_HEX8(0x72, snapshot.i2cAddress);
   TEST_ASSERT_EQUAL_UINT32(7, snapshot.i2cTimeoutMs);
   TEST_ASSERT_EQUAL_UINT32(13, snapshot.resetTimeoutMs);

@@ -13,7 +13,7 @@
 
 #ifndef TCA9548A_VERSION_STRING
 /// Semantic version override; defaults to the library.json version.
-#define TCA9548A_VERSION_STRING "1.1.4"
+#define TCA9548A_VERSION_STRING "1.1.5"
 #endif
 
 #ifndef TCA9548A_BUILD_DATE
@@ -55,16 +55,16 @@ static constexpr uint16_t VERSION_MAJOR = 1;
 static constexpr uint16_t VERSION_MINOR = 1;
 
 /// @brief Patch version (backward-compatible fixes).
-static constexpr uint16_t VERSION_PATCH = 4;
+static constexpr uint16_t VERSION_PATCH = 5;
 
 /// @brief Full semantic version string.
 static constexpr const char* VERSION = TCA9548A_VERSION_STRING;
 
 /// @brief Encoded version for numeric comparison: MAJOR*10000 + MINOR*100 + PATCH.
-static constexpr uint32_t VERSION_CODE = 10104;
+static constexpr uint32_t VERSION_CODE = 10105;
 
 /// @brief Backward-compatible alias used by older repositories.
-static constexpr int VERSION_INT = 10104;
+static constexpr int VERSION_INT = 10105;
 
 /// @brief Build date string.
 static constexpr const char* BUILD_DATE = TCA9548A_BUILD_DATE;

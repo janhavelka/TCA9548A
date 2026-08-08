@@ -26,6 +26,13 @@ All notable changes are documented here. The format follows
 
 ### Changed
 
+- Bumped the staged manifest/component version to `1.1.5` for the final
+  cross-library status, health, lifecycle, and internal-name consistency pass;
+  public API and device behavior are unchanged.
+- Aligned the private `_updateHealth()` parameter name between declaration and
+  definition and linked the durable naming decisions from the README.
+- Strengthened regressions and the hygiene guard for invalid `toString()`
+  overloads and state/driver-state/settings-snapshot consistency.
 - Bumped the staged manifest/component version to `1.1.4` for a documentation,
   Doxygen-output, and repository-residue cleanup; public API and device behavior
   are unchanged and no release tag is created by this audit.

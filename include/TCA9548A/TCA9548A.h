@@ -121,7 +121,8 @@ constexpr const char* maskProvenanceName(MaskProvenance provenance) {
 
 /// Compatibility overload for maskProvenanceName().
 /// @param provenance Evidence classification to describe.
-/// @return Static-lifetime symbolic name.
+/// @return Same static-lifetime result as maskProvenanceName(), including
+/// "UNKNOWN" for an invalid cast.
 constexpr const char* toString(MaskProvenance provenance) {
   return maskProvenanceName(provenance);
 }
@@ -169,7 +170,8 @@ constexpr const char* driverStateName(DriverState state) {
 
 /// Compatibility overload for driverStateName().
 /// @param state Driver state to describe.
-/// @return Static-lifetime symbolic name.
+/// @return Same static-lifetime result as driverStateName(), including
+/// "UNKNOWN" for an invalid cast.
 constexpr const char* toString(DriverState state) {
   return driverStateName(state);
 }
@@ -351,7 +353,7 @@ private:
   Status _i2cWriteTracked(const uint8_t* buf, size_t len);
   Status _i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
                               uint8_t* rxBuf, size_t rxLen);
-  Status _updateHealth(const Status& st);
+  Status _updateHealth(const Status& status);
 
   Status _writeControlByte(ChannelMask mask);
   Status _readControlByte(ChannelMask& mask);

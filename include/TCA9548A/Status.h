@@ -57,7 +57,8 @@ constexpr const char* errorName(Err error) {
 
 /// Compatibility alias for errorName().
 /// @param error Error code to describe.
-/// @return Static-lifetime symbolic name.
+/// @return Same static-lifetime result as errorName(), including "UNKNOWN" for
+/// an invalid cast.
 constexpr const char* toString(Err error) { return errorName(error); }
 
 /// Status structure returned by all fallible operations
