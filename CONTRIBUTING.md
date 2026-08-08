@@ -54,19 +54,26 @@ this repository.
 
 Run the repository checks from its root:
 
-```bash
+On Windows, use the checked-in wrapper so these commands resolve the existing
+VS Code-managed PlatformIO installation:
+
+```powershell
 python scripts/generate_version.py check
 python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
-python -m platformio test -e native
-python -m platformio run -e native_core_no_arduino
-python -m platformio run -e esp32s3dev
-python -m platformio run -e esp32s2dev
+python tools/check_repository_hygiene.py
+.\scripts\pio.cmd test -e native
+.\scripts\pio.cmd run -e native_core_no_arduino
+.\scripts\pio.cmd run -e esp32s3dev
+.\scripts\pio.cmd run -e esp32s2dev
 python tools/tca9548a_hil.py --parser-self-test
 doxygen Doxyfile
-python -m platformio pkg pack . --output .pio/TCA9548A.tar.gz
+.\scripts\pio.cmd pkg pack . --output .pio\TCA9548A.tar.gz
 git diff --check
 ```
+
+Linux CI invokes its separately installed, pinned Core with
+`python -m platformio`; do not copy that CI-only path into Windows workflows.
 
 With ESP-IDF 5.4 or 5.5 installed, build `examples/espidf_basic` for both
 `esp32s2` and `esp32s3`. CI performs those native-IDF builds even when a local

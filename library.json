@@ -1,7 +1,7 @@
 {
   "name": "TCA9548A",
-  "version": "1.1.2",
-  "description": "Framework-neutral production-grade TCA9548A 8-channel I2C switch driver.",
+  "version": "1.1.3",
+  "description": "Framework-neutral TCA9548A 8-channel I2C switch driver.",
   "keywords": [
     "tca9548a",
     "i2c",
@@ -56,6 +56,7 @@
       "SECURITY.md",
       "docs/HARDWARE_NOTES.md",
       "docs/FEATURE_MATRIX.md",
+      "docs/NAMING_HYGIENE.md",
       "docs/PORTING.md",
       "docs/VALIDATION_STATUS.md",
       "examples/01_basic_bringup_cli/main.cpp",
@@ -68,6 +69,7 @@
       "src/*.cpp",
       "tools/check_cli_contract.py",
       "tools/check_idf_example_contract.py",
+      "tools/check_repository_hygiene.py",
       "tools/tca9548a_hil.py"
     ]
   },

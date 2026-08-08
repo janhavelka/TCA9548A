@@ -2,7 +2,7 @@
 # PROJECT_NUMBER is synchronized from library.json by generate_version.py.
 
 PROJECT_NAME           = "TCA9548A"
-PROJECT_NUMBER         = "1.1.2"
+PROJECT_NUMBER         = "1.1.3"
 PROJECT_BRIEF          = "TCA9548A embedded library API documentation"
 OUTPUT_DIRECTORY       = docs/doxygen
 CREATE_SUBDIRS         = NO
@@ -40,6 +40,7 @@ INPUT                  = README.md \
                          include \
                          docs/FEATURE_MATRIX.md \
                          docs/HARDWARE_NOTES.md \
+                         docs/NAMING_HYGIENE.md \
                          docs/PORTING.md \
                          docs/VALIDATION_STATUS.md
 FILE_PATTERNS          = *.h *.md *

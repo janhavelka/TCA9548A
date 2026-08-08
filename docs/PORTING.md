@@ -125,15 +125,21 @@ bus cause that the API did not provide.
 
 Run the repository checks for every maintained adapter:
 
-```bash
+On Windows, use the repository wrapper for PlatformIO commands:
+
+```powershell
 python scripts/generate_version.py check
 python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
-python -m platformio test -e native
-python -m platformio run -e native_core_no_arduino
-python -m platformio run -e esp32s3dev
-python -m platformio run -e esp32s2dev
+python tools/check_repository_hygiene.py
+.\scripts\pio.cmd test -e native
+.\scripts\pio.cmd run -e native_core_no_arduino
+.\scripts\pio.cmd run -e esp32s3dev
+.\scripts\pio.cmd run -e esp32s2dev
 ```
+
+Linux CI uses its pinned `python -m platformio` installation; the Windows
+wrapper remains the only supported local entry point in this repository.
 
 Also verify exact address, lengths, data byte, timeout propagation, STOP
 completion, distinct error mapping, failed-write observation invalidation, and

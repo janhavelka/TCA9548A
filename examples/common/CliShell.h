@@ -46,9 +46,4 @@ inline LineResult pollLine(char* output, size_t capacity) {
   return LineResult::NONE;
 }
 
-/// Compatibility boolean wrapper for the original example helper.
-inline bool readLine(char* output, size_t capacity) {
-  return pollLine(output, capacity) == LineResult::READY;
-}
-
 }  // namespace cli_shell

@@ -8,6 +8,9 @@ All notable changes are documented here. The format follows
 
 ### Added
 
+- Added a durable naming/repository-hygiene audit and CI guard for the public
+  naming contract, local Windows PlatformIO entry point, metadata claims,
+  documentation links/encoding, generated residue, and obsolete example paths.
 - Added a native ESP-IDF 5.4/5.5 component and fixed-buffer `app_main` CLI for
   ESP32-S2/S3 with full parity to the Arduino command surface and no Arduino
   compatibility layer.
@@ -23,6 +26,12 @@ All notable changes are documented here. The format follows
 
 ### Changed
 
+- Bumped the staged manifest/component version to `1.1.3` for this compatible
+  naming and repository-hygiene patch; no public API name changed and no
+  release tag is created by this audit.
+- Aligned current Windows validation and HIL report commands on
+  `scripts\pio.cmd`, refreshed the pinned checkout action to v7.0.1, and
+  removed an unqualified production-readiness claim from package metadata.
 - Bumped the manifest/component API version to `1.1.2` for the backward-
   compatible ESP-IDF/status-name feature set, native CLI input fix, and RESET
   callback/diagnostic hardening; no release tag is created by this audit.
@@ -48,6 +57,9 @@ All notable changes are documented here. The format follows
 
 ### Fixed
 
+- Removed zero-call example-only LED, line-reader, logging, color, and
+  debug/trace helpers, normalized AGENTS punctuation for Windows readers, and
+  replaced the HIL parser's stale example version literal with neutral data.
 - Replaced the native ESP-IDF CLI's direct `fgets()` loop with the same shared,
   fixed-storage CR/LF accumulator used by Arduino. The default nonblocking
   ESP-IDF console can no longer spam prompts or dispatch a partial command, and

@@ -1,7 +1,7 @@
 # TCA9548A Driver Library
 
-Production-focused, framework-neutral driver for the TI TCA9548A 8-channel
-I2C switch. The application owns the bus, serialization, pins, scheduling,
+Framework-neutral driver for the TI TCA9548A 8-channel I2C switch. The
+application owns the bus, serialization, pins, scheduling,
 timeouts, retry, and recovery policy; the library owns only the chip's one-byte
 control protocol and truthful local diagnostics.
 
@@ -32,6 +32,8 @@ control protocol and truthful local diagnostics.
   electrical constraints
 - [Feature matrix](docs/FEATURE_MATRIX.md) - SCPS207H behavior mapped to the
   core API, both CLIs, automated evidence, and open physical gates
+- [Naming and hygiene audit](docs/NAMING_HYGIENE.md) - compatibility decisions,
+  proven cleanup, and the evidence boundary
 - Example firmware: `examples/01_basic_bringup_cli/` - bounded Arduino bring-up
   CLI and HIL firmware contract
 - Native ESP-IDF example: `examples/espidf_basic/` - the same command surface
@@ -325,19 +327,27 @@ hardware evidence can identify the actual framework stack. It also reports MCU,
 flash, and PSRAM identity so the S3 memory configuration can be checked on the
 fixture instead of inferred from a successful compile.
 
-```bash
+On Windows, use the repository wrapper so validation uses the existing
+VS Code-managed PlatformIO Core:
+
+```powershell
 python scripts/generate_version.py check
 python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
-python -m platformio test -e native
-python -m platformio run -e native_core_no_arduino
-python -m platformio run -e esp32s3dev
-python -m platformio run -e esp32s2dev
+python tools/check_repository_hygiene.py
+.\scripts\pio.cmd test -e native
+.\scripts\pio.cmd run -e native_core_no_arduino
+.\scripts\pio.cmd run -e esp32s3dev
+.\scripts\pio.cmd run -e esp32s2dev
 python tools/tca9548a_hil.py --parser-self-test
 doxygen Doxyfile
-python -m platformio pkg pack . --output .pio/TCA9548A.tar.gz
+.\scripts\pio.cmd pkg pack . --output .pio\TCA9548A.tar.gz
 git diff --check
 ```
+
+Linux CI installs its pinned PlatformIO Core and invokes it with
+`python -m platformio`; that workflow command is intentionally not the local
+Windows path.
 
 When ESP-IDF 5.4 or 5.5 is installed, also build the native example for both
 maintained targets:

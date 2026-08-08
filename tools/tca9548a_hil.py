@@ -23,6 +23,7 @@ PASS = "PASS"
 FAIL = "FAIL"
 UNKNOWN = "UNKNOWN"
 NOT_RUN = "NOT_RUN"
+ROOT = Path(__file__).resolve().parents[1]
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 COMMON_FAILURE_PATTERNS = (
@@ -205,7 +206,7 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
     return plan
 
 
-def git_text(args: list[str], default: str) -> str:
+def git_text(args: list[str], default: str, *, allow_empty: bool = False) -> str:
     try:
         result = subprocess.run(
             ["git", *args],
@@ -216,8 +217,18 @@ def git_text(args: list[str], default: str) -> str:
         )
     except (OSError, subprocess.TimeoutExpired):
         return default
+    if result.returncode != 0:
+        return default
     text = result.stdout.strip()
-    return text if result.returncode == 0 and text else default
+    return text if text or allow_empty else default
+
+
+def platformio_tool_args(*args: str) -> list[str]:
+    """Return the repository-approved PlatformIO invocation for this host."""
+    if platform.system() == "Windows":
+        wrapper = ROOT / "scripts" / "pio.cmd"
+        return ["cmd.exe", "/d", "/c", str(wrapper), *args]
+    return [sys.executable, "-m", "platformio", *args]
 
 
 def tool_text(args: list[str], default: str) -> str:
@@ -270,7 +281,7 @@ def write_report(
     transcript_path: Path | None,
 ) -> None:
     now = dt.datetime.now().astimezone()
-    dirty = git_text(["status", "--short"], "unknown")
+    dirty = git_text(["status", "--short"], "unknown", allow_empty=True)
     if dirty == "unknown":
         dirty_summary = "unknown"
     elif dirty == "":
@@ -280,6 +291,9 @@ def write_report(
 
     counts = status_counts(results)
     command_line = subprocess.list2cmdline([sys.executable, *sys.argv])
+    platformio_version = tool_text(
+        platformio_tool_args("--version"), "not checked"
+    )
     live_mode = not args.dry_run and not args.parser_self_test
     port_note = args.port if live_mode else f"{args.port} (not opened in dry-run mode)"
     executed_results = [result for result in results if result.status != NOT_RUN]
@@ -409,7 +423,7 @@ def write_report(
         f"- Dirty status: `{dirty_summary}`",
         f"- Operating system: `{platform.platform()}`",
         f"- Python: `{platform.python_version()}`",
-        f"- PlatformIO: `{tool_text(['pio', '--version'], 'not checked')}`",
+        f"- PlatformIO: `{platformio_version}`",
         f"- Target environment: `{args.target_env}`",
         f"- Serial port: `{port_note}`",
         f"- Baud rate: `{args.baud}`",
@@ -427,8 +441,11 @@ def write_report(
             "python tools\\tca9548a_hil.py --dry-run --port "
             f"{args.port} --baud {args.baud}"
         ),
-        f"pio run -e {args.target_env}",
-        f"pio run -e {args.target_env} -t upload --upload-port {args.port}",
+        f".\\scripts\\pio.cmd run -e {args.target_env}",
+        (
+            f".\\scripts\\pio.cmd run -e {args.target_env} -t upload "
+            f"--upload-port {args.port}"
+        ),
         (
             "python tools\\tca9548a_hil.py --port "
             f"{args.port} --baud {args.baud} --timeout-s {args.timeout_s}"
@@ -669,7 +686,7 @@ def parser_self_test(args: argparse.Namespace) -> int:
             return 1
 
     pass_status, _ = classify(
-        "=== Version Info ===\n  Library: 1.1.0\n",
+        "=== Version Info ===\n  Library: test-version\n",
         plan[0],
     )
     fail_status, _ = classify(

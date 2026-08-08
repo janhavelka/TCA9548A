@@ -40,10 +40,6 @@ static constexpr int TCA_RESET = -1;
 /// @brief Maximum time allowed for the example RESET callback.
 static constexpr uint16_t TCA_RESET_TIMEOUT_MS = 10;
 
-/// @brief LED pin. Example default for ESP32-S3 (RGB LED on GPIO48).
-/// Set to -1 to disable.
-static constexpr int LED = 47;
-
 /// @brief Initialize I2C for examples using the default config.
 inline bool initI2c() {
   return transport::initWire(I2C_SDA, I2C_SCL, I2C_FREQ_HZ, I2C_TIMEOUT_MS);

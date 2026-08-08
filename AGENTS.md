@@ -120,12 +120,12 @@ struct Status {
 - I2C address configurable: 0x70 (A2=A1=A0=GND) through 0x77 (A2=A1=A0=VCC).
 - Check device presence in `begin()` by reading current control register.
 - Single 8-bit control register (no register address byte):
-  - Each bit enables/disables one downstream channel (0–7)
+  - Each bit enables/disables one downstream channel (0-7)
   - Any combination of channels may be active simultaneously
   - Default after POR/RESET: 0x00 (all channels off)
 - Channel selection requires STOP condition after write to take effect.
 - Multi-byte writes: only the last byte is stored.
-- No measurement, ADC, DAC, or sensor capabilities — pure bus switch.
+- No measurement, ADC, DAC, or sensor capabilities - pure bus switch.
 - Optional hardware RESET pin support via callback.
 - No interrupts (device has no interrupt output).
 
@@ -135,9 +135,9 @@ struct Status {
 
 The driver follows a **managed synchronous** model with health tracking:
 
-- All public I2C operations are **blocking** (TCA9548A is trivially fast — single register).
+- All public I2C operations are **blocking** (TCA9548A is trivially fast - single register).
 - `tick()` is a no-op for this device (no pending I/O or state machines needed).
-- Health is tracked via **tracked transport wrappers** — public API never calls `_updateHealth()` directly.
+- Health is tracked via **tracked transport wrappers** - public API never calls `_updateHealth()` directly.
 - Recovery is **manual** via `recover()` - the application controls retry strategy.
 
 ### DriverState (4 states only)
@@ -165,11 +165,11 @@ All I2C goes through layered wrappers:
 
 ```
 Public API (selectChannel, readChannels, disableAll, etc.)
-    ↓
+    ->
 TRACKED wrappers (_i2cWriteTracked, _i2cWriteReadTracked)
-    ↓  <- _updateHealth() called here ONLY
+    ->  <- _updateHealth() called here ONLY
 RAW wrappers (_i2cWriteRaw, _i2cWriteReadRaw)
-    ↓
+    ->
 Transport callbacks (Config::i2cWrite, i2cWriteRead)
 ```
 
