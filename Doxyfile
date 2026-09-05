@@ -40,7 +40,6 @@ INPUT                  = README.md \
                          include \
                          docs/FEATURE_MATRIX.md \
                          docs/HARDWARE_NOTES.md \
-                         docs/NAMING_HYGIENE.md \
                          docs/PORTING.md \
                          docs/VALIDATION_STATUS.md
 FILE_PATTERNS          = *.h *.md *

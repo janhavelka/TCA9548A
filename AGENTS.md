@@ -23,19 +23,26 @@ You are a professional embedded software engineer building a production-grade TC
 
 ```
 include/TCA9548A/        - Public API headers only (Doxygen)
-  CommandTable.h         - Register addresses and bit masks
+  CommandTable.h         - Address helpers, control-byte constants, timing limits
   Status.h
   Config.h
   TCA9548A.h
   Version.h              - Auto-generated (do not edit)
 src/                     - Implementation (.cpp)
 examples/
-  01_*/
-  common/                - Example-only helpers (Log.h, BoardConfig.h, I2cTransport.h,
-                           I2cScanner.h, CliShell.h, CliStyle.h)
-  espidf_basic/           - Native ESP-IDF app_main CLI example
+  01_basic_bringup_cli/  - Arduino bring-up CLI
+  common/                - Example-only helpers (Log.h, BuildConfig.h, BoardConfig.h,
+                           I2cTransport.h, I2cScanner.h, CliLineBuffer.h,
+                           CliShell.h, CliStyle.h)
+  espidf_basic/          - Native ESP-IDF app_main CLI example
+test/                    - Native Unity tests, the scripted transport, and the
+                           framework-neutral core compile/link gate
+                           (test/core_no_arduino/)
+tools/                   - Repository checkers and the host-side HIL runner
+docs/                    - Porting guide, hardware notes, feature matrix, validation status
 platformio.ini
 library.json
+CMakeLists.txt / idf_component.yml - ESP-IDF component
 README.md
 CHANGELOG.md
 AGENTS.md
@@ -71,7 +78,7 @@ Framework-boundary rules:
 - Preserve dirty user changes and never revert unrelated work.
 - Deterministic: no unbounded loops/waits; all timeouts via deadlines, never `delay()` in library code.
 - Non-blocking lifecycle: `Status begin(const Config&)`, `void tick(uint32_t nowMs)`, `void end()`.
-- Any I/O that can exceed ~1-2 ms must be split into state machine steps driven by `tick()`.
+- Any I/O that can exceed ~1-2 ms must be split into state machine steps driven by `tick()`, except in the managed-synchronous model this driver uses (see below), where the owner-supplied per-call transport timeout is the bound.
 - No unbounded waits, retries, loops, allocations, queues, or buffers in steady paths.
 - Every hardware operation that can block must have a timeout and an observable failure path.
 - Recovery logic must be bounded, deterministic, and testable.
@@ -138,7 +145,7 @@ The driver follows a **managed synchronous** model with health tracking:
 - All public I2C operations are **blocking** (TCA9548A is trivially fast - single register).
 - `tick()` is a no-op for this device (no pending I/O or state machines needed).
 - Health is tracked via **tracked transport wrappers** - public API never calls `_updateHealth()` directly.
-- Recovery is **manual** via `recover()` - the application controls retry strategy.
+- Recovery is **manual**: `recover()` is an alias of `disableAll()` (one tracked `0x00` write); the application owns retry, RESET, and bus-recovery strategy.
 
 ### DriverState (4 states only)
 
@@ -154,38 +161,38 @@ enum class DriverState : uint8_t {
 State transitions:
 - `begin()` success -> READY
 - `begin()` presence-read failure -> binding retained, state remains UNINIT
-- Any I2C failure in READY -> DEGRADED
+- Tracked failures before the first tracked success keep UNINIT; counters still count
+- Any tracked I2C failure in READY -> DEGRADED, or OFFLINE directly when `offlineThreshold == 1`
 - Success in DEGRADED/OFFLINE -> READY
 - Failures reach `offlineThreshold` -> OFFLINE
 - `end()` -> UNINIT
 
-### Transport Wrapper Architecture
+### Transport Architecture
 
-All I2C goes through layered wrappers:
+All I2C goes through two private protocol helpers:
 
 ```
-Public API (selectChannel, readChannels, disableAll, etc.)
+Public API (selectChannel, writeChannelMask, readChannelMask, disableAll, ...)
     ->
-TRACKED wrappers (_i2cWriteTracked, _i2cWriteReadTracked)
-    ->  <- _updateHealth() called here ONLY
-RAW wrappers (_i2cWriteRaw, _i2cWriteReadRaw)
-    ->
+_writeControlByte(mask) / _readControlByte(mask, tracked)
+    ->  <- _updateHealth() called here ONLY (skipped when tracked == false)
 Transport callbacks (Config::i2cWrite, i2cWriteRead)
 ```
 
 **Rules:**
 - Public API methods NEVER call `_updateHealth()` directly
-- `probe()` uses RAW wrappers -> no health tracking (diagnostic only)
-- `recover()` performs one tracked safe-off write; that write updates health.
-  `probe()` remains the only raw, no-health diagnostic operation.
+- `probe()` is the only raw read (`tracked == false`) -> no health tracking (diagnostic only)
+- `recover()` is an alias of `disableAll()`; that write updates health.
+- Every argument the helpers pass to the callbacks is valid by construction;
+  `begin()` validates the callbacks and settings before any I/O, so no
+  defensive null or length checks belong in the helpers.
 
 ### Health Tracking Rules
 
-- `_updateHealth()` called ONLY inside tracked transport wrappers.
-- State transitions guarded by `_initialized` (no DEGRADED/OFFLINE before `begin()` succeeds).
-- NOT called for config/param validation errors (INVALID_CONFIG, INVALID_PARAM).
-- NOT called for precondition errors (NOT_INITIALIZED).
-- `probe()` uses raw I2C and does NOT update health (diagnostic only).
+- `_updateHealth()` called ONLY inside the two protocol helpers, after the transport callback returns.
+- State transitions guarded by `_initialized` (no DEGRADED/OFFLINE before the first tracked success).
+- Never reached for config/param validation errors (INVALID_CONFIG, INVALID_PARAM) or precondition errors (NOT_INITIALIZED), because those return before any I/O.
+- `probe()` does NOT update health (diagnostic only); every other transport operation, including the `hardReset()` verification read, does.
 
 ### Health Tracking Fields
 
@@ -201,7 +208,8 @@ Transport callbacks (Config::i2cWrite, i2cWriteRead)
 ## Versioning and Releases
 
 Single source of truth: `library.json`. `Version.h` is auto-generated and must
-never be edited. The version generator also synchronizes `Doxyfile`.
+never be edited. The version generator also synchronizes `Doxyfile` and
+`idf_component.yml`.
 
 SemVer:
 - MAJOR: breaking API/Config/enum changes.

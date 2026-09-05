@@ -124,9 +124,11 @@ struct Config {
   // === I2C Transport (required) ===
   I2cWriteFn i2cWrite = nullptr;          ///< I2C write function pointer
   I2cWriteReadFn i2cWriteRead = nullptr;  ///< I2C write-read function pointer
-  void* i2cUser = nullptr; ///< User context for transport callbacks
-  HardResetFn hardReset = nullptr; ///< Optional hardware reset callback
-  void* resetUser = nullptr; ///< User context for hardReset callback
+  void* i2cUser = nullptr;                ///< Context for both transports
+
+  // === Hardware RESET (optional) ===
+  HardResetFn hardReset = nullptr;        ///< Active-low RESET pulse callback
+  void* resetUser = nullptr;              ///< Context for hardReset
 
   // === Timing Hooks (optional) ===
   NowMsFn nowMs = nullptr;                ///< Monotonic millisecond source
@@ -135,7 +137,10 @@ struct Config {
   // === Device Settings ===
   uint8_t i2cAddress = cmd::DEFAULT_ADDRESS; ///< I2C address: 0x70-0x77
   uint32_t i2cTimeoutMs = 50;   ///< I2C timeout in ms (1..60000)
-  uint32_t resetTimeoutMs = 10; ///< RESET callback timeout in ms (1..60000)
+
+  /// RESET callback timeout in ms. begin() validates the 1..60000 range
+  /// uniformly, including when hardReset is null and the value is unused.
+  uint32_t resetTimeoutMs = 10;
 
   // === Passive Health Classification ===
   /// Consecutive failures at which state() reports OFFLINE (1..255). This

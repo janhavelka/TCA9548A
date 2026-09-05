@@ -12,12 +12,19 @@ namespace transport {
 using TCA9548A::TransportErr;
 using TCA9548A::TransportStatus;
 
+/// Map a TwoWire::endTransmission() result to a narrow transport outcome.
+///
+/// Arduino-ESP32 3.x collapses every NACK into 2 and never returns 3, so a
+/// data NACK from this backend is reported as NACK_ADDR. That is the closest
+/// truthful code the API allows: the TCA9548A acknowledges its single control
+/// byte whenever it acknowledged its address, so in practice a NACK here does
+/// mean the device did not answer. Cores that do distinguish the phases return
+/// 3 and are mapped exactly.
 inline TransportStatus mapWireResult(uint8_t result) {
   switch (result) {
     case 0: return TransportStatus::Ok();
     case 2: return TransportStatus::Error(TransportErr::NACK_ADDR, result);
     case 3: return TransportStatus::Error(TransportErr::NACK_DATA, result);
-    case 4: return TransportStatus::Error(TransportErr::OTHER, result);
     case 5: return TransportStatus::Error(TransportErr::TIMEOUT, result);
     default: return TransportStatus::Error(TransportErr::OTHER, result);
   }

@@ -30,17 +30,15 @@ control protocol and truthful local diagnostics.
 - [Porting guide](docs/PORTING.md) - transport callbacks and owner integration
 - [Hardware notes](docs/HARDWARE_NOTES.md) - protocol, RESET, topology, and
   electrical constraints
-- [Feature matrix](docs/FEATURE_MATRIX.md) - SCPS207H behavior mapped to the
-  core API, both CLIs, automated evidence, and open physical gates
-- [Naming and hygiene audit](docs/NAMING_HYGIENE.md) - compatibility decisions,
-  proven cleanup, and the evidence boundary
+- [Feature matrix](docs/FEATURE_MATRIX.md) - datasheet behavior mapped to the
+  core API, CLI commands, and native test coverage
 - Example firmware: `examples/01_basic_bringup_cli/` - bounded Arduino bring-up
   CLI and HIL firmware contract
 - Native ESP-IDF example: `examples/espidf_basic/` - the same command surface
   using `app_main` and `driver/i2c_master.h`, with no Arduino facade; both CLIs
   share one framework-neutral fixed-line accumulator
 - [Validation status](docs/VALIDATION_STATUS.md) - reviewed datasheet revision,
-  static/build evidence, and explicit no-hardware limitations
+  automated evidence, and what is not validated
 - [Contributing](CONTRIBUTING.md) and [security policy](SECURITY.md)
 
 ## Installation
@@ -62,10 +60,9 @@ lib_deps =
   https://github.com/janhavelka/TCA9548A.git#<peeled-40-character-commit-sha>
 ```
 
-This version-independent procedure avoids stale installation guidance inside
-an immutable release while keeping the product repository on an exact,
-auditable revision. For manual installation, copy `include/TCA9548A/` and
-`src/` into the project.
+For manual installation, copy `include/TCA9548A/` and `src/` into the
+project. For ESP-IDF, the repository root is a component (`CMakeLists.txt`
+and `idf_component.yml`); see `examples/espidf_basic/`.
 
 ## Quick Start
 
@@ -228,8 +225,9 @@ waits:
 - `writeChannelMask(ChannelMask)` — one arbitrary-mask write.
 - `readChannelMask(ChannelMask&)` — one read-only transaction.
 - `disableAll()` — one `0x00` write.
-- `recover()` — one explicit `0x00` safe-off write; it does not reset the bus,
-  assert RESET, retry, read back, or restore an old mask.
+- `recover()` — alias of `disableAll()` kept for the library-family lifecycle
+  name; it does not reset the bus, assert RESET, retry, read back, or restore
+  an old mask.
 
 `begin()` is the managed-lifecycle exception required by this library family:
 it validates and stores a valid configuration, then performs exactly one
@@ -273,9 +271,9 @@ call `invalidateChannelMask()`.
 | `READBACK_OBSERVED` | A successful read observed this hardware value. |
 
 `known()` accepts either successful evidence; `verified()` is true only for
-readback. A failed or ambiguous write invalidates the observation when the
-callback returns failure. `hardReset()` invalidates before RESET; an exact-zero
-read records verified
+readback. Any failed write or read, including a failed `probe()`, invalidates
+the observation because the hardware state can no longer be assumed.
+`hardReset()` invalidates before RESET; an exact-zero read records verified
 all-off, while a mismatch records the actual verified byte and returns an
 error. Use explicit readback whenever application policy requires proof.
 
@@ -284,7 +282,12 @@ error. Use explicit readback whenever application policy requires proof.
 Tracked primitives update `state()`, timestamps, last error, consecutive
 failures, and saturating object-lifetime counters that survive `end()` and
 rebinding. `OFFLINE` is diagnostic only and never blocks I2C. `probe()` is
-intentionally raw and does not update health or `isOnline()`.
+intentionally raw and does not update health or `isOnline()`. The
+`hardReset()` verification read is tracked; `RESET_STATE_MISMATCH` is a
+device-state result that leaves `state()` READY and does not update
+`lastError()`. Failures before the first tracked success keep `UNINIT` while
+the counters still count.
+
 The external owner remains responsible for admission, retry, health policy,
 controller recovery, RESET policy, and route reconciliation.
 
@@ -292,7 +295,9 @@ controller recovery, RESET policy, and route reconciliation.
 
 - The part has one 8-bit control register and no register-address byte.
 - Bit N enables downstream channel N; any combination is legal at chip level.
-- The new selection takes effect only after STOP.
+- The new selection takes effect only after STOP. A repeated START does not
+  switch the channels: the read returns the new byte while the switches have
+  not moved, so never chain the control write to the next transaction.
 - POR and RESET clear the byte to `0x00`.
 - The supported address range is `0x70` through `0x77`.
 - Standard-mode and Fast-mode are supported up to 400 kHz.
@@ -308,10 +313,6 @@ number, and `idf_component.yml` are synchronized by
 `scripts/generate_version.py`; do not edit their generated version fields
 manually.
 
-The stable status, health, lifecycle, cache-provenance, and private transport
-naming decisions are recorded in the
-[naming and repository-hygiene audit](docs/NAMING_HYGIENE.md).
-
 ```cpp
 #include "TCA9548A/Version.h"
 Serial.println(TCA9548A::VERSION);
@@ -319,53 +320,13 @@ Serial.println(TCA9548A::VERSION);
 
 ## Repository Validation
 
-These maintainer checks require a full Git checkout. Installed library packages
-intentionally omit CI and native-test scaffolding.
-
-The ESP32-S2/S3 example environments exact-pin pioarduino
-`platform-espressif32` `55.03.311`, which supplies Arduino-ESP32 `3.3.11`,
-ESP-IDF `5.5.5`, and GCC `14.2.0`. This pin applies only to repository example
-and HIL builds; consuming applications continue to own their platform version.
-The `version` CLI command reports the runtime Arduino and ESP-IDF versions so
-hardware evidence can identify the actual framework stack. It also reports MCU,
-flash, and PSRAM identity so the S3 memory configuration can be checked on the
-fixture instead of inferred from a successful compile.
-
-On Windows, use the repository wrapper so validation uses the existing
-VS Code-managed PlatformIO Core:
-
-```powershell
-python scripts/generate_version.py check
-python tools/check_cli_contract.py
-python tools/check_idf_example_contract.py
-python tools/check_repository_hygiene.py
-.\scripts\pio.cmd test -e native
-.\scripts\pio.cmd run -e native_core_no_arduino
-.\scripts\pio.cmd run -e esp32s3dev
-.\scripts\pio.cmd run -e esp32s2dev
-python tools/tca9548a_hil.py --parser-self-test
-doxygen Doxyfile
-.\scripts\pio.cmd pkg pack . --output .pio\TCA9548A.tar.gz
-git diff --check
-```
-
-Linux CI installs its pinned PlatformIO Core and invokes it with
-`python -m platformio`; that workflow command is intentionally not the local
-Windows path.
-
-When ESP-IDF 5.4 or 5.5 is installed, also build the native example for both
-maintained targets:
-
-```sh
-cd examples/espidf_basic
-idf.py set-target esp32s3 && idf.py build
-idf.py fullclean
-idf.py set-target esp32s2 && idf.py build
-```
-
-Generated Doxygen HTML is written to `.doxygen/html/` and is intentionally
-ignored by Git. CI repeats documentation and package generation with pinned
-tool versions and treats Doxygen warnings as errors.
+Maintainer checks require a full Git checkout; the complete command list is in
+[CONTRIBUTING.md](CONTRIBUTING.md). The ESP32-S2/S3 example environments pin
+pioarduino `platform-espressif32` `55.03.311` (Arduino-ESP32 `3.3.11`, ESP-IDF
+`5.5.5`, GCC `14.2.0`); consuming applications own their own platform version.
+The `version` command reports the runtime framework and MCU identity, so
+hardware evidence names the actual stack. The Arduino CLI additionally reports
+flash and PSRAM.
 
 Live HIL requires an attached ESP32 and TCA9548A fixture:
 
@@ -373,13 +334,13 @@ Live HIL requires an attached ESP32 and TCA9548A fixture:
 python tools/tca9548a_hil.py --port COM8 --baud 115200 --verbose
 ```
 
-A live run requires RESET validation by default and exits nonzero if required
-cases are `NOT_RUN`. `--skip-reset` is an explicit diagnostic exception and is
-not release HIL evidence. Use `--allow-not-run` only for an explicitly accepted
-missing-fixture run; FAIL and UNKNOWN remain failures. `--dry-run` validates
-only the plan and never counts as hardware evidence. The runner writes a report
-or raw transcript only when `--report` or `--transcript` is explicitly supplied;
-retain those files only when they contain useful live-fixture evidence.
+A live run validates RESET by default, so the fixture must have the RESET pin
+wired and the example's `TCA_RESET` (Arduino) or `RESET_GPIO` (ESP-IDF)
+constant set to it. Both ship disabled, and a run against an unmodified build
+fails that case. The run also exits nonzero if required cases are `NOT_RUN`.
+`--skip-reset` is a diagnostic exception, not release evidence. `--allow-not-run` accepts an explicitly missing fixture; FAIL and
+UNKNOWN remain failures. `--dry-run` validates only the plan. The runner writes
+a report or transcript only when `--report` or `--transcript` is supplied.
 
 ## Example
 
@@ -407,7 +368,10 @@ branch. Live self-test captures its entry mask, checks all eight one-hot
 selections, and restores that mask with readback on every terminal path after
 capture. Stress makes at most the requested 1,000 operations plus one safe-off
 write and one verification read; with the default 50 ms timeout its transport
-bound is 50.1 seconds. The examples yield after each stress transaction.
+bound is 50.1 seconds. The Arduino example yields after each stress
+transaction; the native one relies on each transaction blocking in the I2C
+driver and additionally sleeps one scheduler tick every 64 operations, so the
+idle task always runs without pacing the run.
 
 ## License
 

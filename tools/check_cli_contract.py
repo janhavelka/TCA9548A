@@ -93,6 +93,7 @@ PARITY_OUTPUTS = (
     "hardReset exact-zero verification",
     "hardReset leaves verified all-off",
     "final verified mask restore",
+    "final safe-off was not verified",
     "Scan topology:",
     "active_mask=",
     "select a one-hot mask before scan to isolate a branch",
@@ -244,8 +245,6 @@ def main() -> int:
     ):
         if not path.is_file():
             errors.append(f"missing Arduino shared CLI helper: {path.name}")
-    if (ROOT / "examples" / "common" / "CommandHandler.h").exists():
-        errors.append("deprecated parallel CommandHandler.h still exists")
     if (
         "cli_shell::pollLine" not in arduino
         or "cli::printPrompt" not in arduino

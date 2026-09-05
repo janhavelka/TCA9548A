@@ -179,19 +179,23 @@ TCA9548A::TransportStatus i2cWriteRead(
   if (error != ESP_OK) {
     return mapI2c(error);
   }
-  if (txLength == 0U) {
-    error = i2c_master_receive(bus->device, rxData, rxLength,
-                               timeoutArg(timeoutMs));
-  } else {
-    error = i2c_master_transmit_receive(bus->device, txData, txLength, rxData,
-                                        rxLength, timeoutArg(timeoutMs));
+  if (txLength != 0U) {
+    // A combined transfer would put a repeated START between the write and the
+    // read. The TCA9548A latches a new channel selection only at STOP, so the
+    // read would return the new byte while the switches had not moved (TI
+    // SCPA063 section 4.1). The driver never asks for this shape; refuse it
+    // rather than silently issuing one.
+    return TCA9548A::TransportStatus::Error(TCA9548A::TransportErr::OTHER,
+                                            ESP_ERR_NOT_SUPPORTED);
   }
+  error = i2c_master_receive(bus->device, rxData, rxLength,
+                             timeoutArg(timeoutMs));
   return mapI2c(error);
 }
 
-TCA9548A::Status pulseReset(uint32_t timeoutMs, void*) {
+[[maybe_unused]] TCA9548A::Status pulseReset(uint32_t timeoutMs, void*) {
   if (RESET_GPIO < 0) {
-    return TCA9548A::Status::Error(TCA9548A::Err::UNSUPPORTED,
+    return TCA9548A::Status::Error(TCA9548A::Err::RESET_ERROR,
                                   "RESET GPIO is not configured");
   }
   if (timeoutMs == 0U) {
@@ -218,7 +222,9 @@ bool initBus() {
   config.scl_io_num = I2C_SCL;
   config.clk_source = I2C_CLK_SRC_DEFAULT;
   config.glitch_ignore_cnt = 7U;
-  config.flags.enable_internal_pullup = true;
+  // Every active segment needs external pull-ups sized for the bus (see
+  // docs/HARDWARE_NOTES.md). The ~45 kOhm internal ones cannot drive 400 kHz.
+  config.flags.enable_internal_pullup = false;
   return i2c_new_master_bus(&config, &gBus.bus) == ESP_OK;
 }
 
@@ -233,10 +239,14 @@ void configureDriver() {
   gConfig.offlineThreshold = 5U;
   if constexpr (RESET_GPIO >= 0) {
     const auto gpio = static_cast<gpio_num_t>(RESET_GPIO);
+    // RESET is active low and the output latch reads 0 after chip reset, so
+    // enabling the output driver first would assert RESET. GPIO_OUT_REG is
+    // writable before the pin is an output, so preset the level, then switch
+    // the pin to an output already holding it high.
     gpio_config_t resetConfig = {};
     resetConfig.pin_bit_mask = 1ULL << static_cast<unsigned>(gpio);
     resetConfig.mode = GPIO_MODE_OUTPUT;
-    if (gpio_config(&resetConfig) == ESP_OK && gpio_set_level(gpio, 1) == ESP_OK) {
+    if (gpio_set_level(gpio, 1) == ESP_OK && gpio_config(&resetConfig) == ESP_OK) {
       gConfig.hardReset = pulseReset;
     }
   }
@@ -689,7 +699,13 @@ void runStress(uint32_t count, bool mixed) {
     if (!status.ok()) {
       break;
     }
-    vTaskDelay(pdMS_TO_TICKS(1));
+    // Each transaction already blocks in the I2C driver, so a periodic
+    // one-tick sleep is enough to guarantee idle-task time without pacing the
+    // stress run. Delaying every iteration would add 10 s per 1000 operations
+    // at the default 100 Hz tick.
+    if ((completed % 64U) == 0U) {
+      vTaskDelay(1);
+    }
   }
   const bool safeOff = safeOffVerified();
   if (mixed) {
@@ -704,6 +720,9 @@ void runStress(uint32_t count, bool mixed) {
   printf("Health delta: success=%lu failure=%lu\n",
          static_cast<unsigned long>(gDevice.totalSuccess() - successesBefore),
          static_cast<unsigned long>(gDevice.totalFailures() - failuresBefore));
+  if (!safeOff) {
+    puts("  [FAIL] final safe-off was not verified");
+  }
 }
 
 void processCommand(const char* command) {
@@ -777,8 +796,8 @@ void processCommand(const char* command) {
                value > 0U) {
       runStress(value, false);
     } else {
-      printf("%sUnknown or invalid command: %s%s\n", COLOR_RED, command,
-             COLOR_RESET);
+      printf("%s[E]%s Unknown or invalid command: %s\n", COLOR_RED,
+             COLOR_RESET, command);
     }
   }
 }
@@ -818,6 +837,10 @@ extern "C" void app_main(void) {
              COLOR_YELLOW, COLOR_RESET);
       printPrompt();
     }
-    vTaskDelay(pdMS_TO_TICKS(1));
+    // getchar() is non-blocking on the default console, so this delay is the
+    // only thing that lets lower-priority tasks (including idle) run. It must
+    // round to at least one tick: pdMS_TO_TICKS(1) is 0 at the ESP-IDF default
+    // 100 Hz tick rate, which would starve the idle task and trip its watchdog.
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }

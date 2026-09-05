@@ -76,8 +76,8 @@ constexpr uint8_t addressFromPins(bool a2, bool a1, bool a0) {
 // Control Register (single 8-bit register, no register address byte)
 // ============================================================================
 
-/// Logical control register identifier used in docs and CLI dumps.
-/// The device does not consume a register address byte on the bus.
+/// Logical identifier only. The device has no register address: never send
+/// this value on the bus before the control byte.
 static constexpr uint8_t CONTROL_REG = 0x00;
 
 /// Number of register-address bytes before control-register payload

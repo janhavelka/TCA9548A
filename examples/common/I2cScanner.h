@@ -15,7 +15,9 @@ namespace i2c {
 /// address probes, never retries, and yields after each completed probe.
 /// @return Number of devices found
 inline int scan() {
-  LOGI("Scanning I2C bus...");
+  // Printed unconditionally: the HIL runner matches this line, so it must not
+  // depend on LOG_LEVEL.
+  Serial.println(F("Scanning I2C bus (126 bounded probes)..."));
 
   int count = 0;
   for (uint8_t addr = 1; addr < 127; ++addr) {

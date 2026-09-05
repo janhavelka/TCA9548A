@@ -149,10 +149,11 @@ struct ChannelMaskObservation {
 /// OFFLINE never blocks an operation; the external I2C owner retains admission,
 /// retry, recovery, and bus-reset authority.
 enum class DriverState : uint8_t {
-  UNINIT,    ///< No successful device transaction in the current binding
+  UNINIT,    ///< No successful tracked transaction yet in this binding;
+             ///< probe() never counts and failure counters may be nonzero
   READY,     ///< Most recent tracked transport operation succeeded
-  DEGRADED,  ///< 1 <= consecutiveFailures < offlineThreshold
-  OFFLINE    ///< consecutiveFailures >= offlineThreshold
+  DEGRADED,  ///< Initialized and 1 <= consecutiveFailures < offlineThreshold
+  OFFLINE    ///< Initialized and consecutiveFailures >= offlineThreshold
 };
 
 /// Return the stable allocation-free display name for a driver state.
@@ -235,13 +236,15 @@ public:
   void end();
 
   /// Perform one raw diagnostic control-byte read without health accounting.
-  /// A successful read stores READBACK_OBSERVED provenance. Exact transport
-  /// errors are returned unchanged; the part has no identity register.
+  /// A successful read stores READBACK_OBSERVED provenance; a failed read
+  /// invalidates the cached observation. Exact transport errors are returned
+  /// unchanged; the part has no identity register.
   /// @return Read result, or NOT_INITIALIZED when no Config is bound.
   Status probe();
 
-  /// Make one explicit safe-off recovery attempt by writing 0x00.
-  /// Performs one transfer, never asserts RESET or restores a previous mask.
+  /// Alias of disableAll() kept for the library-family lifecycle name: one
+  /// tracked 0x00 write. It never asserts RESET, retries, reads back, or
+  /// restores a previous mask.
   /// @return Write result, or NOT_INITIALIZED when no Config is bound.
   Status recover();
 
@@ -252,6 +255,9 @@ public:
   /// The callback may return only OK, TIMEOUT, or RESET_ERROR. TIMEOUT and
   /// RESET_ERROR are preserved exactly; another code returns INVALID_CONFIG
   /// with the invalid callback code in detail and performs no verification I2C.
+  /// The verification read is tracked exactly like readChannelMask().
+  /// RESET_STATE_MISMATCH is a device-state result, not a transport failure:
+  /// state() stays READY and lastError() is not updated.
   /// @return Terminal RESET callback or verification-read result.
   Status hardReset();
 
@@ -269,7 +275,8 @@ public:
   /// @return Write result, or NOT_INITIALIZED when no Config is bound.
   Status disableAll();
 
-  /// Observe the applied channel mask (one read-only transaction).
+  /// Observe the applied channel mask (one read-only transaction). A failed
+  /// read invalidates the cached observation.
   /// @param mask Output assigned only after a successful read.
   /// @return Read result, or NOT_INITIALIZED when no Config is bound.
   Status readChannelMask(ChannelMask& mask);
@@ -347,18 +354,11 @@ public:
 private:
   Status _requireBound() const;
 
-  Status _i2cWriteRaw(const uint8_t* buf, size_t len);
-  Status _i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
-                          uint8_t* rxBuf, size_t rxLen);
-  Status _i2cWriteTracked(const uint8_t* buf, size_t len);
-  Status _i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
-                              uint8_t* rxBuf, size_t rxLen);
-  Status _updateHealth(const Status& status);
-
+  // The only two transport paths. Both map the narrow transport result to
+  // Status and maintain the cached mask; health is updated only when tracked.
   Status _writeControlByte(ChannelMask mask);
-  Status _readControlByte(ChannelMask& mask);
-  Status _readControlByteRaw(ChannelMask& mask);
-  void _recordMask(ChannelMask mask, MaskProvenance provenance);
+  Status _readControlByte(ChannelMask& mask, bool tracked);
+  void _updateHealth(const Status& status);
   void _resetBindingState();
 
   Config _config;

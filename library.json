@@ -56,9 +56,9 @@
       "SECURITY.md",
       "docs/HARDWARE_NOTES.md",
       "docs/FEATURE_MATRIX.md",
-      "docs/NAMING_HYGIENE.md",
       "docs/PORTING.md",
       "docs/VALIDATION_STATUS.md",
+      "idf_component.yml",
       "examples/01_basic_bringup_cli/main.cpp",
       "examples/common/*.h",
       "examples/espidf_basic/**",
@@ -67,9 +67,6 @@
       "platformio.ini",
       "scripts/generate_version.py",
       "src/*.cpp",
-      "tools/check_cli_contract.py",
-      "tools/check_idf_example_contract.py",
-      "tools/check_repository_hygiene.py",
       "tools/tca9548a_hil.py"
     ]
   },

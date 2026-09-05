@@ -34,5 +34,7 @@ int main() {
   TCA9548A::TCA9548A mux;
   const TCA9548A::ChannelMaskObservation observation =
       mux.channelMaskObservation();
-  return observation.known() ? 1 : 0;
+  // probe() is out-of-line, so this also proves src/TCA9548A.cpp links.
+  const bool unbound = mux.probe().is(TCA9548A::Err::NOT_INITIALIZED);
+  return (!observation.known() && unbound) ? 0 : 1;
 }

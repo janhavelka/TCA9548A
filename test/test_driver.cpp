@@ -960,6 +960,93 @@ void test_hard_reset_read_failure_is_not_retried() {
   TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
 }
 
+void test_failures_before_initialization_keep_uninit() {
+  TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::NACK_ADDR, 1));
+  Driver mux;
+  assertStatus(mux.begin(makeConfig()), Err::I2C_NACK_ADDR, 1);
+  gTransport.setDefaultResponse(
+      {TCA9548A::TransportStatus::Error(TransportErr::BUS, 2)});
+  for (int failure = 0; failure < 4; ++failure) {
+    assertStatus(mux.disableAll(), Err::I2C_BUS, 2);
+  }
+
+  // offlineThreshold is 3, but DEGRADED/OFFLINE need one tracked success.
+  TEST_ASSERT_EQUAL_UINT8(5, mux.consecutiveFailures());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverState::UNINIT),
+                        static_cast<int>(mux.state()));
+  TEST_ASSERT_FALSE(mux.isInitialized());
+  TEST_ASSERT_FALSE(mux.isOnline());
+
+  gTransport.setDefaultResponse({});
+  TEST_ASSERT_TRUE(mux.disableAll().ok());
+  TEST_ASSERT_TRUE(mux.isInitialized());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverState::READY),
+                        static_cast<int>(mux.state()));
+  TEST_ASSERT_EQUAL_UINT8(0, mux.consecutiveFailures());
+}
+
+void test_offline_threshold_one_skips_degraded() {
+  Config config = makeConfig();
+  config.offlineThreshold = 1;
+  Driver mux;
+  beginOk(mux, config);
+
+  TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::TIMEOUT, 4));
+  assertStatus(mux.disableAll(), Err::I2C_TIMEOUT, 4);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverState::OFFLINE),
+                        static_cast<int>(mux.state()));
+
+  TEST_ASSERT_TRUE(mux.disableAll().ok());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverState::READY),
+                        static_cast<int>(mux.state()));
+}
+
+void test_missing_now_hook_leaves_timestamps_zero() {
+  Config config = makeConfig();
+  config.nowMs = nullptr;
+  gNowMs = 500;
+  Driver mux;
+  beginOk(mux, config);
+
+  TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::BUS, 5));
+  assertStatus(mux.disableAll(), Err::I2C_BUS, 5);
+  TEST_ASSERT_EQUAL_UINT32(0, mux.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(0, mux.lastErrorMs());
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalFailures());
+}
+
+void test_hard_reset_verification_read_is_tracked() {
+  // A mismatch is a device-state result, not a transport failure.
+  gTransport.reset(0x01);
+  Driver mux;
+  beginOk(mux, makeConfig(true));
+  const uint32_t successBefore = mux.totalSuccess();
+  gReset.appliedMask = 0xA5;
+
+  assertStatus(mux.hardReset(), Err::RESET_STATE_MISMATCH, 0xA5);
+  TEST_ASSERT_EQUAL_UINT32(successBefore + 1U, mux.totalSuccess());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverState::READY),
+                        static_cast<int>(mux.state()));
+  assertStatus(mux.lastError(), Err::OK);
+
+  // A successful verification read after a failed begin() initializes health.
+  mux.end();
+  gTransport.reset(0x80);
+  TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::NACK_ADDR, 6));
+  assertStatus(mux.begin(makeConfig(true)), Err::I2C_NACK_ADDR, 6);
+  TEST_ASSERT_FALSE(mux.isInitialized());
+
+  gReset = ResetHarness{};
+  gReset.transport = &gTransport;
+  gReset.appliedMask = 0x00;
+  TEST_ASSERT_TRUE(mux.hardReset().ok());
+  TEST_ASSERT_TRUE(mux.isInitialized());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverState::READY),
+                        static_cast<int>(mux.state()));
+  TEST_ASSERT_TRUE(mux.channelMaskObservation().verified());
+}
+
 void test_settings_snapshot_is_io_free_and_truthful() {
   gTransport.reset(0x24);
   Driver mux;
@@ -1023,6 +1110,10 @@ int main(int, char**) {
   RUN_TEST(test_hard_reset_exact_zero_is_verified_without_restore);
   RUN_TEST(test_hard_reset_mismatch_retains_truthful_readback);
   RUN_TEST(test_hard_reset_read_failure_is_not_retried);
+  RUN_TEST(test_failures_before_initialization_keep_uninit);
+  RUN_TEST(test_offline_threshold_one_skips_degraded);
+  RUN_TEST(test_missing_now_hook_leaves_timestamps_zero);
+  RUN_TEST(test_hard_reset_verification_read_is_tracked);
   RUN_TEST(test_settings_snapshot_is_io_free_and_truthful);
   return UNITY_END();
 }

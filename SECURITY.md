@@ -2,16 +2,8 @@
 
 ## Supported Versions
 
-Only the latest published `1.0.x` patch is supported with security fixes.
-Development commits and superseded patches are not supported releases.
-The `1.1.5` manifest is currently staged development, not a published or
-supported release.
-
-| Version | Supported |
-| --- | --- |
-| Latest 1.0.x patch | Yes |
-| Staged 1.1.5 development | No |
-| Older releases and development commits | No |
+Only the latest tagged release receives security fixes. Development commits
+between releases and superseded releases are not supported.
 
 ## Reporting a Vulnerability
 

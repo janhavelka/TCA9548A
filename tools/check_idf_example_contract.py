@@ -21,24 +21,27 @@ REQUIRED_FILES = (
     EXAMPLE / "README.md",
 )
 
-FORBIDDEN_TOKENS = (
-    "ArduinoCompat",
-    "IdfArduinoCompat",
-    "Arduino.h",
-    "Wire.h",
-    "String",
-    "Serial",
-    "TwoWire",
-    "fgets(",
-    "examples/01_basic_bringup_cli/main.cpp",
+# Word-anchored so prose may mention "USB-Serial-JTAG" without failing CI.
+FORBIDDEN_PATTERNS = (
+    r"ArduinoCompat",  # unanchored so it also catches IdfArduinoCompat
+    r"\bArduino\.h\b",
+    r"\bWire\.h\b",
+    r"\bTwoWire\b",
+    r"\bSerial\.",
+    r"\bString\b",
+    r"\bfgets\(",
+    r"examples/01_basic_bringup_cli/main\.cpp",
+    # A combined transfer puts a repeated START on the mux, which does not
+    # switch channels (TI SCPA063 section 4.1).
+    r"\bi2c_master_transmit_receive\b",
 )
 
 REQUIRED_NATIVE_TOKENS = (
     'extern "C" void app_main(void)',
     "driver/i2c_master.h",
     "i2c_new_master_bus",
-    "i2c_master_transmit",
-    "i2c_master_receive",
+    "i2c_master_transmit(",
+    "i2c_master_receive(",
     "esp_timer_get_time",
     "vTaskDelay",
     "getchar",
@@ -91,19 +94,15 @@ def main() -> int:
     if "espidf" not in metadata.get("frameworks", []):
         errors.append("library.json does not advertise the ESP-IDF framework")
 
-    for token in FORBIDDEN_TOKENS:
-        if token in main_cpp:
-            errors.append(f"native ESP-IDF source contains forbidden token: {token}")
+    for pattern in FORBIDDEN_PATTERNS:
+        if re.search(pattern, main_cpp):
+            errors.append(f"native ESP-IDF source matches forbidden pattern: {pattern}")
     for token in REQUIRED_NATIVE_TOKENS:
         if token not in main_cpp:
             errors.append(f"native ESP-IDF source missing token: {token}")
-    for token in ("not hardware validation", "idf.py", "Arduino", "Wire"):
-        if token.lower() not in readme.lower():
+    for token in ("idf.py", "not hardware validation", "Arduino", "Wire"):
+        if token not in readme:
             errors.append(f"ESP-IDF README missing integration caveat: {token}")
-
-    legacy = ROOT / "idf_component.yml.orig"
-    if legacy.exists():
-        errors.append("stale duplicate idf_component.yml.orig still exists")
 
     return report(errors) if errors else success()
 

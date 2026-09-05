@@ -10,6 +10,7 @@
 namespace TCA9548A {
 namespace {
 
+/// Sanity bound for caller-supplied callback timeouts; not datasheet-derived.
 constexpr uint32_t MAX_CALLBACK_TIMEOUT_MS = 60000;
 
 uint32_t configNowMs(const Config& config) {
@@ -70,12 +71,8 @@ Status TCA9548A::begin(const Config& config) {
   _config = config;
   _bound = true;
 
-  ChannelMask observed = ChannelMask::none();
-  Status status = _readControlByte(observed);
-  if (!status.ok()) {
-    return status;
-  }
-  return Status::Ok();
+  ChannelMask observed;
+  return _readControlByte(observed, true);
 }
 
 void TCA9548A::tick(uint32_t nowMs) {
@@ -87,25 +84,20 @@ void TCA9548A::end() {
 }
 
 Status TCA9548A::probe() {
-  Status boundStatus = _requireBound();
+  const Status boundStatus = _requireBound();
   if (!boundStatus.ok()) {
     return boundStatus;
   }
-
-  ChannelMask observed = ChannelMask::none();
-  return _readControlByteRaw(observed);
+  ChannelMask observed;
+  return _readControlByte(observed, false);
 }
 
 Status TCA9548A::recover() {
-  Status boundStatus = _requireBound();
-  if (!boundStatus.ok()) {
-    return boundStatus;
-  }
-  return _writeControlByte(ChannelMask::none());
+  return disableAll();
 }
 
 Status TCA9548A::hardReset() {
-  Status boundStatus = _requireBound();
+  const Status boundStatus = _requireBound();
   if (!boundStatus.ok()) {
     return boundStatus;
   }
@@ -115,7 +107,7 @@ Status TCA9548A::hardReset() {
   }
 
   invalidateChannelMask();
-  Status resetStatus =
+  const Status resetStatus =
       _config.hardReset(_config.resetTimeoutMs, _config.resetUser);
   if (!resetStatus.ok() && !resetStatus.is(Err::TIMEOUT) &&
       !resetStatus.is(Err::RESET_ERROR)) {
@@ -127,8 +119,8 @@ Status TCA9548A::hardReset() {
     return resetStatus;
   }
 
-  ChannelMask observed = ChannelMask::none();
-  Status readStatus = _readControlByte(observed);
+  ChannelMask observed;
+  const Status readStatus = _readControlByte(observed, true);
   if (!readStatus.ok()) {
     return readStatus;
   }
@@ -140,18 +132,19 @@ Status TCA9548A::hardReset() {
 }
 
 Status TCA9548A::selectChannel(Channel channel) {
-  Status boundStatus = _requireBound();
+  const Status boundStatus = _requireBound();
   if (!boundStatus.ok()) {
     return boundStatus;
   }
-  if (static_cast<uint8_t>(channel) >= cmd::NUM_CHANNELS) {
+  const ChannelMask mask = ChannelMask::one(channel);
+  if (!mask.isOneHot()) {
     return Status::Error(Err::INVALID_PARAM, "Channel must be CH0-CH7");
   }
-  return _writeControlByte(ChannelMask::one(channel));
+  return _writeControlByte(mask);
 }
 
 Status TCA9548A::writeChannelMask(ChannelMask mask) {
-  Status boundStatus = _requireBound();
+  const Status boundStatus = _requireBound();
   if (!boundStatus.ok()) {
     return boundStatus;
   }
@@ -163,17 +156,11 @@ Status TCA9548A::disableAll() {
 }
 
 Status TCA9548A::readChannelMask(ChannelMask& mask) {
-  Status boundStatus = _requireBound();
+  const Status boundStatus = _requireBound();
   if (!boundStatus.ok()) {
     return boundStatus;
   }
-
-  ChannelMask observed = ChannelMask::none();
-  Status status = _readControlByte(observed);
-  if (status.ok()) {
-    mask = observed;
-  }
-  return status;
+  return _readControlByte(mask, true);
 }
 
 Status TCA9548A::getSettings(SettingsSnapshot& out) const {
@@ -201,54 +188,40 @@ Status TCA9548A::_requireBound() const {
   return Status::Ok();
 }
 
-Status TCA9548A::_i2cWriteRaw(const uint8_t* buf, size_t len) {
-  if (_config.i2cWrite == nullptr) {
-    return Status::Error(Err::INVALID_CONFIG, "I2C write callback not set");
+Status TCA9548A::_writeControlByte(ChannelMask mask) {
+  const uint8_t byte = mask.raw();
+  const Status status = mapTransportStatus(_config.i2cWrite(
+      _config.i2cAddress, &byte, sizeof(byte), _config.i2cTimeoutMs,
+      _config.i2cUser));
+  _updateHealth(status);
+  if (!status.ok()) {
+    invalidateChannelMask();
+    return status;
   }
-  if (buf == nullptr || len == 0) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid I2C write buffer");
-  }
-
-  return mapTransportStatus(_config.i2cWrite(
-      _config.i2cAddress, buf, len, _config.i2cTimeoutMs, _config.i2cUser));
+  _maskObservation =
+      ChannelMaskObservation{mask, MaskProvenance::WRITE_COMPLETED};
+  return status;
 }
 
-Status TCA9548A::_i2cWriteReadRaw(const uint8_t* txBuf, size_t txLen,
-                                  uint8_t* rxBuf, size_t rxLen) {
-  if (_config.i2cWriteRead == nullptr) {
-    return Status::Error(Err::INVALID_CONFIG,
-                         "I2C write-read callback not set");
-  }
-  if (txLen > 0 && txBuf == nullptr) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid I2C transmit buffer");
-  }
-  if (rxLen > 0 && rxBuf == nullptr) {
-    return Status::Error(Err::INVALID_PARAM, "Invalid I2C receive buffer");
-  }
-
-  return mapTransportStatus(_config.i2cWriteRead(
-      _config.i2cAddress, txBuf, txLen, rxBuf, rxLen,
+Status TCA9548A::_readControlByte(ChannelMask& mask, bool tracked) {
+  uint8_t byte = cmd::NO_CHANNELS;
+  const Status status = mapTransportStatus(_config.i2cWriteRead(
+      _config.i2cAddress, nullptr, 0, &byte, sizeof(byte),
       _config.i2cTimeoutMs, _config.i2cUser));
-}
-
-Status TCA9548A::_i2cWriteTracked(const uint8_t* buf, size_t len) {
-  Status status = _i2cWriteRaw(buf, len);
-  if (status.is(Err::INVALID_CONFIG) || status.is(Err::INVALID_PARAM)) {
+  if (tracked) {
+    _updateHealth(status);
+  }
+  if (!status.ok()) {
+    invalidateChannelMask();
     return status;
   }
-  return _updateHealth(status);
+  mask = ChannelMask::fromRaw(byte);
+  _maskObservation =
+      ChannelMaskObservation{mask, MaskProvenance::READBACK_OBSERVED};
+  return status;
 }
 
-Status TCA9548A::_i2cWriteReadTracked(const uint8_t* txBuf, size_t txLen,
-                                      uint8_t* rxBuf, size_t rxLen) {
-  Status status = _i2cWriteReadRaw(txBuf, txLen, rxBuf, rxLen);
-  if (status.is(Err::INVALID_CONFIG) || status.is(Err::INVALID_PARAM)) {
-    return status;
-  }
-  return _updateHealth(status);
-}
-
-Status TCA9548A::_updateHealth(const Status& status) {
+void TCA9548A::_updateHealth(const Status& status) {
   const uint32_t now = configNowMs(_config);
   const uint32_t maxU32 = std::numeric_limits<uint32_t>::max();
   const uint8_t maxU8 = std::numeric_limits<uint8_t>::max();
@@ -261,7 +234,7 @@ Status TCA9548A::_updateHealth(const Status& status) {
     _consecutiveFailures = 0;
     _initialized = true;
     _driverState = DriverState::READY;
-    return status;
+    return;
   }
 
   _lastError = status;
@@ -273,56 +246,15 @@ Status TCA9548A::_updateHealth(const Status& status) {
     ++_consecutiveFailures;
   }
 
-  // A failed presence read cannot move an as-yet-uninitialized binding into a
-  // health state. A later successful primitive promotes it to READY.
+  // Failures before the first tracked success keep UNINIT; the counters still
+  // count. A later successful primitive promotes the binding to READY.
   if (!_initialized) {
-    return status;
+    return;
   }
 
   _driverState = _consecutiveFailures >= _config.offlineThreshold
                      ? DriverState::OFFLINE
                      : DriverState::DEGRADED;
-  return status;
-}
-
-Status TCA9548A::_writeControlByte(ChannelMask mask) {
-  const uint8_t byte = mask.raw();
-  Status status = _i2cWriteTracked(&byte, sizeof(byte));
-  if (status.ok()) {
-    _recordMask(mask, MaskProvenance::WRITE_COMPLETED);
-  } else {
-    invalidateChannelMask();
-  }
-  return status;
-}
-
-Status TCA9548A::_readControlByte(ChannelMask& mask) {
-  uint8_t byte = cmd::NO_CHANNELS;
-  Status status = _i2cWriteReadTracked(nullptr, 0, &byte, sizeof(byte));
-  if (status.ok()) {
-    mask = ChannelMask::fromRaw(byte);
-    _recordMask(mask, MaskProvenance::READBACK_OBSERVED);
-  } else {
-    invalidateChannelMask();
-  }
-  return status;
-}
-
-Status TCA9548A::_readControlByteRaw(ChannelMask& mask) {
-  uint8_t byte = cmd::NO_CHANNELS;
-  Status status = _i2cWriteReadRaw(nullptr, 0, &byte, sizeof(byte));
-  if (status.ok()) {
-    mask = ChannelMask::fromRaw(byte);
-    _recordMask(mask, MaskProvenance::READBACK_OBSERVED);
-  } else {
-    invalidateChannelMask();
-  }
-  return status;
-}
-
-void TCA9548A::_recordMask(ChannelMask mask, MaskProvenance provenance) {
-  _maskObservation.mask = mask;
-  _maskObservation.provenance = provenance;
 }
 
 void TCA9548A::_resetBindingState() {

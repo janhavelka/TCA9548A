@@ -24,7 +24,10 @@ The driver makes only these protocol requests:
   the terminating STOP because channel changes take effect only after STOP.
 - Read: configured address, `txData == nullptr`, `txLength == 0`, non-null
   receive buffer, `rxLength == 1`. This is a read-only transaction with no
-  register-pointer phase.
+  register-pointer phase, and it must be its own START-to-STOP transaction.
+  Never implement it as a repeated-START read chained to a write: the mux then
+  returns the new byte while its switches have not changed (TI SCPA063,
+  section 4.1).
 
 Each callback must make one physical attempt, finish within `timeoutMs`, and
 return `NACK_ADDR`, `NACK_DATA`, `TIMEOUT`, `BUS`, or `OTHER` without retrying
@@ -123,26 +126,10 @@ bus cause that the API did not provide.
 
 ## Verification
 
-Run the repository checks for every maintained adapter:
-
-On Windows, use the repository wrapper for PlatformIO commands:
-
-```powershell
-python scripts/generate_version.py check
-python tools/check_cli_contract.py
-python tools/check_idf_example_contract.py
-python tools/check_repository_hygiene.py
-.\scripts\pio.cmd test -e native
-.\scripts\pio.cmd run -e native_core_no_arduino
-.\scripts\pio.cmd run -e esp32s3dev
-.\scripts\pio.cmd run -e esp32s2dev
-```
-
-Linux CI uses its pinned `python -m platformio` installation; the Windows
-wrapper remains the only supported local entry point in this repository.
-
-Also verify exact address, lengths, data byte, timeout propagation, STOP
-completion, distinct error mapping, failed-write observation invalidation, and
-that no direct framework includes enter `src/` or public headers. Run
-`doxygen Doxyfile` after changing a public declaration; undocumented public API
-and incomplete parameter/return documentation fail the documentation build.
+Run the repository checks listed in [CONTRIBUTING.md](../CONTRIBUTING.md) for
+every maintained adapter. Also verify the exact address, lengths, data byte,
+timeout propagation, STOP completion, distinct error mapping, failed-write
+observation invalidation, and that no framework include enters `src/` or the
+public headers. Run `doxygen Doxyfile` after changing a public declaration;
+undocumented public API and incomplete parameter/return documentation fail the
+documentation build.

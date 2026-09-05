@@ -29,7 +29,9 @@ ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 COMMON_FAILURE_PATTERNS = (
     r"\[FAIL\]",
     r"\bfail=[1-9][0-9]*\b",
-    r"\bfailures=[1-9][0-9]*\b",
+    r"\bfailures?=[1-9][0-9]*\b",
+    # Printed by both CLIs when the post-stress all-off could not be verified.
+    r"\bsafe_off=FAILED\b",
 )
 STATUS_FAILURE_PATTERNS = (
     r"\bI2C_(?:ERROR|TIMEOUT|BUS|NACK_ADDR|NACK_DATA)\b",
@@ -58,7 +60,6 @@ class Result:
     observed: str
     elapsed_s: float = 0.0
     notes: str = ""
-    transcript: str = ""
 
 
 def strip_ansi(text: str) -> str:
@@ -603,9 +604,13 @@ def run_soak(runner: SerialRunner, args: argparse.Namespace) -> tuple[str, float
         transcript_parts.append(f"\n$ {command}\n{text}")
         counts[command] += 1
         latencies.append(elapsed)
-        if not strip_ansi(text).strip() or first_failure(
-            text, COMMON_FAILURE_PATTERNS + STATUS_FAILURE_PATTERNS
-        ):
+        # `health` reports the sticky last-error field, so a single historical
+        # fault would mark every later iteration failed. Judge that command on
+        # the common failure patterns only.
+        patterns = COMMON_FAILURE_PATTERNS
+        if command != "health":
+            patterns = patterns + STATUS_FAILURE_PATTERNS
+        if not strip_ansi(text).strip() or first_failure(text, patterns):
             failures += 1
 
     worst = max(latencies) if latencies else 0.0
@@ -657,8 +662,7 @@ def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
                         observed=short_observed(text),
                         elapsed_s=elapsed,
                         notes=notes,
-                        transcript=text,
-                    )
+                            )
                 )
                 if args.verbose:
                     print(f"\n$ {step.command}\n{text}")
@@ -685,27 +689,36 @@ def parser_self_test(args: argparse.Namespace) -> int:
             print(f"Parser self-test: FAIL - incomplete step {step}")
             return 1
 
+    by_id = {step.test_id: step for step in plan}
+    version_step = by_id["TCA-HIL-001"]
+    scan_step = by_id["TCA-HIL-005"]
+    selftest_step = by_id["TCA-HIL-008"]
+
     pass_status, _ = classify(
         "=== Version Info ===\n  Library: test-version\n",
-        plan[0],
+        version_step,
     )
     fail_status, _ = classify(
         "=== TCA9548A HIL RUN ===\n  [FAIL] probe - I2C_TIMEOUT\nHIL result: pass=1 fail=1 skip=0\n",
-        plan[7],
+        selftest_step,
     )
-    unknown_status, _ = classify("unrelated output\n", plan[0])
+    unknown_status, _ = classify("unrelated output\n", version_step)
 
     scan_started_only, _ = classify(
         "Scan topology: OK active_mask=0x00 [none]\nScanning I2C bus...\n",
-        plan[4],
+        scan_step,
     )
     scan_complete, _ = classify(
         "Scan topology: OK active_mask=0x00 [none]\n"
         "Scanning I2C bus...\nScan complete: devices=1\n",
-        plan[4],
+        scan_step,
     )
     soak_failure = first_failure(
         "soak complete counts={} failures=1 worst_latency_s=5.000",
+        COMMON_FAILURE_PATTERNS,
+    )
+    unverified_safe_off = first_failure(
+        "Stress results: completed=8 requested=8 status=OK safe_off=FAILED",
         COMMON_FAILURE_PATTERNS,
     )
 
@@ -716,7 +729,10 @@ def parser_self_test(args: argparse.Namespace) -> int:
         or scan_started_only != UNKNOWN
         or scan_complete != PASS
         or soak_failure is None
-        or plan[7].command != "hil run reset"
+        or unverified_safe_off is None
+        or selftest_step.command != (
+            "hil run reset" if args.include_reset else "hil run"
+        )
     ):
         print(
             "Parser self-test: FAIL - "
@@ -726,14 +742,14 @@ def parser_self_test(args: argparse.Namespace) -> int:
 
     required_not_run = [
         Result(
-            step=plan[0],
+            step=version_step,
             status=NOT_RUN,
             observed="not executed",
             notes="fixture unavailable",
         )
     ]
     failed = [
-        Result(step=plan[0], status=FAIL, observed="failure")
+        Result(step=version_step, status=FAIL, observed="failure")
     ]
     if (
         result_exit_code(required_not_run, dry_run=True, allow_not_run=False)
@@ -750,7 +766,7 @@ def parser_self_test(args: argparse.Namespace) -> int:
         return 1
 
     partial_results = [
-        Result(step=plan[0], status=PASS, observed="version observed")
+        Result(step=version_step, status=PASS, observed="version observed")
     ]
     append_not_run_results(partial_results, plan, "session interrupted")
     if (

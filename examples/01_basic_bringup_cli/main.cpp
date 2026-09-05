@@ -165,7 +165,7 @@ uint32_t nowMs(void*) {
 
 TCA9548A::Status pulseReset(uint32_t timeoutMs, void*) {
   if (board::TCA_RESET < 0) {
-    return TCA9548A::Status::Error(TCA9548A::Err::UNSUPPORTED,
+    return TCA9548A::Status::Error(TCA9548A::Err::RESET_ERROR,
                                   "RESET pin is not configured");
   }
   if (timeoutMs == 0U) {
@@ -190,8 +190,13 @@ void configureDriver() {
   config.offlineThreshold = 5;
 
   if (board::TCA_RESET >= 0) {
-    pinMode(board::TCA_RESET, OUTPUT);
+    // RESET is active low. On Arduino-ESP32 3.x digitalWrite() is ignored until
+    // pinMode() has registered the pin, so register it as an input pull-up
+    // first: that holds the line high, makes the following write reach the
+    // output latch, and switching to OUTPUT then cannot emit a reset pulse.
+    pinMode(board::TCA_RESET, INPUT_PULLUP);
     digitalWrite(board::TCA_RESET, HIGH);
+    pinMode(board::TCA_RESET, OUTPUT);
     config.hardReset = pulseReset;
   }
 }
@@ -230,7 +235,7 @@ bool parseUnsignedArgument(const char* command, const char* prefix,
   errno = 0;
   char* end = nullptr;
   const unsigned long value = std::strtoul(text, &end, 0);
-  if (errno != 0 || end == text || *end != '\0' || value > maximum) {
+  if (errno == ERANGE || end == text || *end != '\0' || value > maximum) {
     return false;
   }
   output = value;
@@ -641,7 +646,10 @@ void processCommand(const char* command) {
                value > 0U) {
       runStress(value, false);
     } else {
-      LOGE("Unknown or invalid command: %s", command);
+      // Printed unconditionally so it does not depend on LOG_LEVEL, matching
+      // the native CLI.
+      Serial.printf("%s[E]%s Unknown or invalid command: %s\n", LOG_COLOR_RED,
+                    LOG_COLOR_RESET, command);
     }
   }
 }
