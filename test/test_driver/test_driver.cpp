@@ -996,6 +996,69 @@ void test_settings_snapshot_is_io_free_and_truthful() {
   TEST_ASSERT_EQUAL_HEX8(0x24, snapshot.maskObservation.mask.raw());
 }
 
+void test_tick_is_a_no_op() {
+  const auto assertTickIsNoOp = [](Driver& mux) {
+    TCA9548A::SettingsSnapshot before;
+    TEST_ASSERT_TRUE(mux.getSettings(before).ok());
+    const uint32_t successBefore = mux.totalSuccess();
+    const uint32_t failuresBefore = mux.totalFailures();
+    const uint8_t consecutiveBefore = mux.consecutiveFailures();
+    const uint32_t lastOkBefore = mux.lastOkMs();
+    const uint32_t lastErrorMsBefore = mux.lastErrorMs();
+    const Status lastErrorBefore = mux.lastError();
+    const int resetCallsBefore = gReset.calls;
+    gTransport.clearHistory();
+
+    const uint32_t timestamps[] = {0U, std::numeric_limits<uint32_t>::max()};
+    for (const uint32_t timestamp : timestamps) {
+      mux.tick(timestamp);
+
+      TEST_ASSERT_EQUAL_UINT32(0,
+                               static_cast<uint32_t>(gTransport.callCount()));
+      TEST_ASSERT_EQUAL_INT(resetCallsBefore, gReset.calls);
+      TEST_ASSERT_EQUAL(before.bound, mux.isBound());
+      TEST_ASSERT_EQUAL(before.initialized, mux.isInitialized());
+      TEST_ASSERT_EQUAL_INT(static_cast<int>(before.state),
+                            static_cast<int>(mux.state()));
+      TEST_ASSERT_EQUAL_UINT32(successBefore, mux.totalSuccess());
+      TEST_ASSERT_EQUAL_UINT32(failuresBefore, mux.totalFailures());
+      TEST_ASSERT_EQUAL_UINT8(consecutiveBefore, mux.consecutiveFailures());
+      TEST_ASSERT_EQUAL_UINT32(lastOkBefore, mux.lastOkMs());
+      TEST_ASSERT_EQUAL_UINT32(lastErrorMsBefore, mux.lastErrorMs());
+      assertStatus(mux.lastError(), lastErrorBefore.code, lastErrorBefore.detail);
+      TEST_ASSERT_EQUAL_PTR(lastErrorBefore.msg, mux.lastError().msg);
+      const auto observation = mux.channelMaskObservation();
+      TEST_ASSERT_EQUAL_HEX8(before.maskObservation.mask.raw(),
+                             observation.mask.raw());
+      TEST_ASSERT_EQUAL_INT(static_cast<int>(before.maskObservation.provenance),
+                            static_cast<int>(observation.provenance));
+    }
+  };
+
+  Driver mux;
+  assertTickIsNoOp(mux);
+
+  gTransport.reset(0x42);
+  gNowMs = 7;
+  const Config config = makeConfig(true);
+  beginOk(mux, config);
+  assertTickIsNoOp(mux);
+
+  // Nonzero failure history must survive tick() in DEGRADED and OFFLINE too.
+  gNowMs = 11;
+  for (uint8_t failure = 0; failure < config.offlineThreshold; ++failure) {
+    TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::BUS, 5));
+    assertStatus(mux.disableAll(), Err::I2C_BUS, 5);
+    assertTickIsNoOp(mux);
+  }
+
+  // The examples also tick a retained binding after a failed presence read.
+  mux.end();
+  TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::NACK_ADDR, 6));
+  assertStatus(mux.begin(config), Err::I2C_NACK_ADDR, 6);
+  assertTickIsNoOp(mux);
+}
+
 } // namespace
 
 int main(int, char**) {
@@ -1037,5 +1100,6 @@ int main(int, char**) {
   RUN_TEST(test_missing_now_hook_leaves_timestamps_zero);
   RUN_TEST(test_hard_reset_verification_read_is_tracked);
   RUN_TEST(test_settings_snapshot_is_io_free_and_truthful);
+  RUN_TEST(test_tick_is_a_no_op);
   return UNITY_END();
 }
