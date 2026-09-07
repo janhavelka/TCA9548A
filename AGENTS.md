@@ -35,7 +35,8 @@ examples/
                            I2cTransport.h, I2cScanner.h, CliLineBuffer.h,
                            CliShell.h, CliStyle.h)
   espidf_basic/          - Native ESP-IDF app_main CLI example
-test/                    - Native Unity tests, the scripted transport, and the
+test/                    - Separate driver and example CLI Unity suites,
+                           the scripted transport, and the
                            framework-neutral core compile/link gate
                            (test/core_no_arduino/)
 tools/                   - Repository checkers and the host-side HIL runner

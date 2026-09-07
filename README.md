@@ -354,6 +354,10 @@ invalidation, passive health, safe-off recovery, and the HIL contract.
 `tools/check_cli_contract.py` separately verifies help and dispatch routing so
 their command/API surfaces cannot pass on token presence alone.
 
+The Arduino CLI uses `LOG_SERIAL` for console input and output, including
+prompts and scan results. It defaults to `Serial`; define it for the example
+build to select another compatible Arduino serial object.
+
 The example-only `CliLineBuffer` accepts commands only after CR or LF, trims
 outer spaces/tabs, accepts at most 127 command bytes, and discards every byte
 of an overlong line through its terminator. The native CLI polls this

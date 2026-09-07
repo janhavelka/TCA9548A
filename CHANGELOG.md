@@ -27,6 +27,9 @@ Entries describe the change relative to the last release, v1.0.0.
 
 ### Changed
 
+- Native tests run as separate driver and example CLI suites. The `native_cli`
+  PlatformIO environment tests the line buffer without driver sources, and CI
+  runs both suites.
 - `hardReset()` enforces the callback result domain: `OK`, `TIMEOUT`, and
   `RESET_ERROR` pass through unchanged; any other code is reported as
   `INVALID_CONFIG` with the original code in `Status::detail`.
@@ -81,6 +84,10 @@ Entries describe the change relative to the last release, v1.0.0.
 
 ### Fixed
 
+- The native ESP-IDF adapter retains its device handle and address when device
+  removal fails, so a later attempt can retry removal without losing ownership.
+- All Arduino CLI console output, including shared style helpers, honors
+  `LOG_SERIAL`, matching console input and logging.
 - Native ESP-IDF CLI main loop no longer starves the idle task. Its delay was
   `pdMS_TO_TICKS(1)`, which is zero ticks at the ESP-IDF default 100 Hz tick
   rate, so `vTaskDelay` only yielded and never let the priority-0 idle task run.

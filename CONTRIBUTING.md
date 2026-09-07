@@ -63,6 +63,7 @@ python tools/check_cli_contract.py
 python tools/check_idf_example_contract.py
 python tools/check_repository_hygiene.py
 .\scripts\pio.cmd test -e native
+.\scripts\pio.cmd test -e native_cli
 .\scripts\pio.cmd run -e native_core_no_arduino
 .\scripts\pio.cmd run -e esp32s3dev
 .\scripts\pio.cmd run -e esp32s2dev

@@ -255,6 +255,11 @@ def main() -> int:
         errors.append("Arduino CLI does not use the shared shell/style helpers")
     if "char command[128]" not in arduino:
         errors.append("Arduino CLI must retain fixed command storage")
+    for path in (ARDUINO_MAIN, *sorted((ROOT / "examples" / "common").glob("*.h"))):
+        if re.search(r"\bSerial\s*\.", read(path, errors)):
+            errors.append(
+                f"{path.relative_to(ROOT).as_posix()}: console I/O bypasses LOG_SERIAL"
+            )
     if "MAX_STRESS_COUNT = 1000" not in arduino:
         errors.append("Arduino CLI must retain the strict 1000-operation stress cap")
     for token in (
@@ -282,8 +287,14 @@ def main() -> int:
                 )
         if "completed < count" not in text:
             errors.append(f"{label} stress loop is not count-bounded")
-    tests = read(ROOT / "test" / "test_driver.cpp", errors)
-    if "test_fixed_cli_line_buffer_is_trimmed_bounded_and_recoverable" not in tests:
+    tests = read(
+        ROOT / "test" / "test_cli_line_buffer" / "test_cli_line_buffer.cpp", errors
+    )
+    if (
+        "RUN_TEST(test_fixed_cli_line_buffer_is_trimmed_bounded_and_recoverable)"
+        not in tests
+        or "../../examples/common/CliLineBuffer.h" not in tests
+    ):
         errors.append("shared fixed-line parser lacks its native regression test")
 
     if errors:

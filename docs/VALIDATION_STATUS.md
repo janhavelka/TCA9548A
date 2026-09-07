@@ -24,7 +24,7 @@ Primary source: [TI TCA9548A datasheet SCPS207H](https://www.ti.com/lit/ds/symli
 
 ## Automated evidence
 
-The native test suite in `test/test_driver.cpp` covers:
+The native driver test suite in `test/test_driver/test_driver.cpp` covers:
 
 - exact transaction shape: address, one-byte write payload, read-only
   control-byte read with a null transmit buffer, timeout propagation;
@@ -43,8 +43,12 @@ The native test suite in `test/test_driver.cpp` covers:
   restore, exact-zero verification, the callback result domain, and the tracked
   verification read that leaves `state()` at `READY` on a mismatch;
 - allocation-free enum names, including invalid casts, and the bus-silent
-  settings snapshot;
-- the shared fixed-line CLI accumulator used by both examples.
+  settings snapshot.
+
+The separate `native_cli` suite in `test/test_cli_line_buffer/` tests the
+shared fixed-line accumulator used by both examples without compiling driver
+sources. It covers trimming, CRLF handling, capacity boundaries, discarded
+overlong lines, invalid destination buffers, and recovery on the next command.
 
 CI additionally compiles the core with strict C++17 warnings and no Arduino
 include paths, builds the Arduino example for ESP32-S2/S3, builds the native

@@ -130,11 +130,11 @@ esp_err_t ensureDevice(NativeBus& bus, uint8_t address) {
   }
   if (bus.device != nullptr) {
     const esp_err_t removeError = i2c_master_bus_rm_device(bus.device);
-    bus.device = nullptr;
-    bus.deviceAddress = 0U;
     if (removeError != ESP_OK) {
       return removeError;
     }
+    bus.device = nullptr;
+    bus.deviceAddress = 0U;
   }
 
   i2c_device_config_t config = {};
