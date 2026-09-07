@@ -193,6 +193,13 @@ display. Driver-state and mask-provenance enums have matching
 `driverStateName()` / `maskProvenanceName()` helpers and `toString()` overloads,
 so Arduino and ESP-IDF CLIs cannot drift into separate string tables.
 
+The published `toString()` overloads, `driverState()`, `Status::inProgress()`,
+and `CommandTable.h` constants remain supported for 1.x source compatibility.
+For new code, prefer the named display helpers, `state()`, `addressFromPins()`,
+and typed `ChannelMask` operations. `CONTROL_REG` is a compatibility constant;
+the device has no register-address phase, so never transmit it as a register
+pointer.
+
 The core emits these result classes:
 
 | Result | Meaning |

@@ -27,6 +27,8 @@ Entries describe the change relative to the last release, v1.0.0.
 
 ### Changed
 
+- Documented the retained 1.x compatibility helpers/constants and the native
+  adapter's conservative error mapping; removed completed audit working notes.
 - Native tests run as separate driver and example CLI suites. The `native_cli`
   PlatformIO environment tests the line buffer without driver sources, and CI
   runs both suites.
