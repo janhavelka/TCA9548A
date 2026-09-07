@@ -43,6 +43,7 @@ covered by CI only; no local ESP-IDF installation was available.
 | 4 | `begin()` and `readChannelMask()` return the read result directly | `begin()` used to re-wrap a successful read as a fresh `Status::Ok()`; `readChannelMask()` copied through a redundant local. `begin()` still needs a discarded `ChannelMask` local for the out-parameter. |
 | 5 | `_updateHealth()` returns `void` | It returned its argument unchanged on every path, so the two `return _updateHealth(status);` call sites gained nothing from the value. |
 | 6 | The strict no-Arduino gate calls `probe()` | `probe()` is defined out of line, so the gate now proves the compiled core links, not just that it compiles. |
+| 6a | Both example RESET callbacks return `RESET_ERROR`, not `UNSUPPORTED`, when no pin is wired | `Config.h` restricts the callback to `OK`, `TIMEOUT` and `RESET_ERROR`, so `hardReset()` would have converted `UNSUPPORTED` into `INVALID_CONFIG`. This is what makes section 3's "both RESET callbacks stay inside the documented domain" true. |
 
 ### 1.2 Behaviour that was undocumented or wrongly documented
 

@@ -39,6 +39,7 @@ test/                    - Native Unity tests, the scripted transport, and the
                            framework-neutral core compile/link gate
                            (test/core_no_arduino/)
 tools/                   - Repository checkers and the host-side HIL runner
+scripts/                 - Version generator and the Windows PlatformIO wrapper
 docs/                    - Porting guide, hardware notes, feature matrix, validation status
 platformio.ini
 library.json
@@ -144,7 +145,7 @@ The driver follows a **managed synchronous** model with health tracking:
 
 - All public I2C operations are **blocking** (TCA9548A is trivially fast - single register).
 - `tick()` is a no-op for this device (no pending I/O or state machines needed).
-- Health is tracked via **tracked transport wrappers** - public API never calls `_updateHealth()` directly.
+- Health is tracked inside the two private protocol helpers (see below) - public API never calls `_updateHealth()` directly.
 - Recovery is **manual**: `recover()` is an alias of `disableAll()` (one tracked `0x00` write); the application owns retry, RESET, and bus-recovery strategy.
 
 ### DriverState (4 states only)

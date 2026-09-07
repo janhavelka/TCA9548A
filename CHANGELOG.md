@@ -33,8 +33,9 @@ Entries describe the change relative to the last release, v1.0.0.
 - Collapsed the private transport layers. Seven raw/tracked wrappers and
   control-byte helpers became `_writeControlByte(mask)` and
   `_readControlByte(mask, tracked)`, and `_recordMask()` was inlined at all
-  three of its call sites, which the read merge collapses to two assignments. `src/TCA9548A.cpp` went from 340 to 272 lines. The removed
-  argument checks were unreachable, so public behavior is unchanged.
+  three of its call sites, which the read merge collapses to two assignments.
+  The removed argument checks were unreachable, so public behavior is
+  unchanged.
 - `recover()` is now an alias of `disableAll()`; both always performed the same
   single tracked `0x00` write.
 - Documented behavior that was previously only implied, each now covered by a

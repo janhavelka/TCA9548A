@@ -662,7 +662,7 @@ def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
                         observed=short_observed(text),
                         elapsed_s=elapsed,
                         notes=notes,
-                            )
+                    )
                 )
                 if args.verbose:
                     print(f"\n$ {step.command}\n{text}")

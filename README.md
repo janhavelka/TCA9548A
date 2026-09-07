@@ -338,8 +338,9 @@ A live run validates RESET by default, so the fixture must have the RESET pin
 wired and the example's `TCA_RESET` (Arduino) or `RESET_GPIO` (ESP-IDF)
 constant set to it. Both ship disabled, and a run against an unmodified build
 fails that case. The run also exits nonzero if required cases are `NOT_RUN`.
-`--skip-reset` is a diagnostic exception, not release evidence. `--allow-not-run` accepts an explicitly missing fixture; FAIL and
-UNKNOWN remain failures. `--dry-run` validates only the plan. The runner writes
+`--skip-reset` is a diagnostic exception, not release evidence.
+`--allow-not-run` accepts an explicitly missing fixture; FAIL and UNKNOWN
+remain failures. `--dry-run` validates only the plan. The runner writes
 a report or transcript only when `--report` or `--transcript` is supplied.
 
 ## Example
