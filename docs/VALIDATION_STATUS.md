@@ -35,6 +35,9 @@ The native driver test suite in `test/test_driver/test_driver.cpp` covers:
   RESET, and explicit invalidation;
 - lifecycle: bound-but-failed `begin()`, rebind rejection, bus-silent `end()`,
   lifetime counters surviving rebind;
+- `tick()` performs no I/O or RESET and preserves settings, mask evidence,
+  health counters, timestamps, and last error across lifecycle states,
+  including a failed initial binding;
 - passive health transitions, saturating counters, and timestamp wrap,
   including failures before the first tracked success keeping `UNINIT`, an
   `offlineThreshold` of 1 reaching `OFFLINE` without a `DEGRADED` step, and a

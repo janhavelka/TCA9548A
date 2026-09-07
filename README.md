@@ -43,14 +43,17 @@ control protocol and truthful local diagnostics.
 
 ## Installation
 
+The latest release is [v1.1.0](https://github.com/janhavelka/TCA9548A/releases/tag/v1.1.0).
+It adds native ESP-IDF support and enum-name helpers while retaining the 1.x
+API. See the [changelog](CHANGELOG.md#110---2026-09-07) for the release changes.
+
 For reproducible production builds, pin a reviewed full commit SHA rather than
-a branch or tag name. After the annotated release tag exists, resolve its
-peeled commit and compare it with the release evidence before updating the
-dependency. Replace `vX.Y.Z` with the reviewed release:
+a branch or tag name. Resolve the annotated release tag's peeled commit and
+compare it with the release evidence before updating the dependency:
 
 ```sh
 git ls-remote --tags https://github.com/janhavelka/TCA9548A.git \
-  'refs/tags/vX.Y.Z^{}'
+  'refs/tags/v1.1.0^{}'
 ```
 
 Use the returned 40-character commit, not the tag object, branch, or tag name:
