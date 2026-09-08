@@ -13,12 +13,12 @@
 namespace cli {
 
 inline void printSection(const char* title) {
-  Serial.printf("%s=== %s ===%s\n", LOG_COLOR_CYAN, title,
+  LOG_SERIAL.printf("%s=== %s ===%s\n", LOG_COLOR_CYAN, title,
                 LOG_COLOR_RESET);
 }
 
 inline void printPrompt() {
-  Serial.printf("%s> %s", LOG_COLOR_CYAN, LOG_COLOR_RESET);
+  LOG_SERIAL.printf("%s> %s", LOG_COLOR_CYAN, LOG_COLOR_RESET);
 }
 
 inline const char* resultColor(bool ok) {

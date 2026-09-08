@@ -31,78 +31,78 @@ using TCA9548A::driverStateName;
 using TCA9548A::maskProvenanceName;
 
 void printStatus(const TCA9548A::Status& status) {
-  Serial.printf("%s%s%s", cli::resultColor(status.ok()),
+  LOG_SERIAL.printf("%s%s%s", cli::resultColor(status.ok()),
                 errorName(status.code), LOG_COLOR_RESET);
   if (!status.ok()) {
-    Serial.printf(" (detail=%ld, %s)", static_cast<long>(status.detail),
+    LOG_SERIAL.printf(" (detail=%ld, %s)", static_cast<long>(status.detail),
                   status.msg);
   }
 }
 
 void printMask(TCA9548A::ChannelMask mask) {
-  Serial.printf("0x%02X [", mask.raw());
+  LOG_SERIAL.printf("0x%02X [", mask.raw());
   bool first = true;
   for (uint8_t index = 0; index < TCA9548A::cmd::NUM_CHANNELS; ++index) {
     const auto channel = static_cast<TCA9548A::Channel>(index);
     if (!mask.contains(channel)) {
       continue;
     }
-    Serial.printf("%s%u", first ? "" : ",", static_cast<unsigned>(index));
+    LOG_SERIAL.printf("%s%u", first ? "" : ",", static_cast<unsigned>(index));
     first = false;
   }
   if (first) {
-    Serial.print(F("none"));
+    LOG_SERIAL.print(F("none"));
   }
-  Serial.print(F("]"));
+  LOG_SERIAL.print(F("]"));
 }
 
 void printObservation() {
   const auto observation = device.channelMaskObservation();
-  Serial.printf("Mask cache: %s known=%s verified=%s value=",
+  LOG_SERIAL.printf("Mask cache: %s known=%s verified=%s value=",
                 maskProvenanceName(observation.provenance),
                 observation.known() ? "yes" : "no",
                 observation.verified() ? "yes" : "no");
   printMask(observation.mask);
-  Serial.println();
+  LOG_SERIAL.println();
 }
 
 void printVersionInfo() {
   cli::printSection("Version Info");
-  Serial.printf("  MCU: %s rev %u, flash %lu bytes, PSRAM %s (%lu bytes)\n",
+  LOG_SERIAL.printf("  MCU: %s rev %u, flash %lu bytes, PSRAM %s (%lu bytes)\n",
                 ESP.getChipModel(),
                 static_cast<unsigned>(ESP.getChipRevision()),
                 static_cast<unsigned long>(ESP.getFlashChipSize()),
                 psramFound() ? "ready" : "not available",
                 static_cast<unsigned long>(ESP.getPsramSize()));
-  Serial.printf("  Arduino-ESP32: %s\n", ESP.getCoreVersion());
-  Serial.printf("  ESP-IDF: %s\n", ESP.getSdkVersion());
-  Serial.printf("  Library: %s\n", TCA9548A::VERSION);
-  Serial.printf("  Full: %s\n", TCA9548A::VERSION_FULL);
-  Serial.printf("  Code: %lu\n",
+  LOG_SERIAL.printf("  Arduino-ESP32: %s\n", ESP.getCoreVersion());
+  LOG_SERIAL.printf("  ESP-IDF: %s\n", ESP.getSdkVersion());
+  LOG_SERIAL.printf("  Library: %s\n", TCA9548A::VERSION);
+  LOG_SERIAL.printf("  Full: %s\n", TCA9548A::VERSION_FULL);
+  LOG_SERIAL.printf("  Code: %lu\n",
                 static_cast<unsigned long>(TCA9548A::VERSION_CODE));
 }
 
 void printHealth() {
   cli::printSection("Driver Health");
   const bool stateAliasMatches = device.driverState() == device.state();
-  Serial.printf("  State: %s%s%s (passive; never gates I2C)\n",
+  LOG_SERIAL.printf("  State: %s%s%s (passive; never gates I2C)\n",
                 cli::stateColor(device.isInitialized(), device.isOnline(),
                                 device.consecutiveFailures()),
                 driverStateName(device.state()), LOG_COLOR_RESET);
-  Serial.printf("  State alias parity: %s\n",
+  LOG_SERIAL.printf("  State alias parity: %s\n",
                 stateAliasMatches ? "yes" : "no");
-  Serial.printf("  Bound: %s\n", device.isBound() ? "yes" : "no");
-  Serial.printf("  Initialized: %s\n",
+  LOG_SERIAL.printf("  Bound: %s\n", device.isBound() ? "yes" : "no");
+  LOG_SERIAL.printf("  Initialized: %s\n",
                 device.isInitialized() ? "yes" : "no");
-  Serial.printf("  Consecutive failures: %u\n",
+  LOG_SERIAL.printf("  Consecutive failures: %u\n",
                 static_cast<unsigned>(device.consecutiveFailures()));
-  Serial.printf("  Total success/failure: %lu/%lu\n",
+  LOG_SERIAL.printf("  Total success/failure: %lu/%lu\n",
                 static_cast<unsigned long>(device.totalSuccess()),
                 static_cast<unsigned long>(device.totalFailures()));
-  Serial.printf("  Last OK/error ms: %lu/%lu\n",
+  LOG_SERIAL.printf("  Last OK/error ms: %lu/%lu\n",
                 static_cast<unsigned long>(device.lastOkMs()),
                 static_cast<unsigned long>(device.lastErrorMs()));
-  Serial.printf("  Last error: %s\n", errorName(device.lastError().code));
+  LOG_SERIAL.printf("  Last error: %s\n", errorName(device.lastError().code));
   printObservation();
 }
 
@@ -117,46 +117,46 @@ void printConfig() {
        boundConfig.resetTimeoutMs == snapshot.resetTimeoutMs &&
        boundConfig.offlineThreshold == snapshot.offlineThreshold);
   cli::printSection("Configuration");
-  Serial.printf("  Bound: %s\n", snapshot.bound ? "yes" : "no");
-  Serial.printf("  Initialized: %s\n", snapshot.initialized ? "yes" : "no");
-  Serial.printf("  I2C address: 0x%02X\n", snapshot.i2cAddress);
-  Serial.printf("  I2C timeout: %lu ms\n",
+  LOG_SERIAL.printf("  Bound: %s\n", snapshot.bound ? "yes" : "no");
+  LOG_SERIAL.printf("  Initialized: %s\n", snapshot.initialized ? "yes" : "no");
+  LOG_SERIAL.printf("  I2C address: 0x%02X\n", snapshot.i2cAddress);
+  LOG_SERIAL.printf("  I2C timeout: %lu ms\n",
                 static_cast<unsigned long>(snapshot.i2cTimeoutMs));
-  Serial.printf("  RESET timeout: %lu ms\n",
+  LOG_SERIAL.printf("  RESET timeout: %lu ms\n",
                 static_cast<unsigned long>(snapshot.resetTimeoutMs));
-  Serial.printf("  nowMs hook: %s\n",
+  LOG_SERIAL.printf("  nowMs hook: %s\n",
                 snapshot.hasNowMsHook ? "configured" : "not configured");
-  Serial.printf("  RESET callback: %s\n",
+  LOG_SERIAL.printf("  RESET callback: %s\n",
                 snapshot.hasHardReset ? "configured" : "not configured");
-  Serial.printf("  Offline threshold: %u (diagnostic only)\n",
+  LOG_SERIAL.printf("  Offline threshold: %u (diagnostic only)\n",
                 static_cast<unsigned>(snapshot.offlineThreshold));
-  Serial.printf("  Config reference parity: %s\n",
+  LOG_SERIAL.printf("  Config reference parity: %s\n",
                 configReferenceMatches ? "yes" : "no");
-  Serial.print(F("  Snapshot: "));
+  LOG_SERIAL.print(F("  Snapshot: "));
   printStatus(status);
-  Serial.println();
+  LOG_SERIAL.println();
 }
 
 void printHelp() {
   cli::printSection("TCA9548A CLI Help");
-  Serial.println(F("  version / ver                  Version information"));
-  Serial.println(F("  cfg                            Bound configuration"));
-  Serial.println(F("  health / drv / state           Passive diagnostics"));
-  Serial.println(F("  read / dump                    Read and verify mask"));
-  Serial.println(F("  select <0-7>                   Select one channel"));
-  Serial.println(F("  mask <0-255>                   Write an arbitrary mask"));
-  Serial.println(F("  off                            Disable all channels"));
-  Serial.println(F("  probe                          Raw diagnostic read"));
-  Serial.println(F("  recover                        One safe-off write"));
-  Serial.println(F("  reset / hardreset              RESET then verify 0x00"));
-  Serial.println(F("  invalidate                     Mark cached mask unknown"));
-  Serial.println(F("  begin / end                    Bind+probe / bus-silent unbind"));
-  Serial.println(F("  scan                           Scan active topology: 126 probes"));
-  Serial.println(F("  stress <1-1000>                Select sample, finish all-off"));
-  Serial.println(F("  stress_mix <1-1000>            Primitive mix, finish all-off"));
-  Serial.println(F("  selftest                       Live checks, restore entry mask"));
-  Serial.println(F("  hil [dry|parser|run|run reset] HIL contract entry point"));
-  Serial.println(F("  help / ?                       This help"));
+  LOG_SERIAL.println(F("  version / ver                  Version information"));
+  LOG_SERIAL.println(F("  cfg                            Bound configuration"));
+  LOG_SERIAL.println(F("  health / drv / state           Passive diagnostics"));
+  LOG_SERIAL.println(F("  read / dump                    Read and verify mask"));
+  LOG_SERIAL.println(F("  select <0-7>                   Select one channel"));
+  LOG_SERIAL.println(F("  mask <0-255>                   Write an arbitrary mask"));
+  LOG_SERIAL.println(F("  off                            Disable all channels"));
+  LOG_SERIAL.println(F("  probe                          Raw diagnostic read"));
+  LOG_SERIAL.println(F("  recover                        One safe-off write"));
+  LOG_SERIAL.println(F("  reset / hardreset              RESET then verify 0x00"));
+  LOG_SERIAL.println(F("  invalidate                     Mark cached mask unknown"));
+  LOG_SERIAL.println(F("  begin / end                    Bind+probe / bus-silent unbind"));
+  LOG_SERIAL.println(F("  scan                           Scan active topology: 126 probes"));
+  LOG_SERIAL.println(F("  stress <1-1000>                Select sample, finish all-off"));
+  LOG_SERIAL.println(F("  stress_mix <1-1000>            Primitive mix, finish all-off"));
+  LOG_SERIAL.println(F("  selftest                       Live checks, restore entry mask"));
+  LOG_SERIAL.println(F("  hil [dry|parser|run|run reset] HIL contract entry point"));
+  LOG_SERIAL.println(F("  help / ?                       This help"));
 }
 
 uint32_t nowMs(void*) {
@@ -203,18 +203,18 @@ void configureDriver() {
 
 void beginDriver() {
   if (!i2cReady) {
-    Serial.println(F("begin: NOT_INITIALIZED (I2C controller unavailable)"));
+    LOG_SERIAL.println(F("begin: NOT_INITIALIZED (I2C controller unavailable)"));
     return;
   }
 
   const bool wasBound = device.isBound();
   const auto status = device.begin(config);
-  Serial.print(F("begin: "));
+  LOG_SERIAL.print(F("begin: "));
   printStatus(status);
-  Serial.printf(" (bound=%s)\n", device.isBound() ? "yes" : "no");
+  LOG_SERIAL.printf(" (bound=%s)\n", device.isBound() ? "yes" : "no");
   if (!wasBound && device.isBound()) {
     const bool safeOff = safeOffVerified();
-    Serial.printf("startup safe-off: %s%s%s\n", cli::resultColor(safeOff),
+    LOG_SERIAL.printf("startup safe-off: %s%s%s\n", cli::resultColor(safeOff),
                   safeOff ? "OK (verified 0x00)" : "FAILED",
                   LOG_COLOR_RESET);
   }
@@ -245,22 +245,22 @@ bool parseUnsignedArgument(const char* command, const char* prefix,
 bool safeOffVerified() {
   auto status = device.disableAll();
   if (!status.ok()) {
-    Serial.print(F("safe-off write: "));
+    LOG_SERIAL.print(F("safe-off write: "));
     printStatus(status);
-    Serial.println();
+    LOG_SERIAL.println();
     return false;
   }
 
   TCA9548A::ChannelMask observed;
   status = device.readChannelMask(observed);
   if (!status.ok() || !observed.isNone()) {
-    Serial.print(F("safe-off readback: "));
+    LOG_SERIAL.print(F("safe-off readback: "));
     printStatus(status);
     if (status.ok()) {
-      Serial.print(F(" observed="));
+      LOG_SERIAL.print(F(" observed="));
       printMask(observed);
     }
-    Serial.println();
+    LOG_SERIAL.println();
     return false;
   }
   return true;
@@ -268,21 +268,21 @@ bool safeOffVerified() {
 
 void scanBus() {
   if (!i2cReady) {
-    Serial.println(F("scan: NOT_INITIALIZED (I2C controller unavailable)"));
+    LOG_SERIAL.println(F("scan: NOT_INITIALIZED (I2C controller unavailable)"));
     return;
   }
 
   TCA9548A::ChannelMask visibleMask;
   const auto topologyStatus = device.readChannelMask(visibleMask);
-  Serial.print(F("Scan topology: "));
+  LOG_SERIAL.print(F("Scan topology: "));
   printStatus(topologyStatus);
   if (topologyStatus.ok()) {
-    Serial.print(F(" active_mask="));
+    LOG_SERIAL.print(F(" active_mask="));
     printMask(visibleMask);
   } else {
-    Serial.print(F(" active_mask=unknown"));
+    LOG_SERIAL.print(F(" active_mask=unknown"));
   }
-  Serial.println(F(" (select a one-hot mask before scan to isolate a branch)"));
+  LOG_SERIAL.println(F(" (select a one-hot mask before scan to isolate a branch)"));
   (void)i2c::scan();
 }
 
@@ -299,22 +299,22 @@ void reportCheck(HilCounts& counts, const char* name, bool passed,
   } else {
     ++counts.failed;
   }
-  Serial.printf("  [%s%s%s] %s", cli::resultColor(passed),
+  LOG_SERIAL.printf("  [%s%s%s] %s", cli::resultColor(passed),
                 passed ? "PASS" : "FAIL", LOG_COLOR_RESET, name);
   if (detail != nullptr && detail[0] != '\0') {
-    Serial.printf(" - %s", detail);
+    LOG_SERIAL.printf(" - %s", detail);
   }
-  Serial.println();
+  LOG_SERIAL.println();
 }
 
 void reportSkip(HilCounts& counts, const char* name, const char* detail) {
   ++counts.skipped;
-  Serial.printf("  [%sSKIP%s] %s - %s\n", LOG_COLOR_YELLOW,
+  LOG_SERIAL.printf("  [%sSKIP%s] %s - %s\n", LOG_COLOR_YELLOW,
                 LOG_COLOR_RESET, name, detail);
 }
 
 void printHilResult(const HilCounts& counts) {
-  Serial.printf("HIL result: pass=%u fail=%u skip=%u\n",
+  LOG_SERIAL.printf("HIL result: pass=%u fail=%u skip=%u\n",
                 static_cast<unsigned>(counts.passed),
                 static_cast<unsigned>(counts.failed),
                 static_cast<unsigned>(counts.skipped));
@@ -323,24 +323,24 @@ void printHilResult(const HilCounts& counts) {
 bool restoreMaskVerified(TCA9548A::ChannelMask originalMask) {
   const auto writeStatus = device.writeChannelMask(originalMask);
   if (!writeStatus.ok()) {
-    Serial.print(F("restore write: "));
+    LOG_SERIAL.print(F("restore write: "));
     printStatus(writeStatus);
-    Serial.println();
+    LOG_SERIAL.println();
   }
 
   TCA9548A::ChannelMask observed;
   const auto readStatus = device.readChannelMask(observed);
   const bool matched = readStatus.ok() && observed.raw() == originalMask.raw();
   if (!matched) {
-    Serial.print(F("restore readback: "));
+    LOG_SERIAL.print(F("restore readback: "));
     printStatus(readStatus);
     if (readStatus.ok()) {
-      Serial.print(F(" expected="));
+      LOG_SERIAL.print(F(" expected="));
       printMask(originalMask);
-      Serial.print(F(" observed="));
+      LOG_SERIAL.print(F(" observed="));
       printMask(observed);
     }
-    Serial.println();
+    LOG_SERIAL.println();
   }
   return writeStatus.ok() && matched;
 }
@@ -541,19 +541,19 @@ void runStress(unsigned long count, bool mixed) {
   const bool safeOff = safeOffVerified();
   const uint32_t durationMs = millis() - startedMs;
   if (mixed) {
-    Serial.println(F("=== stress_mix summary ==="));
+    LOG_SERIAL.println(F("=== stress_mix summary ==="));
   }
-  Serial.printf("Stress results: completed=%lu requested=%lu status=%s safe_off=%s\n",
+  LOG_SERIAL.printf("Stress results: completed=%lu requested=%lu status=%s safe_off=%s\n",
                 completed, count, errorName(status.code),
                 safeOff ? "OK" : "FAILED");
-  Serial.printf("Duration: %lu ms\n", static_cast<unsigned long>(durationMs));
-  Serial.printf("Health delta: success=%lu failure=%lu\n",
+  LOG_SERIAL.printf("Duration: %lu ms\n", static_cast<unsigned long>(durationMs));
+  LOG_SERIAL.printf("Health delta: success=%lu failure=%lu\n",
                 static_cast<unsigned long>(device.totalSuccess() -
                                            successesBefore),
                 static_cast<unsigned long>(device.totalFailures() -
                                            failuresBefore));
   if (!safeOff) {
-    Serial.println(F("  [FAIL] final safe-off was not verified"));
+    LOG_SERIAL.println(F("  [FAIL] final safe-off was not verified"));
   }
 }
 
@@ -573,45 +573,45 @@ void processCommand(const char* command) {
              std::strcmp(command, "dump") == 0) {
     TCA9548A::ChannelMask mask;
     const auto status = device.readChannelMask(mask);
-    Serial.print(F("read: "));
+    LOG_SERIAL.print(F("read: "));
     printStatus(status);
     if (status.ok()) {
-      Serial.print(F(" mask="));
+      LOG_SERIAL.print(F(" mask="));
       printMask(mask);
     }
-    Serial.println();
+    LOG_SERIAL.println();
   } else if (std::strcmp(command, "off") == 0) {
     const auto status = device.disableAll();
-    Serial.print(F("off: "));
+    LOG_SERIAL.print(F("off: "));
     printStatus(status);
-    Serial.println();
+    LOG_SERIAL.println();
   } else if (std::strcmp(command, "probe") == 0) {
     const auto status = device.probe();
-    Serial.print(F("probe: "));
+    LOG_SERIAL.print(F("probe: "));
     printStatus(status);
-    Serial.println();
+    LOG_SERIAL.println();
     printObservation();
   } else if (std::strcmp(command, "recover") == 0) {
     const auto status = device.recover();
-    Serial.print(F("recover (safe-off write): "));
+    LOG_SERIAL.print(F("recover (safe-off write): "));
     printStatus(status);
-    Serial.println();
+    LOG_SERIAL.println();
   } else if (std::strcmp(command, "reset") == 0 ||
              std::strcmp(command, "hardreset") == 0) {
     const auto status = device.hardReset();
-    Serial.print(F("hardreset: "));
+    LOG_SERIAL.print(F("hardreset: "));
     printStatus(status);
-    Serial.println();
+    LOG_SERIAL.println();
     printObservation();
   } else if (std::strcmp(command, "invalidate") == 0) {
     device.invalidateChannelMask();
-    Serial.println(F("invalidate: OK (no bus I/O)"));
+    LOG_SERIAL.println(F("invalidate: OK (no bus I/O)"));
     printObservation();
   } else if (std::strcmp(command, "begin") == 0) {
     beginDriver();
   } else if (std::strcmp(command, "end") == 0) {
     device.end();
-    Serial.println(F("end: OK (no bus I/O)"));
+    LOG_SERIAL.println(F("end: OK (no bus I/O)"));
   } else if (std::strcmp(command, "scan") == 0) {
     scanBus();
   } else if (std::strcmp(command, "selftest") == 0 ||
@@ -628,15 +628,15 @@ void processCommand(const char* command) {
     if (parseUnsignedArgument(command, "select", 7U, value)) {
       const auto status = device.selectChannel(
           static_cast<TCA9548A::Channel>(value));
-      Serial.printf("select %lu: ", value);
+      LOG_SERIAL.printf("select %lu: ", value);
       printStatus(status);
-      Serial.println();
+      LOG_SERIAL.println();
     } else if (parseUnsignedArgument(command, "mask", 255U, value)) {
       const auto status = device.writeChannelMask(
           TCA9548A::ChannelMask::fromRaw(static_cast<uint8_t>(value)));
-      Serial.printf("mask 0x%02lX: ", value);
+      LOG_SERIAL.printf("mask 0x%02lX: ", value);
       printStatus(status);
-      Serial.println();
+      LOG_SERIAL.println();
     } else if (parseUnsignedArgument(command, "stress_mix", MAX_STRESS_COUNT,
                                      value) &&
                value > 0U) {
@@ -648,7 +648,7 @@ void processCommand(const char* command) {
     } else {
       // Printed unconditionally so it does not depend on LOG_LEVEL, matching
       // the native CLI.
-      Serial.printf("%s[E]%s Unknown or invalid command: %s\n", LOG_COLOR_RED,
+      LOG_SERIAL.printf("%s[E]%s Unknown or invalid command: %s\n", LOG_COLOR_RED,
                     LOG_COLOR_RESET, command);
     }
   }
@@ -659,9 +659,9 @@ void processCommand(const char* command) {
 void setup() {
   log_begin(115200);
   delay(1000);
-  Serial.println(F("\n============================="));
-  Serial.println(F("  TCA9548A Bring-up CLI"));
-  Serial.println(F("============================="));
+  LOG_SERIAL.println(F("\n============================="));
+  LOG_SERIAL.println(F("  TCA9548A Bring-up CLI"));
+  LOG_SERIAL.println(F("============================="));
 
   printVersionInfo();
   i2cReady = board::initI2c();
@@ -671,7 +671,7 @@ void setup() {
   configureDriver();
   beginDriver();
   printHelp();
-  Serial.println();
+  LOG_SERIAL.println();
   cli::printPrompt();
 }
 
@@ -683,11 +683,11 @@ void loop() {
       cli_shell::pollLine(command, sizeof(command));
   if (lineResult == cli_shell::LineResult::READY) {
     processCommand(command);
-    Serial.println();
+    LOG_SERIAL.println();
     cli::printPrompt();
   } else if (lineResult == cli_shell::LineResult::TOO_LONG ||
              lineResult == cli_shell::LineResult::OUTPUT_TOO_SMALL) {
-    Serial.println();
+    LOG_SERIAL.println();
     cli::printPrompt();
   }
 }

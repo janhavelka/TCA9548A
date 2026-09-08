@@ -17,7 +17,7 @@ namespace i2c {
 inline int scan() {
   // Printed unconditionally: the HIL runner matches this line, so it must not
   // depend on LOG_LEVEL.
-  Serial.println(F("Scanning I2C bus (126 bounded probes)..."));
+  LOG_SERIAL.println(F("Scanning I2C bus (126 bounded probes)..."));
 
   int count = 0;
   for (uint8_t addr = 1; addr < 127; ++addr) {
@@ -25,7 +25,7 @@ inline int scan() {
     const uint8_t error = Wire.endTransmission(true);
 
     if (error == 0) {
-      Serial.printf("  Found device at 0x%02X\n", addr);
+      LOG_SERIAL.printf("  Found device at 0x%02X\n", addr);
       count++;
     }
     yield();
@@ -37,7 +37,7 @@ inline int scan() {
     LOGI("Found %d device(s)", count);
   }
 
-  Serial.printf("Scan complete: devices=%d\n", count);
+  LOG_SERIAL.printf("Scan complete: devices=%d\n", count);
 
   return count;
 }

@@ -43,14 +43,17 @@ control protocol and truthful local diagnostics.
 
 ## Installation
 
+The latest release is [v1.1.0](https://github.com/janhavelka/TCA9548A/releases/tag/v1.1.0).
+It adds native ESP-IDF support and enum-name helpers while retaining the 1.x
+API. See the [changelog](CHANGELOG.md#110---2026-09-07) for the release changes.
+
 For reproducible production builds, pin a reviewed full commit SHA rather than
-a branch or tag name. After the annotated release tag exists, resolve its
-peeled commit and compare it with the release evidence before updating the
-dependency. Replace `vX.Y.Z` with the reviewed release:
+a branch or tag name. Resolve the annotated release tag's peeled commit and
+compare it with the release evidence before updating the dependency:
 
 ```sh
 git ls-remote --tags https://github.com/janhavelka/TCA9548A.git \
-  'refs/tags/vX.Y.Z^{}'
+  'refs/tags/v1.1.0^{}'
 ```
 
 Use the returned 40-character commit, not the tag object, branch, or tag name:
@@ -192,6 +195,13 @@ Use `errorName(Err)` (or its `toString(Err)` alias) for allocation-free symbolic
 display. Driver-state and mask-provenance enums have matching
 `driverStateName()` / `maskProvenanceName()` helpers and `toString()` overloads,
 so Arduino and ESP-IDF CLIs cannot drift into separate string tables.
+
+The published `toString()` overloads, `driverState()`, `Status::inProgress()`,
+and `CommandTable.h` constants remain supported for 1.x source compatibility.
+For new code, prefer the named display helpers, `state()`, `addressFromPins()`,
+and typed `ChannelMask` operations. `CONTROL_REG` is a compatibility constant;
+the device has no register-address phase, so never transmit it as a register
+pointer.
 
 The core emits these result classes:
 
@@ -338,8 +348,9 @@ A live run validates RESET by default, so the fixture must have the RESET pin
 wired and the example's `TCA_RESET` (Arduino) or `RESET_GPIO` (ESP-IDF)
 constant set to it. Both ship disabled, and a run against an unmodified build
 fails that case. The run also exits nonzero if required cases are `NOT_RUN`.
-`--skip-reset` is a diagnostic exception, not release evidence. `--allow-not-run` accepts an explicitly missing fixture; FAIL and
-UNKNOWN remain failures. `--dry-run` validates only the plan. The runner writes
+`--skip-reset` is a diagnostic exception, not release evidence.
+`--allow-not-run` accepts an explicitly missing fixture; FAIL and UNKNOWN
+remain failures. `--dry-run` validates only the plan. The runner writes
 a report or transcript only when `--report` or `--transcript` is supplied.
 
 ## Example
@@ -352,6 +363,10 @@ CLIs expose every public hardware primitive, typed mask operations, cache
 invalidation, passive health, safe-off recovery, and the HIL contract.
 `tools/check_cli_contract.py` separately verifies help and dispatch routing so
 their command/API surfaces cannot pass on token presence alone.
+
+The Arduino CLI uses `LOG_SERIAL` for console input and output, including
+prompts and scan results. It defaults to `Serial`; define it for the example
+build to select another compatible Arduino serial object.
 
 The example-only `CliLineBuffer` accepts commands only after CR or LF, trims
 outer spaces/tabs, accepts at most 127 command bytes, and discards every byte

@@ -112,6 +112,10 @@ If the backend cannot distinguish address NACK from data NACK, or timeout from a
 generic failure, return the narrowest truthful result it actually exposes.
 Never infer a more specific fault from elapsed time or a short byte count alone.
 
+The maintained ESP-IDF adapter maps `ESP_ERR_TIMEOUT` to `TIMEOUT` and all other
+non-OK results to `OTHER`, preserving the original `esp_err_t` in `detail`.
+It does not infer an address or data NACK phase from these generic results.
+
 ## Arduino Adapter Shape
 
 The example adapter under `examples/common/I2cTransport.h` configures `Wire`

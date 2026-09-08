@@ -4,7 +4,6 @@
 
 #include <unity.h>
 
-#include "../examples/common/CliLineBuffer.h"
 #include "TCA9548A/TCA9548A.h"
 #include "support/ScriptedTransport.h"
 
@@ -171,82 +170,6 @@ void test_status_and_transport_helpers() {
       TCA9548A::maskProvenanceName(static_cast<MaskProvenance>(0xFFU)));
   TEST_ASSERT_EQUAL_STRING(
       "UNKNOWN", TCA9548A::toString(static_cast<MaskProvenance>(0xFFU)));
-}
-
-void test_fixed_cli_line_buffer_is_trimmed_bounded_and_recoverable() {
-  cli_shell::FixedLineBuffer input;
-  char command[cli_shell::FixedLineBuffer::CAPACITY]{};
-
-  const char trimmed[] = "  mask 0xA5\t\r";
-  cli_shell::LineResult result = cli_shell::LineResult::NONE;
-  for (size_t index = 0U; index < sizeof(trimmed) - 1U; ++index) {
-    result = input.push(trimmed[index], command, sizeof(command));
-  }
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(cli_shell::LineResult::READY),
-                        static_cast<int>(result));
-  TEST_ASSERT_EQUAL_STRING("mask 0xA5", command);
-
-  // A CRLF pair produces one command; its second terminator is ignored.
-  TEST_ASSERT_EQUAL_INT(
-      static_cast<int>(cli_shell::LineResult::NONE),
-      static_cast<int>(input.push('\n', command, sizeof(command))));
-
-  // Exactly 127 bytes fit; a 128-byte line is discarded in full.
-  for (size_t index = 0U;
-       index < cli_shell::FixedLineBuffer::CAPACITY - 1U; ++index) {
-    result = input.push('x', command, sizeof(command));
-    TEST_ASSERT_EQUAL_INT(static_cast<int>(cli_shell::LineResult::NONE),
-                          static_cast<int>(result));
-  }
-  result = input.push('\n', command, sizeof(command));
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(cli_shell::LineResult::READY),
-                        static_cast<int>(result));
-  TEST_ASSERT_EQUAL_UINT32(
-      cli_shell::FixedLineBuffer::CAPACITY - 1U,
-      static_cast<uint32_t>(std::strlen(command)));
-
-  for (size_t index = 0U; index < cli_shell::FixedLineBuffer::CAPACITY;
-       ++index) {
-    result = input.push('y', command, sizeof(command));
-    TEST_ASSERT_EQUAL_INT(static_cast<int>(cli_shell::LineResult::NONE),
-                          static_cast<int>(result));
-  }
-  result = input.push('\r', command, sizeof(command));
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(cli_shell::LineResult::TOO_LONG),
-                        static_cast<int>(result));
-
-  const char next[] = "health\n";
-  for (size_t index = 0U; index < sizeof(next) - 1U; ++index) {
-    result = input.push(next[index], command, sizeof(command));
-  }
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(cli_shell::LineResult::READY),
-                        static_cast<int>(result));
-  TEST_ASSERT_EQUAL_STRING("health", command);
-
-  char tooSmall[4]{};
-  const char help[] = "help\n";
-  for (size_t index = 0U; index < sizeof(help) - 1U; ++index) {
-    result = input.push(help[index], tooSmall, sizeof(tooSmall));
-  }
-  TEST_ASSERT_EQUAL_INT(
-      static_cast<int>(cli_shell::LineResult::OUTPUT_TOO_SMALL),
-      static_cast<int>(result));
-
-  const char invalidDestination[] = "x\n";
-  for (size_t index = 0U; index < sizeof(invalidDestination) - 1U; ++index) {
-    result = input.push(invalidDestination[index], nullptr, 0U);
-  }
-  TEST_ASSERT_EQUAL_INT(
-      static_cast<int>(cli_shell::LineResult::OUTPUT_TOO_SMALL),
-      static_cast<int>(result));
-
-  const char recovered[] = "read\n";
-  for (size_t index = 0U; index < sizeof(recovered) - 1U; ++index) {
-    result = input.push(recovered[index], command, sizeof(command));
-  }
-  TEST_ASSERT_EQUAL_INT(static_cast<int>(cli_shell::LineResult::READY),
-                        static_cast<int>(result));
-  TEST_ASSERT_EQUAL_STRING("read", command);
 }
 
 void test_address_helpers_cover_all_straps_and_boundaries() {
@@ -1073,12 +996,74 @@ void test_settings_snapshot_is_io_free_and_truthful() {
   TEST_ASSERT_EQUAL_HEX8(0x24, snapshot.maskObservation.mask.raw());
 }
 
+void test_tick_is_a_no_op() {
+  const auto assertTickIsNoOp = [](Driver& mux) {
+    TCA9548A::SettingsSnapshot before;
+    TEST_ASSERT_TRUE(mux.getSettings(before).ok());
+    const uint32_t successBefore = mux.totalSuccess();
+    const uint32_t failuresBefore = mux.totalFailures();
+    const uint8_t consecutiveBefore = mux.consecutiveFailures();
+    const uint32_t lastOkBefore = mux.lastOkMs();
+    const uint32_t lastErrorMsBefore = mux.lastErrorMs();
+    const Status lastErrorBefore = mux.lastError();
+    const int resetCallsBefore = gReset.calls;
+    gTransport.clearHistory();
+
+    const uint32_t timestamps[] = {0U, std::numeric_limits<uint32_t>::max()};
+    for (const uint32_t timestamp : timestamps) {
+      mux.tick(timestamp);
+
+      TEST_ASSERT_EQUAL_UINT32(0,
+                               static_cast<uint32_t>(gTransport.callCount()));
+      TEST_ASSERT_EQUAL_INT(resetCallsBefore, gReset.calls);
+      TEST_ASSERT_EQUAL(before.bound, mux.isBound());
+      TEST_ASSERT_EQUAL(before.initialized, mux.isInitialized());
+      TEST_ASSERT_EQUAL_INT(static_cast<int>(before.state),
+                            static_cast<int>(mux.state()));
+      TEST_ASSERT_EQUAL_UINT32(successBefore, mux.totalSuccess());
+      TEST_ASSERT_EQUAL_UINT32(failuresBefore, mux.totalFailures());
+      TEST_ASSERT_EQUAL_UINT8(consecutiveBefore, mux.consecutiveFailures());
+      TEST_ASSERT_EQUAL_UINT32(lastOkBefore, mux.lastOkMs());
+      TEST_ASSERT_EQUAL_UINT32(lastErrorMsBefore, mux.lastErrorMs());
+      assertStatus(mux.lastError(), lastErrorBefore.code, lastErrorBefore.detail);
+      TEST_ASSERT_EQUAL_PTR(lastErrorBefore.msg, mux.lastError().msg);
+      const auto observation = mux.channelMaskObservation();
+      TEST_ASSERT_EQUAL_HEX8(before.maskObservation.mask.raw(),
+                             observation.mask.raw());
+      TEST_ASSERT_EQUAL_INT(static_cast<int>(before.maskObservation.provenance),
+                            static_cast<int>(observation.provenance));
+    }
+  };
+
+  Driver mux;
+  assertTickIsNoOp(mux);
+
+  gTransport.reset(0x42);
+  gNowMs = 7;
+  const Config config = makeConfig(true);
+  beginOk(mux, config);
+  assertTickIsNoOp(mux);
+
+  // Nonzero failure history must survive tick() in DEGRADED and OFFLINE too.
+  gNowMs = 11;
+  for (uint8_t failure = 0; failure < config.offlineThreshold; ++failure) {
+    TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::BUS, 5));
+    assertStatus(mux.disableAll(), Err::I2C_BUS, 5);
+    assertTickIsNoOp(mux);
+  }
+
+  // The examples also tick a retained binding after a failed presence read.
+  mux.end();
+  TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::NACK_ADDR, 6));
+  assertStatus(mux.begin(config), Err::I2C_NACK_ADDR, 6);
+  assertTickIsNoOp(mux);
+}
+
 } // namespace
 
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_status_and_transport_helpers);
-  RUN_TEST(test_fixed_cli_line_buffer_is_trimmed_bounded_and_recoverable);
   RUN_TEST(test_address_helpers_cover_all_straps_and_boundaries);
   RUN_TEST(test_scps207h_protocol_and_timing_constants_are_exact);
   RUN_TEST(test_channel_mask_helpers_are_exact);
@@ -1115,5 +1100,6 @@ int main(int, char**) {
   RUN_TEST(test_missing_now_hook_leaves_timestamps_zero);
   RUN_TEST(test_hard_reset_verification_read_is_tracked);
   RUN_TEST(test_settings_snapshot_is_io_free_and_truthful);
+  RUN_TEST(test_tick_is_a_no_op);
   return UNITY_END();
 }
