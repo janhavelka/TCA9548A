@@ -1,4 +1,0 @@
-var searchData=
-[
-  ['tca9548a_2eh_0',['TCA9548A.h',['../_t_c_a9548_a_8h.html',1,'']]]
-];

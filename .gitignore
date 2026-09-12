@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .doxygen/
+docs/doxygen/
 .vscode/.browse.c_cpp.db*
 .vscode/c_cpp_properties.json
 .vscode/launch.json

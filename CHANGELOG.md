@@ -8,6 +8,12 @@ Entries describe changes relative to the previous release.
 
 ## [Unreleased]
 
+### Fixed
+
+- Remove previously tracked Doxygen output and ignore its legacy
+  `docs/doxygen/` location, keeping generated files out of source control and
+  preserving the existing repository-hygiene gate.
+
 ## [1.1.0] - 2026-09-07
 
 ### Added
