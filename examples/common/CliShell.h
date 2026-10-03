@@ -40,6 +40,9 @@ inline LineResult pollLine(char* output, size_t capacity) {
     } else if (result == LineResult::OUTPUT_TOO_SMALL) {
       LOGW("Command discarded: destination buffer is too small");
       return result;
+    } else if (result == LineResult::INVALID_INPUT) {
+      LOGW("Command discarded: invalid control byte");
+      return result;
     }
   }
 

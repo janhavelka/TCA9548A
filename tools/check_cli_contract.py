@@ -74,6 +74,7 @@ PARITY_OUTPUTS = (
     "Bound:",
     "Initialized:",
     "I2C address:",
+    "I2C frequency:",
     "I2C timeout:",
     "RESET timeout:",
     "nowMs hook:",
@@ -90,6 +91,8 @@ PARITY_OUTPUTS = (
     "read mask 0xA5",
     "recover safe-off write",
     "recover readback 0x00",
+    "hardReset seed write",
+    "hardReset seed readback",
     "hardReset exact-zero verification",
     "hardReset leaves verified all-off",
     "final verified mask restore",
@@ -208,6 +211,10 @@ def require_executable_public_surface(
             errors.append(f"{label} live selftest restore missing step: {token}")
     if "readChannelMask(visibleMask)" not in scan:
         errors.append(f"{label} scan does not observe active topology")
+    reset_seed = run_hil.find('"hardReset seed readback"')
+    reset_call = run_hil.find(".hardReset()")
+    if reset_seed < 0 or reset_call <= reset_seed:
+        errors.append(f"{label} RESET check must verify nonzero state before RESET")
 
 
 def main() -> int:
@@ -276,6 +283,8 @@ def main() -> int:
     if "MAX_STRESS_COUNT = 1000" not in idf:
         errors.append("ESP-IDF CLI must retain the strict 1000-operation stress cap")
     for label, text in (("Arduino", arduino), ("ESP-IDF", idf)):
+        if "using cli_shell::parseUnsignedArgument;" not in text:
+            errors.append(f"{label} must use the shared unsigned argument parser")
         for command in ("stress", "stress_mix"):
             pattern = (
                 rf'parseUnsignedArgument\(\s*command,\s*"{command}",'

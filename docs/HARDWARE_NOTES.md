@@ -2,7 +2,7 @@
 
 These notes preserve the driver-relevant facts from the original chip
 documentation extracts without keeping local copies of vendor PDFs. They were
-rechecked against TI datasheet SCPS207H (Rev. H, September 2024); production
+rechecked on 2026-10-03 against TI datasheet SCPS207H (Rev. H, September 2024); production
 hardware must still be reviewed against the latest vendor revision and the
 actual board voltage, pull-ups, wiring, and device population.
 
@@ -13,8 +13,9 @@ actual board voltage, pull-ups, wiring, and device population.
   pairs through pass-FET switches.
 - The 7-bit address range is `0x70` through `0x77`, selected by `A0`, `A1`, and
   `A2`.
-- Up to eight TCA9548A devices can share one upstream bus if their address pins
-  are unique.
+- Up to eight TCA9548A addresses can be visible on one bus at a time. Isolated
+  branches may reuse addresses, but every simultaneously visible target and
+  mux must have a distinct address. This is not a global driver-instance limit.
 - Address pins must be tied directly to `VCC` or `GND`; do not leave them
   floating.
 - The pass gates are transparent, so the mux answers at its own strapped
@@ -38,7 +39,8 @@ actual board voltage, pull-ups, wiring, and device population.
 - If multiple bytes are written in one transaction, the chip stores only the
   last byte.
 - A read transaction returns the current 8-bit control register value. Read
-  exactly one byte; the content of any further byte is undocumented.
+  exactly one byte, terminate it with a controller NACK, then STOP; the content
+  of any further byte is undocumented.
 - POR and hardware RESET clear the control register to `0x00`, disabling all
   downstream channels.
 
@@ -86,6 +88,17 @@ actual board voltage, pull-ups, wiring, and device population.
   There is no minimum clock and no internal transaction time-out, so the device
   will not free a hung transaction by itself; RESET and POR are the documented
   recovery paths.
+- The controller/transport must observe the datasheet section 5.6 timing
+  limits, including these minimum intervals between transactions:
+
+  | Bus mode | Maximum SCL | Bus-free time (`tBUF`), STOP to next START |
+  | --- | --- | --- |
+  | Standard-mode | 100 kHz | 4.7 us minimum |
+  | Fast-mode | 400 kHz | 1.3 us minimum |
+
+  Back-to-back library calls do not insert software delays; the controller or
+  adapter supplies this timing, including between mux selection and a target
+  transfer. Measure it at the pins during board qualification.
 - The datasheet specifies no SCL output driver for the switch. Its only
   switching characteristics are the SDA/SCL-to-`SCn`/`SDn` propagation delay and
   the RESET-to-SDA release, and UM10204 section 3.1.9 notes that most targets
@@ -93,19 +106,23 @@ actual board voltage, pull-ups, wiring, and device population.
   stretch SCL" as an expectation rather than a guarantee. A downstream target on
   an enabled channel can stretch SCL, and because the channel is a transparent
   pass gate that stretch is seen upstream.
-- `VCC` range is 1.65 V to 5.5 V up to 85 C and 1.65 V to 3.6 V above 85 C.
+- `VCC` range is 1.65 V to 5.5 V from -40 C through 85 C and 1.65 V to
+  3.6 V above 85 C through 125 C. Check the actual orderable part's temperature
+  grade as well; the package addendum includes parts rated only through 85 C.
 - For level translation, choose `VCC` so the datasheet's resulting
   `Vpass(max)` is at or below the lowest bus pull-up voltage. `VCC` itself is
   not the clamp voltage; TI's example uses 3.3 V `VCC` with a 2.7 V lowest
   bus. Verify the current `Vpass` curve for the selected supply and temperature.
 - Each upstream and downstream bus segment needs its own pull-up resistors.
 - Size pull-ups per segment, where `tr` is the maximum rise time for the bus
-  mode (300 ns for Fast-mode, 1000 ns for Standard-mode) and `VOL(max)`/`IOL`
-  are conventionally 0.4 V at 3 mA:
+  mode (300 ns for Fast-mode, 1000 ns for Standard-mode). Use the weakest
+  connected device's guaranteed `VOL(max)`/`IOL`; TI's example uses 0.4 V at
+  3 mA above 2 V and `0.2 x Vpullup` at 2 mA at or below 2 V:
   - `Rp(min) = (Vpullup - VOL(max)) / IOL`
   - `Rp(max) = tr / (0.8473 x Cb)`
-- Keep each active I2C segment within 400 pF, which the datasheet specifies for
-  both Standard-mode and Fast-mode.
+- Keep the total connected capacitance of each bus line within 400 pF,
+  including upstream wiring and every enabled branch. This is not a separate
+  400 pF allowance for each simultaneously enabled segment.
 - Enabling multiple channels at the same time combines the capacitance of all
   enabled downstream buses as seen by the upstream controller.
 - Enabling several channels also parallels their pull-ups: the total `IOL` the
@@ -138,6 +155,24 @@ actual board voltage, pull-ups, wiring, and device population.
 - If a downstream branch has many devices or long wiring, use repeaters only
   after checking capacitance, rise time, and repeater propagation delay for the
   chosen clock speed.
+
+## PCB Bring-up Provisions
+
+Provide a GPIO-controlled RESET with an external pull-up to the mux supply,
+test points on upstream SDA/SCL and RESET, and access to each downstream pair.
+RESET must remain controllable when I2C is stuck; putting its only control
+behind the affected I2C bus defeats that recovery path. With different MCU and
+mux supplies, check RESET input thresholds and use a suitable open-drain or
+level-shifted drive instead of assuming direct GPIO compatibility.
+
+Match the symbol and footprint to the exact package: PW/DGS and RGE have
+different pin numbering. Include local supply bypassing and review the
+package's exposed-pad assembly requirements against the vendor drawing.
+Keep address straps fixed and accessible for inspection. Populate external
+pull-ups on each used segment and budget the worst permitted channel mask.
+Duplicate downstream addresses require one-hot routing; arbitrary-mask HIL
+and mixed stress require a fixture on which every exercised combination is
+electrically and logically safe.
 
 ## Hot Swap And I3C Caveats
 

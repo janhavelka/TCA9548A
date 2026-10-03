@@ -8,8 +8,50 @@ Entries describe changes relative to the previous release.
 
 ## [Unreleased]
 
+### Added
+
+- Live route-isolation checks (`--route CH:ADDR`), optional 256-mask readback
+  sweep, bounded stress/soak runs, and host HIL regressions. Both firmware
+  frameworks use the same runner; hardware execution is still pending.
+- Host tests for Wire transaction shape, timeout bounds, short transfers,
+  error fidelity, numeric CLI input, embedded control bytes, copied driver
+  configuration, and probe isolation across health states.
+- Standalone CMake target with transitive C++17/include requirements and a
+  consumer build test; unrestricted PlatformIO framework/platform metadata
+  and ESP-IDF chip targets for the portable core.
+- General transport guidance, PCB bring-up provisions, and a fixture/evidence
+  procedure in the maintained guides. A shared-owner test verifies independent
+  state for multiple mux instances.
+- Owner-adapter regressions for deferred initialization, 64-bit deadlines,
+  per-call caps, late transfers, and separately budgeted cleanup; a concrete
+  integration recipe keeps routing policy in the application.
+
+### Changed
+
+- Reduced the default I2C timeout from 50 ms to 20 ms. Both firmware examples
+  now inherit the library default. Explicit timeout settings remain supported
+  from 1 to 60000 ms; the RESET callback default remains 10 ms.
+- HIL configuration checks require and record the firmware's reported I2C
+  timeout. Host serial-command deadlines remain separate from transfer budgets.
+
 ### Fixed
 
+- RESET HIL now verifies a nonzero seed before the pulse, preventing an
+  unwired RESET from passing on an already-disabled mux. Mixed stress checks
+  mask values as well as transport success.
+- HIL result parsing requires complete prompt-framed responses, consistent
+  counts, explicit success, READY health, and verified cleanup. Serial storage
+  and waits are bounded; optional transcripts stream to disk.
+- Scans exclude reserved addresses and distinguish bus faults from absent
+  targets; failed topology reads abort probing. CLI argument parsing rejects
+  signed wraparound and overflow, and control bytes discard the whole line.
+- Wire's phase-ambiguous NACK maps to `OTHER`, and callbacks reject unsupported
+  shapes and truncating timeouts. Native device registration occurs before
+  timed callbacks. Bring-up owners refuse controller reuse after a receive
+  fault until restart, guarding the pinned SDK's stale receive-state path.
+- Clarified total connected-bus capacitance, RESET completion timing, minimum
+  STOP-to-START bus-free time, simultaneous address visibility, backend
+  timing/error limits, 100 kHz SDK scan probes, and hardware evidence boundaries.
 - Remove previously tracked Doxygen output and ignore its legacy
   `docs/doxygen/` location, keeping generated files out of source control and
   preserving the existing repository-hygiene gate.

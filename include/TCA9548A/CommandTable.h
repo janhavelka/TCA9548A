@@ -129,7 +129,8 @@ static constexpr uint8_t FIRST_CHANNEL = 0;
 /// Highest valid channel index
 static constexpr uint8_t LAST_CHANNEL = NUM_CHANNELS - 1;
 
-/// Maximum number of TCA9548A devices on one upstream bus
+/// Maximum distinct mux addresses simultaneously visible on a connected bus.
+/// This is not a limit on driver objects or an isolated, cascaded mux tree.
 static constexpr uint8_t MAX_DEVICES_PER_BUS = NUM_ADDRESSES;
 
 // ============================================================================
@@ -149,7 +150,8 @@ static constexpr uint32_t I2C_STANDARD_MODE_HZ = 100000;
 /// Fast-mode I2C maximum clock
 static constexpr uint32_t I2C_FAST_MODE_HZ = 400000;
 
-/// Maximum recommended bus capacitance per active segment
+/// Maximum total bus capacitance per connected SDA/SCL line. Sum the upstream
+/// bus and every simultaneously enabled downstream channel (SCPS207H 8.2.2).
 static constexpr uint32_t MAX_BUS_CAPACITANCE_PF = 400;
 
 /// Minimum RESET low pulse width
@@ -158,7 +160,7 @@ static constexpr uint32_t RESET_MIN_LOW_NS = 6;
 /// RESET-to-next-START recovery time
 static constexpr uint32_t RESET_RECOVERY_NS = 0;
 
-/// RESET-to-SDA-release worst-case timing
+/// Worst-case SDA-release time measured from RESET assertion (not deassertion)
 static constexpr uint32_t RESET_SDA_RELEASE_MAX_NS = 500;
 
 } // namespace cmd

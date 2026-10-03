@@ -12,9 +12,6 @@ tags:
   - i2c
   - switch
   - multiplexer
-targets:
-  - esp32s2
-  - esp32s3
 dependencies:
   idf: ">=5.4,<6.0"
 files:

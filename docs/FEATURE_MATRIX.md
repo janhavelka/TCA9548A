@@ -14,14 +14,23 @@ integration pattern is in [PORTING.md](PORTING.md).
 | One-byte control write; bit N controls channel N | `selectChannel()`, `writeChannelMask()`, `disableAll()` | `select`, `mask`, `off` | all 8 one-hot values and all 256 masks as exactly one-byte writes |
 | Any channel combination may be active | `ChannelMask::fromRaw()`, `all()`, `withEnabled()`, `withDisabled()` | `mask <0-255>` | all 256 control bytes plus typed-mask helpers |
 | Selection is active after the write ACK followed by STOP | a successful `I2cWriteFn` means the transaction including STOP completed | every mutating command | callback shape and failure invalidation; STOP timing is hardware-only |
+| Standard/Fast-mode timing and bus-free interval | controller/adapter supplies up to 400 kHz and minimum `tBUF` of 4.7/1.3 us | configured by each example's bus owner | physical timing requires scope/logic-analyzer qualification |
+| Eight simultaneous mux addresses; isolated branches may reuse addresses | independent instances share a serialized application transport | one mux per example firmware | two differently addressed instances share one owner with independent health, masks, and lifecycle |
 | Multi-byte write keeps only the final byte | not exposed; every state is expressible in one byte | none | driver writes are asserted to be exactly one byte |
 | `0x00` disables all channels | `disableAll()`, `recover()` | `off`, `recover` | exact `0x00`, no retry or restore, failure invalidation |
 | RESET clears the control byte and the I2C state machine | optional `HardResetFn`; `hardReset()` invalidates, calls once, verifies exact zero | `reset`/`hardreset`, `hil run reset` | missing callback, allowed failures, invalid result domain, zero, mismatch, read failure |
 | POR clears all channels | owner calls `invalidateChannelMask()` after external power events | `invalidate`, then `read` | invalidation is bus-silent; later readback restores evidence |
 | No identity register | `probe()` is a raw control-byte read without health effects | `probe` | observation updated, health unchanged |
-| Downstream visibility follows the mask | owner composes mask selection and downstream transfers | `scan` prints the active mask, then 126 probes | CLI contract checker and HIL parser |
+| Downstream visibility follows the mask | owner composes mask selection and downstream transfers | `scan` prints the active mask, then 112 non-reserved probes; reports bus errors | optional host `--route CH:ADDR` verifies all-off isolation and all eight branches |
 | Mask truth after success, failure, or external action | `ChannelMaskObservation` with `UNKNOWN`, `WRITE_COMPLETED`, `READBACK_OBSERVED` | `health`, `probe`, `read`, `invalidate`, `cfg` | successful, ambiguous, probe, RESET, and explicit-invalidation paths |
 | Passive transport health | `DriverState`, timestamps, last error, saturating counters | `health`/`drv`/`state` | READY/DEGRADED/OFFLINE recovery, failed begin, saturation, timestamp wrap |
-| Bounded diagnostics | core primitives stay one callback each; the examples own their loops | `selftest`, `stress`, `stress_mix` (cap 1000, finish all-off) | CLI contract checker |
+| Bounded diagnostics | core primitives stay one callback each; the examples own their loops | `selftest`, `stress`, `stress_mix` (cap 1000, verify cleanup or report failure) | CLI contract checker |
+| Application-owned transfer budget (not a chip register) | `Config::i2cTimeoutMs` defaults to 20 ms; callbacks may shorten it | `cfg`; HIL records the reported timeout | all I2C primitives, owner cap/64-bit deadline clipping, expiry and late completion, separate cleanup budget |
 
 Primary source: [TI TCA9548A datasheet SCPS207H](https://www.ti.com/lit/ds/symlink/tca9548a.pdf).
+
+The existing core already exposes every programmable chip feature; no extra
+register or mode is needed. Electrical translation, loading, POR, and hot
+insertion are board properties, not missing driver APIs. The host runner's
+optional `--sweep-masks` adds live readback of all 256 masks; the RESET test
+now starts from verified nonzero state. See [validation and fixture requirements](VALIDATION_STATUS.md).

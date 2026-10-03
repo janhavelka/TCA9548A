@@ -49,6 +49,91 @@ Config makeConfig(bool withReset = false) {
   return config;
 }
 
+// Test-only owner adapter: the owner schedules begin() and keeps one absolute
+// deadline across primitives. The scripted transport remains the physical
+// backend; neither the driver nor this fixture retries or grants extra time.
+struct DeadlineOwnerHarness {
+  static constexpr uint32_t OWNER_TIMEOUT_MS = 20;
+  static constexpr int32_t EXPIRED = -3000;
+  static constexpr int32_t LATE_COMPLETION = -3001;
+
+  ScriptedTransport& backend;
+  uint64_t nowMs = 0;
+  uint64_t deadlineMs = 0;
+  uint32_t physicalElapsedMs = 0;
+  uint32_t callbackCalls = 0;
+
+  explicit DeadlineOwnerHarness(ScriptedTransport& transport)
+      : backend(transport) {}
+
+  Config config() {
+    Config result;
+    result.i2cWrite = write;
+    result.i2cWriteRead = read;
+    result.i2cUser = this;
+    result.i2cAddress = 0x72;
+    return result;
+  }
+
+  uint32_t remainingTimeout(uint32_t requestedMs) const {
+    if (expired()) {
+      return 0;
+    }
+    const uint32_t cappedMs = requestedMs < OWNER_TIMEOUT_MS
+                                  ? requestedMs : OWNER_TIMEOUT_MS;
+    const uint64_t remainingMs = deadlineMs - nowMs;
+    return remainingMs < cappedMs ? static_cast<uint32_t>(remainingMs)
+                                   : cappedMs;
+  }
+
+  bool expired() const {
+    // Owner intervals are less than half the uint64 range. This comparison
+    // includes the exact deadline and survives unsigned clock wrap.
+    return (nowMs - deadlineMs) < (uint64_t{1} << 63);
+  }
+
+  TCA9548A::TransportStatus complete(TCA9548A::TransportStatus result,
+                                     uint32_t timeoutMs) {
+    nowMs += physicalElapsedMs;
+    if (result.ok() &&
+        (expired() || physicalElapsedMs > timeoutMs)) {
+      return TCA9548A::TransportStatus::Error(TransportErr::TIMEOUT,
+                                             LATE_COMPLETION);
+    }
+    return result;
+  }
+
+  static TCA9548A::TransportStatus write(uint8_t address, const uint8_t* data,
+                                         size_t length, uint32_t timeoutMs,
+                                         void* user) {
+    auto& owner = *static_cast<DeadlineOwnerHarness*>(user);
+    ++owner.callbackCalls;
+    const uint32_t clippedMs = owner.remainingTimeout(timeoutMs);
+    if (clippedMs == 0) {
+      return TCA9548A::TransportStatus::Error(TransportErr::TIMEOUT, EXPIRED);
+    }
+    return owner.complete(ScriptedTransport::write(address, data, length,
+                                                   clippedMs, &owner.backend),
+                           clippedMs);
+  }
+
+  static TCA9548A::TransportStatus read(uint8_t address, const uint8_t* txData,
+                                        size_t txLength, uint8_t* rxData,
+                                        size_t rxLength, uint32_t timeoutMs,
+                                        void* user) {
+    auto& owner = *static_cast<DeadlineOwnerHarness*>(user);
+    ++owner.callbackCalls;
+    const uint32_t clippedMs = owner.remainingTimeout(timeoutMs);
+    if (clippedMs == 0) {
+      return TCA9548A::TransportStatus::Error(TransportErr::TIMEOUT, EXPIRED);
+    }
+    return owner.complete(ScriptedTransport::read(address, txData, txLength,
+                                                  rxData, rxLength, clippedMs,
+                                                  &owner.backend),
+                           clippedMs);
+  }
+};
+
 void assertStatus(const Status& status, Err expected, int32_t detail = 0) {
   TEST_ASSERT_EQUAL_INT(static_cast<int>(expected),
                         static_cast<int>(status.code));
@@ -234,11 +319,213 @@ void test_channel_mask_helpers_are_exact() {
 void test_config_defaults_are_bounded() {
   const Config config;
   TEST_ASSERT_EQUAL_HEX8(TCA9548A::cmd::DEFAULT_ADDRESS, config.i2cAddress);
-  TEST_ASSERT_EQUAL_UINT32(50, config.i2cTimeoutMs);
+  TEST_ASSERT_EQUAL_UINT32(20, config.i2cTimeoutMs);
   TEST_ASSERT_EQUAL_UINT32(10, config.resetTimeoutMs);
   TEST_ASSERT_EQUAL_UINT8(5, config.offlineThreshold);
   TEST_ASSERT_NULL(config.i2cWrite);
   TEST_ASSERT_NULL(config.i2cWriteRead);
+}
+
+void test_default_timeout_reaches_every_hardware_primitive() {
+  Config config;
+  config.i2cWrite = ScriptedTransport::write;
+  config.i2cWriteRead = ScriptedTransport::read;
+  config.i2cUser = &gTransport;
+  config.hardReset = ResetHarness::reset;
+  config.resetUser = &gReset;
+  Driver mux;
+  beginOk(mux, config);
+  TEST_ASSERT_TRUE(mux.probe().ok());
+  TEST_ASSERT_TRUE(mux.selectChannel(Channel::CH2).ok());
+  TEST_ASSERT_TRUE(mux.writeChannelMask(ChannelMask::fromRaw(0xA5)).ok());
+  ChannelMask output;
+  TEST_ASSERT_TRUE(mux.readChannelMask(output).ok());
+  TEST_ASSERT_TRUE(mux.disableAll().ok());
+  TEST_ASSERT_TRUE(mux.recover().ok());
+  TEST_ASSERT_TRUE(mux.hardReset().ok());
+
+  TEST_ASSERT_EQUAL_UINT32(8, static_cast<uint32_t>(gTransport.callCount()));
+  assertReadCall(gTransport.call(0), 0x70, 20);
+  assertReadCall(gTransport.call(1), 0x70, 20);
+  assertWriteCall(gTransport.call(2), 0x04, 0x70, 20);
+  assertWriteCall(gTransport.call(3), 0xA5, 0x70, 20);
+  assertReadCall(gTransport.call(4), 0x70, 20);
+  assertWriteCall(gTransport.call(5), 0x00, 0x70, 20);
+  assertWriteCall(gTransport.call(6), 0x00, 0x70, 20);
+  assertReadCall(gTransport.call(7), 0x70, 20);
+  TEST_ASSERT_EQUAL_INT(1, gReset.calls);
+  TEST_ASSERT_EQUAL_UINT32(10, gReset.timeoutSeen);
+}
+
+void test_owner_schedules_begin_and_clips_each_call_to_a_fixed_64_bit_deadline() {
+  DeadlineOwnerHarness owner(gTransport);
+  owner.nowMs = static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1000U;
+  owner.deadlineMs = owner.nowMs + 17U;
+  owner.physicalElapsedMs = 3;
+  const uint64_t deadline = owner.deadlineMs;
+  const Config config = owner.config();
+  Driver mux;
+
+  // Preparing an instance/configuration does not schedule the presence read.
+  TEST_ASSERT_FALSE(mux.isBound());
+  TEST_ASSERT_EQUAL_UINT32(0, owner.callbackCalls);
+  TEST_ASSERT_EQUAL_UINT32(0, static_cast<uint32_t>(gTransport.callCount()));
+  beginOk(mux, config);  // The owner dispatches this at its chosen time.
+  TEST_ASSERT_TRUE(mux.selectChannel(Channel::CH2).ok());
+  ChannelMask output;
+  TEST_ASSERT_TRUE(mux.readChannelMask(output).ok());
+  TEST_ASSERT_EQUAL_HEX8(0x04, output.raw());
+  TEST_ASSERT_TRUE(mux.disableAll().ok());
+
+  TEST_ASSERT_EQUAL_UINT32(4, owner.callbackCalls);
+  TEST_ASSERT_EQUAL_UINT32(4, static_cast<uint32_t>(gTransport.callCount()));
+  assertReadCall(gTransport.call(0), 0x72, 17);
+  assertWriteCall(gTransport.call(1), 0x04, 0x72, 14);
+  assertReadCall(gTransport.call(2), 0x72, 11);
+  assertWriteCall(gTransport.call(3), 0x00, 0x72, 8);
+  TEST_ASSERT_EQUAL_UINT64(deadline, owner.deadlineMs);
+  TEST_ASSERT_EQUAL_UINT64(deadline - 5U, owner.nowMs);
+
+  // A separately granted large budget must not truncate before comparison.
+  // Its low 32 bits are 1; an early uint32 cast would incorrectly send 1 ms.
+  owner.deadlineMs = owner.nowMs + (uint64_t{1} << 32) + 1U;
+  TEST_ASSERT_TRUE(mux.selectChannel(Channel::CH7).ok());
+  assertWriteCall(gTransport.call(4), 0x80, 0x72, 20);
+
+  // The owner cap also applies when a valid Config requests a larger timeout.
+  mux.end();
+  Config wideConfig = owner.config();
+  wideConfig.i2cTimeoutMs = 60000;
+  beginOk(mux, wideConfig);
+  assertReadCall(gTransport.call(5), 0x72, 20);
+  owner.deadlineMs = owner.nowMs + 7U;
+  TEST_ASSERT_TRUE(mux.selectChannel(Channel::CH1).ok());
+  assertWriteCall(gTransport.call(6), 0x02, 0x72, 7);
+}
+
+void test_owner_deadline_clipping_survives_uint64_clock_wrap() {
+  DeadlineOwnerHarness owner(gTransport);
+  owner.nowMs = std::numeric_limits<uint64_t>::max() - 3U;
+  owner.deadlineMs = 4;
+  owner.physicalElapsedMs = 3;
+  Driver mux;
+  beginOk(mux, owner.config());
+  assertReadCall(gTransport.call(0), 0x72, 8);
+  TEST_ASSERT_TRUE(mux.selectChannel(Channel::CH1).ok());
+  assertWriteCall(gTransport.call(1), 0x02, 0x72, 5);
+  TEST_ASSERT_EQUAL_UINT64(2, owner.nowMs);
+
+  owner.physicalElapsedMs = 1;
+  ChannelMask output;
+  TEST_ASSERT_TRUE(mux.readChannelMask(output).ok());
+  assertReadCall(gTransport.call(2), 0x72, 2);
+  TEST_ASSERT_EQUAL_HEX8(0x02, output.raw());
+  owner.nowMs = owner.deadlineMs;
+  assertStatus(mux.disableAll(), Err::I2C_TIMEOUT, DeadlineOwnerHarness::EXPIRED);
+  TEST_ASSERT_EQUAL_UINT32(3, static_cast<uint32_t>(gTransport.callCount()));
+  TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
+  TEST_ASSERT_EQUAL_UINT32(3, mux.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalFailures());
+}
+
+void test_expired_owner_budget_performs_no_physical_io_or_cached_success() {
+  DeadlineOwnerHarness owner(gTransport);
+  owner.nowMs = static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 9U;
+  owner.deadlineMs = owner.nowMs;
+  Driver mux;
+  assertStatus(mux.begin(owner.config()), Err::I2C_TIMEOUT,
+               DeadlineOwnerHarness::EXPIRED);
+  TEST_ASSERT_TRUE(mux.isBound());
+  TEST_ASSERT_FALSE(mux.isInitialized());
+  TEST_ASSERT_EQUAL_UINT32(0, mux.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(0, static_cast<uint32_t>(gTransport.callCount()));
+
+  owner.deadlineMs = owner.nowMs + 10U;
+  gTransport.hardwareMask = 0xA5;
+  ChannelMask output;
+  TEST_ASSERT_TRUE(mux.readChannelMask(output).ok());
+  TEST_ASSERT_TRUE(mux.channelMaskObservation().verified());
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalSuccess());
+
+  owner.nowMs = owner.deadlineMs;
+  output = ChannelMask::fromRaw(0xC3);
+  assertStatus(mux.readChannelMask(output), Err::I2C_TIMEOUT,
+               DeadlineOwnerHarness::EXPIRED);
+  assertStatus(mux.selectChannel(Channel::CH0), Err::I2C_TIMEOUT,
+               DeadlineOwnerHarness::EXPIRED);
+  assertStatus(mux.probe(), Err::I2C_TIMEOUT, DeadlineOwnerHarness::EXPIRED);
+  TEST_ASSERT_EQUAL_UINT32(5, owner.callbackCalls);
+  TEST_ASSERT_EQUAL_UINT32(1, static_cast<uint32_t>(gTransport.callCount()));
+  TEST_ASSERT_EQUAL_HEX8(0xC3, output.raw());
+  TEST_ASSERT_EQUAL_HEX8(0xA5, gTransport.hardwareMask);
+  TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(3, mux.totalFailures());
+}
+
+void test_late_write_requires_a_new_cleanup_budget_and_failed_cleanup_stays_unknown() {
+  DeadlineOwnerHarness owner(gTransport);
+  owner.nowMs = static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 50U;
+  owner.deadlineMs = owner.nowMs + 10U;
+  Driver mux;
+  beginOk(mux, owner.config());
+  gTransport.clearHistory();
+
+  owner.nowMs += 5U;
+  owner.physicalElapsedMs = 6;
+  assertStatus(mux.selectChannel(Channel::CH3), Err::I2C_TIMEOUT,
+               DeadlineOwnerHarness::LATE_COMPLETION);
+  assertWriteCall(gTransport.call(0), 0x08, 0x72, 5);
+  TEST_ASSERT_EQUAL_HEX8(0x08, gTransport.hardwareMask);
+  TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalFailures());
+  TEST_ASSERT_EQUAL_UINT32(1, static_cast<uint32_t>(gTransport.callCount()));
+
+  // The original request cannot acquire fresh time by asking for safe-off.
+  assertStatus(mux.disableAll(), Err::I2C_TIMEOUT, DeadlineOwnerHarness::EXPIRED);
+  TEST_ASSERT_EQUAL_UINT32(1, static_cast<uint32_t>(gTransport.callCount()));
+  TEST_ASSERT_EQUAL_HEX8(0x08, gTransport.hardwareMask);
+  TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
+
+  // Cleanup is a distinct owner decision with its own bounded budget.
+  owner.deadlineMs = owner.nowMs + 3U;
+  owner.physicalElapsedMs = 0;
+  TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::BUS, 37, true));
+  assertStatus(mux.disableAll(), Err::I2C_BUS, 37);
+  assertWriteCall(gTransport.call(1), 0x00, 0x72, 3);
+  TEST_ASSERT_EQUAL_UINT32(2, static_cast<uint32_t>(gTransport.callCount()));
+  TEST_ASSERT_EQUAL_HEX8(0x00, gTransport.hardwareMask);
+  TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(3, mux.totalFailures());
+  assertStatus(mux.lastError(), Err::I2C_BUS, 37);
+}
+
+void test_owner_clipping_preserves_specific_backend_errors() {
+  DeadlineOwnerHarness owner(gTransport);
+  owner.nowMs = 100;
+  owner.deadlineMs = 109;
+  Driver mux;
+  beginOk(mux, owner.config());
+  gTransport.clearHistory();
+  owner.physicalElapsedMs = 2;
+  TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::NACK_DATA, -71));
+  assertStatus(mux.disableAll(), Err::I2C_NACK_DATA, -71);
+  assertWriteCall(gTransport.call(0), 0x00, 0x72, 9);
+
+  // Failure detail stays available even when the backend also returns late.
+  owner.physicalElapsedMs = 8;
+  TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::NACK_ADDR, 72,
+                                       false, true, 0xFF));
+  ChannelMask output = ChannelMask::fromRaw(0x42);
+  assertStatus(mux.readChannelMask(output), Err::I2C_NACK_ADDR, 72);
+  assertReadCall(gTransport.call(1), 0x72, 7);
+  TEST_ASSERT_EQUAL_HEX8(0x42, output.raw());
+  TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
+  TEST_ASSERT_EQUAL_UINT32(2, static_cast<uint32_t>(gTransport.callCount()));
+  TEST_ASSERT_EQUAL_UINT32(1, mux.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(2, mux.totalFailures());
 }
 
 void test_begin_rejects_invalid_config_without_io() {
@@ -317,6 +604,102 @@ void test_begin_records_readback_and_tracked_health() {
   TEST_ASSERT_TRUE(observation.verified());
   TEST_ASSERT_EQUAL_HEX8(0xA5, observation.mask.raw());
   assertReadCall(gTransport.call(0));
+}
+
+void test_begin_copies_config_and_preserves_separate_callback_contexts() {
+  Config config = makeConfig(true);
+  Driver mux;
+  beginOk(mux, config);
+  gTransport.clearHistory();
+
+  // The caller's Config is a value, not a live settings/context binding.
+  config = Config{};
+  config.i2cAddress = 0x77;
+  config.i2cTimeoutMs = 1;
+  config.resetTimeoutMs = 1;
+  gNowMs = 42;
+  TEST_ASSERT_TRUE(mux.selectChannel(Channel::CH7).ok());
+  assertWriteCall(gTransport.call(0), 0x80);
+  TEST_ASSERT_EQUAL_UINT32(42, mux.lastOkMs());
+
+  gNowMs = 43;
+  TEST_ASSERT_TRUE(mux.hardReset().ok());
+  TEST_ASSERT_EQUAL_INT(1, gReset.calls);
+  TEST_ASSERT_EQUAL_UINT32(13, gReset.timeoutSeen);
+  TEST_ASSERT_EQUAL_UINT32(2, static_cast<uint32_t>(gTransport.callCount()));
+  assertReadCall(gTransport.call(1));
+  TEST_ASSERT_EQUAL_UINT32(43, mux.lastOkMs());
+  TEST_ASSERT_EQUAL_PTR(&gTransport, mux.getConfig().i2cUser);
+  TEST_ASSERT_EQUAL_PTR(&gReset, mux.getConfig().resetUser);
+  TEST_ASSERT_EQUAL_PTR(&gNowMs, mux.getConfig().timeUser);
+}
+
+void test_mux_instances_share_transport_without_sharing_health_or_mask() {
+  Config firstConfig = makeConfig();
+  firstConfig.i2cAddress = 0x70;
+  firstConfig.offlineThreshold = 1;
+  Config secondConfig = makeConfig();
+  secondConfig.i2cAddress = 0x77;
+  Driver first;
+  Driver second;
+
+  // Script the same owner returning different control bytes for its two muxes.
+  gTransport.hardwareMask = 0x01;
+  gNowMs = 10;
+  beginOk(first, firstConfig);
+  gTransport.hardwareMask = 0x80;
+  gNowMs = 20;
+  beginOk(second, secondConfig);
+  assertReadCall(gTransport.call(0), 0x70);
+  assertReadCall(gTransport.call(1), 0x77);
+  TEST_ASSERT_EQUAL_HEX8(0x01, first.channelMaskObservation().mask.raw());
+  TEST_ASSERT_EQUAL_HEX8(0x80, second.channelMaskObservation().mask.raw());
+  gTransport.clearHistory();
+
+  gNowMs = 30;
+  TEST_ASSERT_TRUE(first.writeChannelMask(ChannelMask::fromRaw(0x55)).ok());
+  assertWriteCall(gTransport.call(0), 0x55, 0x70);
+  gNowMs = 40;
+  TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::TIMEOUT, 7));
+  assertStatus(first.selectChannel(Channel::CH0), Err::I2C_TIMEOUT, 7);
+  assertWriteCall(gTransport.call(1), 0x01, 0x70);
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverState::OFFLINE),
+                        static_cast<int>(first.state()));
+  TEST_ASSERT_FALSE(first.channelMaskObservation().known());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverState::READY),
+                        static_cast<int>(second.state()));
+  TEST_ASSERT_TRUE(second.channelMaskObservation().verified());
+  TEST_ASSERT_EQUAL_HEX8(0x80, second.channelMaskObservation().mask.raw());
+  TEST_ASSERT_EQUAL_UINT32(1, second.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(0, second.totalFailures());
+  TEST_ASSERT_EQUAL_UINT32(20, second.lastOkMs());
+  assertStatus(second.lastError(), Err::OK);
+
+  gNowMs = 50;
+  TEST_ASSERT_TRUE(gTransport.push(
+      {TCA9548A::TransportStatus::Ok(), false, true, 0xC3}));
+  ChannelMask output;
+  TEST_ASSERT_TRUE(second.readChannelMask(output).ok());
+  assertReadCall(gTransport.call(2), 0x77);
+  TEST_ASSERT_EQUAL_HEX8(0xC3, output.raw());
+  TEST_ASSERT_EQUAL_UINT32(2, second.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(50, second.lastOkMs());
+  TEST_ASSERT_EQUAL_INT(static_cast<int>(DriverState::OFFLINE),
+                        static_cast<int>(first.state()));
+  TEST_ASSERT_EQUAL_UINT32(2, first.totalSuccess());
+  TEST_ASSERT_EQUAL_UINT32(1, first.totalFailures());
+  TEST_ASSERT_EQUAL_UINT32(30, first.lastOkMs());
+  TEST_ASSERT_EQUAL_UINT32(40, first.lastErrorMs());
+  TEST_ASSERT_FALSE(first.channelMaskObservation().known());
+  TEST_ASSERT_EQUAL_HEX8(0x55, first.channelMaskObservation().mask.raw());
+
+  first.end();
+  TEST_ASSERT_EQUAL_UINT32(3, static_cast<uint32_t>(gTransport.callCount()));
+  TEST_ASSERT_TRUE(second.isBound());
+  TEST_ASSERT_TRUE(second.channelMaskObservation().verified());
+  TEST_ASSERT_TRUE(second.disableAll().ok());
+  assertWriteCall(gTransport.call(3), 0x00, 0x77);
+  TEST_ASSERT_FALSE(first.isBound());
 }
 
 void test_failed_begin_preserves_binding_and_exact_error() {
@@ -557,6 +940,7 @@ void test_all_transport_errors_remain_distinct() {
       {TransportErr::TIMEOUT, Err::I2C_TIMEOUT, 13},
       {TransportErr::BUS, Err::I2C_BUS, 14},
       {TransportErr::OTHER, Err::I2C_ERROR, 15},
+      {static_cast<TransportErr>(0xFFU), Err::I2C_ERROR, -16},
   };
 
   Driver mux;
@@ -571,6 +955,22 @@ void test_all_transport_errors_remain_distinct() {
       static_cast<uint32_t>(sizeof(cases) / sizeof(cases[0])),
       static_cast<uint32_t>(gTransport.callCount()));
   TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
+
+  gTransport.clearHistory();
+  ChannelMask observed = ChannelMask::fromRaw(0xC3);
+  for (const Case& item : cases) {
+    // Even a backend that writes its RX buffer before failing cannot publish
+    // that byte as a successful read or replace the caller's output.
+    TEST_ASSERT_TRUE(gTransport.pushError(item.transport, item.detail,
+                                         false, true, 0x5A));
+    assertStatus(mux.readChannelMask(observed), item.driver, item.detail);
+    assertStatus(mux.lastError(), item.driver, item.detail);
+    TEST_ASSERT_EQUAL_HEX8(0xC3, observed.raw());
+    TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
+  }
+  TEST_ASSERT_EQUAL_UINT32(
+      static_cast<uint32_t>(sizeof(cases) / sizeof(cases[0])),
+      static_cast<uint32_t>(gTransport.callCount()));
 }
 
 void test_ambiguous_failed_write_invalidates_and_read_reconciles() {
@@ -661,6 +1061,67 @@ void test_probe_updates_observation_but_not_health() {
   assertStatus(mux.lastError(), lastErrorBeforeFailure.code,
                lastErrorBeforeFailure.detail);
   TEST_ASSERT_FALSE(mux.channelMaskObservation().known());
+}
+
+void test_probe_cannot_initialize_or_recover_degraded_or_offline_health() {
+  const DriverState states[] = {DriverState::UNINIT, DriverState::DEGRADED,
+                                DriverState::OFFLINE};
+  for (const DriverState expectedState : states) {
+    gTransport.reset(0x81);
+    gNowMs = 10;
+    Config config = makeConfig();
+    config.offlineThreshold = 2;
+    Driver mux;
+    if (expectedState == DriverState::UNINIT) {
+      TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::NACK_ADDR, 71));
+      assertStatus(mux.begin(config), Err::I2C_NACK_ADDR, 71);
+    } else {
+      beginOk(mux, config);
+      TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::TIMEOUT, 72));
+      assertStatus(mux.disableAll(), Err::I2C_TIMEOUT, 72);
+      if (expectedState == DriverState::OFFLINE) {
+        TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::BUS, 73));
+        assertStatus(mux.disableAll(), Err::I2C_BUS, 73);
+      }
+    }
+    TEST_ASSERT_EQUAL_INT(static_cast<int>(expectedState),
+                          static_cast<int>(mux.state()));
+    const bool initializedBefore = mux.isInitialized();
+    const bool onlineBefore = mux.isOnline();
+    const uint32_t successesBefore = mux.totalSuccess();
+    const uint32_t failuresBefore = mux.totalFailures();
+    const uint8_t consecutiveBefore = mux.consecutiveFailures();
+    const uint32_t lastOkBefore = mux.lastOkMs();
+    const uint32_t lastErrorMsBefore = mux.lastErrorMs();
+    const Status lastErrorBefore = mux.lastError();
+    gTransport.clearHistory();
+    gNowMs = 99;
+
+    const bool outcomes[] = {true, false};
+    for (const bool succeeds : outcomes) {
+      if (!succeeds) {
+        TEST_ASSERT_TRUE(gTransport.pushError(TransportErr::NACK_DATA, 74));
+      }
+      assertStatus(mux.probe(), succeeds ? Err::OK : Err::I2C_NACK_DATA,
+                   succeeds ? 0 : 74);
+      TEST_ASSERT_EQUAL(initializedBefore, mux.isInitialized());
+      TEST_ASSERT_EQUAL(onlineBefore, mux.isOnline());
+      TEST_ASSERT_EQUAL_INT(static_cast<int>(expectedState),
+                            static_cast<int>(mux.state()));
+      TEST_ASSERT_EQUAL_UINT32(successesBefore, mux.totalSuccess());
+      TEST_ASSERT_EQUAL_UINT32(failuresBefore, mux.totalFailures());
+      TEST_ASSERT_EQUAL_UINT8(consecutiveBefore, mux.consecutiveFailures());
+      TEST_ASSERT_EQUAL_UINT32(lastOkBefore, mux.lastOkMs());
+      TEST_ASSERT_EQUAL_UINT32(lastErrorMsBefore, mux.lastErrorMs());
+      assertStatus(mux.lastError(), lastErrorBefore.code, lastErrorBefore.detail);
+      TEST_ASSERT_EQUAL_PTR(lastErrorBefore.msg, mux.lastError().msg);
+      TEST_ASSERT_EQUAL(succeeds, mux.channelMaskObservation().verified());
+      TEST_ASSERT_EQUAL_HEX8(0x81, mux.channelMaskObservation().mask.raw());
+    }
+    TEST_ASSERT_EQUAL_UINT32(2, static_cast<uint32_t>(gTransport.callCount()));
+    assertReadCall(gTransport.call(0));
+    assertReadCall(gTransport.call(1));
+  }
 }
 
 void test_offline_is_passive_and_success_recovers_health() {
@@ -1068,9 +1529,17 @@ int main(int, char**) {
   RUN_TEST(test_scps207h_protocol_and_timing_constants_are_exact);
   RUN_TEST(test_channel_mask_helpers_are_exact);
   RUN_TEST(test_config_defaults_are_bounded);
+  RUN_TEST(test_default_timeout_reaches_every_hardware_primitive);
+  RUN_TEST(test_owner_schedules_begin_and_clips_each_call_to_a_fixed_64_bit_deadline);
+  RUN_TEST(test_owner_deadline_clipping_survives_uint64_clock_wrap);
+  RUN_TEST(test_expired_owner_budget_performs_no_physical_io_or_cached_success);
+  RUN_TEST(test_late_write_requires_a_new_cleanup_budget_and_failed_cleanup_stays_unknown);
+  RUN_TEST(test_owner_clipping_preserves_specific_backend_errors);
   RUN_TEST(test_begin_rejects_invalid_config_without_io);
   RUN_TEST(test_begin_accepts_every_valid_address_with_one_read);
   RUN_TEST(test_begin_records_readback_and_tracked_health);
+  RUN_TEST(test_begin_copies_config_and_preserves_separate_callback_contexts);
+  RUN_TEST(test_mux_instances_share_transport_without_sharing_health_or_mask);
   RUN_TEST(test_failed_begin_preserves_binding_and_exact_error);
   RUN_TEST(test_rebind_is_rejected_transactionally);
   RUN_TEST(test_end_is_bus_silent_and_rebinding_is_repeatable);
@@ -1086,6 +1555,7 @@ int main(int, char**) {
   RUN_TEST(test_successful_write_requires_later_read_for_verification);
   RUN_TEST(test_explicit_external_invalidation_preserves_only_historical_byte);
   RUN_TEST(test_probe_updates_observation_but_not_health);
+  RUN_TEST(test_probe_cannot_initialize_or_recover_degraded_or_offline_health);
   RUN_TEST(test_offline_is_passive_and_success_recovers_health);
   RUN_TEST(test_health_timestamps_accept_clock_wrap_without_deadline_math);
   RUN_TEST(test_recover_is_one_safe_off_write_even_after_failed_begin);

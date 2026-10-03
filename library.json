@@ -34,13 +34,8 @@
   },
   "license": "MIT",
   "homepage": "https://www.thymos.cz",
-  "frameworks": [
-    "arduino",
-    "espidf"
-  ],
-  "platforms": [
-    "espressif32"
-  ],
+  "frameworks": "*",
+  "platforms": "*",
   "headers": [
     "TCA9548A/TCA9548A.h"
   ],

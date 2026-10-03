@@ -64,10 +64,15 @@ python tools/check_idf_example_contract.py
 python tools/check_repository_hygiene.py
 .\scripts\pio.cmd test -e native
 .\scripts\pio.cmd test -e native_cli
+.\scripts\pio.cmd test -e native_transport
 .\scripts\pio.cmd run -e native_core_no_arduino
+cmake -S test/core_no_arduino -B .pio/cmake-core -G Ninja
+cmake --build .pio/cmake-core
+cmake -E chdir .pio/cmake-core ctest --output-on-failure
 .\scripts\pio.cmd run -e esp32s3dev
 .\scripts\pio.cmd run -e esp32s2dev
 python tools/tca9548a_hil.py --parser-self-test
+python tools/test_tca9548a_hil.py
 doxygen Doxyfile
 .\scripts\pio.cmd pkg pack . --output .pio\TCA9548A.tar.gz
 git diff --check
@@ -81,7 +86,10 @@ With ESP-IDF 5.4 or 5.5 installed, build `examples/espidf_basic` for both
 ESP-IDF installation is unavailable.
 
 The CI workflow additionally compiles the framework-neutral core with strict
-C++17 warnings. CI pins PlatformIO and Doxygen versions; when local tool
+C++17 warnings and builds a standalone CMake consumer to verify the target's
+public include path and language requirement. CMake validation requires CMake
+3.16 or later and an available C++ compiler; use an appropriate installed
+generator if Ninja is unavailable. CI pins PlatformIO and Doxygen versions; when local tool
 versions differ, passing CI with the pinned versions is authoritative.
 
 A parser self-test or dry run is not hardware evidence. Live HIL requires the

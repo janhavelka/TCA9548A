@@ -18,7 +18,7 @@ enum class TransportErr : uint8_t {
   OK = 0,    ///< Complete transaction, including STOP, succeeded
   NACK_ADDR, ///< Address phase was not acknowledged
   NACK_DATA, ///< Data phase was not acknowledged
-  TIMEOUT,   ///< Physical transfer exceeded its deadline
+  TIMEOUT,   ///< Attempt could not complete within its transport/owner deadline
   BUS,       ///< Arbitration, stuck-line, or controller/bus fault
   OTHER      ///< Truthful failure with no narrower exposed cause
 };
@@ -61,7 +61,12 @@ struct TransportStatus {
 /// terminating STOP condition, has completed. The callback must return within
 /// `timeoutMs` and must preserve the narrow outcome in TransportStatus (for
 /// example address NACK, data NACK, timeout, or bus error). The driver never
-/// retries a transfer.
+/// retries a transfer. The controller/adapter must also enforce the I2C bus-free
+/// time between STOP and the next START: at least 4.7 us in Standard-mode or
+/// 1.3 us in Fast-mode (SCPS207H section 5.6). The driver adds no delay.
+/// An owner may shorten timeoutMs to the remaining operation budget or return
+/// TIMEOUT without I/O when that budget has expired. A completed but late
+/// transfer must not be reported as OK; its hardware effect may be ambiguous.
 /// @param addr      I2C device address (7-bit)
 /// @param data      Pointer to data to write
 /// @param len       Number of bytes to write
@@ -76,10 +81,12 @@ using I2cWriteFn = TransportStatus (*)(uint8_t addr, const uint8_t* data,
 ///
 /// The TCA9548A control-byte read is requested with `txData == nullptr`,
 /// `txLen == 0`, and `rxLen == 1`; it is one read-only I2C transaction. A
-/// successful return MUST mean that the complete transaction and terminating
-/// STOP condition have completed. The callback must return within `timeoutMs`
-/// and preserve the narrow transport outcome in TransportStatus. The driver
-/// never retries a transfer.
+/// successful return MUST mean that the controller NACKed the received byte
+/// and the terminating STOP condition completed. The callback must return
+/// within `timeoutMs` and preserve the narrow transport outcome in
+/// TransportStatus. The driver never retries a transfer. As for I2cWriteFn,
+/// the controller/adapter enforces the mode's STOP-to-next-START bus-free time.
+/// The timeout clipping and owner-deadline rules of I2cWriteFn also apply.
 /// @param addr      I2C device address (7-bit)
 /// @param txData    Pointer to data to write (nullptr if txLen == 0)
 /// @param txLen     Number of bytes to write (0 for read-only)
@@ -95,7 +102,10 @@ using I2cWriteReadFn = TransportStatus (*)(uint8_t addr,
 
 /// Optional hard-reset callback for the active-low RESET pin.
 /// Implementations must assert RESET low for at least cmd::RESET_MIN_LOW_NS,
-/// release it, and return only after RESET is complete. The callback is invoked
+/// release it, and return only after RESET is complete, including the worst-case
+/// cmd::RESET_SDA_RELEASE_MAX_NS measured from assertion. The zero recovery
+/// time after release does not remove that propagation-time requirement.
+/// The callback is invoked
 /// at most once per hardReset() call and must itself have a finite, documented
 /// execution bound; the driver performs no delay or retry. Return Err::TIMEOUT
 /// when the bound expires and Err::RESET_ERROR for another GPIO/reset failure.
@@ -136,7 +146,11 @@ struct Config {
 
   // === Device Settings ===
   uint8_t i2cAddress = cmd::DEFAULT_ADDRESS; ///< I2C address: 0x70-0x77
-  uint32_t i2cTimeoutMs = 50;   ///< I2C timeout in ms (1..60000)
+
+  /// Per-attempt transport budget in ms (1..60000), default 20 ms.
+  /// The owner may impose a smaller cap or remaining operation deadline in
+  /// its callbacks. This value is copied by begin(); it is not a live deadline.
+  uint32_t i2cTimeoutMs = 20;
 
   /// RESET callback timeout in ms. begin() validates the 1..60000 range
   /// uniformly, including when hardReset is null and the value is unused.

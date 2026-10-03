@@ -12,6 +12,8 @@ through the shared fixed-size line accumulator: a command runs only after CR
 or LF, and an overlong line is discarded through its terminator. The default
 RESET GPIO is disabled; change `RESET_GPIO` in `main/main.cpp` only for the
 actual fixture.
+Set `I2C_ADDRESS` to match the address straps. Device registration happens in
+`initBus()` before timed callbacks.
 
 The bus runs at 400 kHz with the ESP32 internal pull-ups disabled, because at
 roughly 45 kOhm they cannot drive it. Every active segment needs external
@@ -28,6 +30,14 @@ idf.py -p PORT flash monitor
 Use `esp32s2` instead when required. A successful build, CLI dry run, or parser
 contract is not hardware validation; live evidence requires an attached
 TCA9548A, reviewed pull-ups/voltages, and the HIL runner described in the root
-README. The example leaves all channels disabled after its startup check and
-after every stress path; `selftest` restores the mask it found on entry, and
-`scan` reports the active mask before probing the 126 normal 7-bit addresses.
+README. Startup and stress require verified all-off for success; `selftest`
+attempts verified restoration of its entry mask. Failures are reported and
+may require external RESET/power handling when controller access is retired.
+`scan` reports the active mask before probing the 112 non-reserved 7-bit addresses.
+
+The pinned native probe runs at 100 kHz; control-byte transfers use 400 kHz.
+Scan rejects a failed topology read and counts bus faults separately from
+ordinary address NACKs. A receive failure latches controller access off until
+MCU restart (`cfg` reports it), guarding the pinned SDK's stale receive-state
+path. Neither mux RESET nor driver rebind recreates the controller. See
+[the adapter limits](../../docs/PORTING.md#backend-fault-and-timing-limits).

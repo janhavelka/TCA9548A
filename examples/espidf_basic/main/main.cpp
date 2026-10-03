@@ -3,11 +3,9 @@
  * @brief Native ESP-IDF bring-up CLI for TCA9548A.
  */
 
-#include <errno.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include <driver/gpio.h>
@@ -21,15 +19,17 @@
 #include <freertos/task.h>
 
 #include "examples/common/CliLineBuffer.h"
+#include "examples/common/CliArguments.h"
 #include "TCA9548A/TCA9548A.h"
 
 namespace {
 
 static constexpr gpio_num_t I2C_SDA = GPIO_NUM_8;
 static constexpr gpio_num_t I2C_SCL = GPIO_NUM_9;
+static constexpr uint8_t I2C_ADDRESS = TCA9548A::cmd::DEFAULT_ADDRESS;
 static constexpr int RESET_GPIO = -1;
 static constexpr uint32_t I2C_FREQ_HZ = 400000U;
-static constexpr uint32_t I2C_TIMEOUT_MS = 50U;
+static constexpr uint32_t I2C_TIMEOUT_MS = TCA9548A::Config{}.i2cTimeoutMs;
 static constexpr uint32_t RESET_TIMEOUT_MS = 10U;
 static constexpr uint32_t MAX_STRESS_COUNT = 1000U;
 static constexpr size_t LINE_LEN = 128U;
@@ -45,6 +45,7 @@ struct NativeBus {
   i2c_master_bus_handle_t bus = nullptr;
   i2c_master_dev_handle_t device = nullptr;
   uint8_t deviceAddress = 0U;
+  bool receiveFaulted = false;
 };
 
 NativeBus gBus;
@@ -52,6 +53,7 @@ TCA9548A::TCA9548A gDevice;
 TCA9548A::Config gConfig;
 bool gI2cReady = false;
 cli_shell::FixedLineBuffer gLineBuffer;
+using cli_shell::parseUnsignedArgument;
 using TCA9548A::errorName;
 using TCA9548A::driverStateName;
 using TCA9548A::maskProvenanceName;
@@ -124,45 +126,22 @@ TCA9548A::TransportStatus mapI2c(esp_err_t error) {
                                           error);
 }
 
-esp_err_t ensureDevice(NativeBus& bus, uint8_t address) {
-  if (bus.device != nullptr && bus.deviceAddress == address) {
-    return ESP_OK;
-  }
-  if (bus.device != nullptr) {
-    const esp_err_t removeError = i2c_master_bus_rm_device(bus.device);
-    if (removeError != ESP_OK) {
-      return removeError;
-    }
-    bus.device = nullptr;
-    bus.deviceAddress = 0U;
-  }
-
-  i2c_device_config_t config = {};
-  config.dev_addr_length = I2C_ADDR_BIT_LEN_7;
-  config.device_address = address;
-  config.scl_speed_hz = I2C_FREQ_HZ;
-  const esp_err_t error =
-      i2c_master_bus_add_device(bus.bus, &config, &bus.device);
-  if (error == ESP_OK) {
-    bus.deviceAddress = address;
-  }
-  return error;
-}
-
 TCA9548A::TransportStatus i2cWrite(uint8_t address, const uint8_t* data,
                                    size_t length, uint32_t timeoutMs,
                                    void* user) {
   auto* bus = static_cast<NativeBus*>(user);
-  if (bus == nullptr || bus->bus == nullptr || data == nullptr ||
-      length == 0U) {
+  if (bus == nullptr || bus->bus == nullptr || bus->device == nullptr ||
+      address != bus->deviceAddress || data == nullptr || length != 1U ||
+      timeoutMs == 0U) {
     return TCA9548A::TransportStatus::Error(TCA9548A::TransportErr::OTHER,
                                             ESP_ERR_INVALID_ARG);
   }
-  esp_err_t error = ensureDevice(*bus, address);
-  if (error == ESP_OK) {
-    error = i2c_master_transmit(bus->device, data, length,
-                                timeoutArg(timeoutMs));
+  if (bus->receiveFaulted) {
+    return TCA9548A::TransportStatus::Error(TCA9548A::TransportErr::BUS,
+                                           ESP_ERR_INVALID_STATE);
   }
+  const esp_err_t error = i2c_master_transmit(
+      bus->device, data, length, timeoutArg(timeoutMs));
   return mapI2c(error);
 }
 
@@ -170,26 +149,27 @@ TCA9548A::TransportStatus i2cWriteRead(
     uint8_t address, const uint8_t* txData, size_t txLength, uint8_t* rxData,
     size_t rxLength, uint32_t timeoutMs, void* user) {
   auto* bus = static_cast<NativeBus*>(user);
-  if (bus == nullptr || bus->bus == nullptr || rxData == nullptr ||
-      rxLength == 0U || (txLength > 0U && txData == nullptr)) {
+  if (bus == nullptr || bus->bus == nullptr || bus->device == nullptr ||
+      address != bus->deviceAddress || rxData == nullptr || rxLength != 1U ||
+      txData != nullptr || txLength != 0U || timeoutMs == 0U) {
     return TCA9548A::TransportStatus::Error(TCA9548A::TransportErr::OTHER,
                                             ESP_ERR_INVALID_ARG);
   }
-  esp_err_t error = ensureDevice(*bus, address);
+  if (bus->receiveFaulted) {
+    return TCA9548A::TransportStatus::Error(TCA9548A::TransportErr::BUS,
+                                           ESP_ERR_INVALID_STATE);
+  }
+  // The control byte has no register-pointer phase. The earlier write must
+  // have completed STOP before this independent START-to-STOP read.
+  const esp_err_t error = i2c_master_receive(
+      bus->device, rxData, rxLength, timeoutArg(timeoutMs));
+  // IDF 5.5.5 can retain ISR-visible receive state after a failed read; a
+  // following probe can then access its stack-local operation descriptors
+  // with stale indices. This bring-up owner stops using that controller
+  // instance. Reboot/recreate it explicitly; never hide retries in a callback.
   if (error != ESP_OK) {
-    return mapI2c(error);
+    bus->receiveFaulted = true;
   }
-  if (txLength != 0U) {
-    // A combined transfer would put a repeated START between the write and the
-    // read. The TCA9548A latches a new channel selection only at STOP, so the
-    // read would return the new byte while the switches had not moved (TI
-    // SCPA063 section 4.1). The driver never asks for this shape; refuse it
-    // rather than silently issuing one.
-    return TCA9548A::TransportStatus::Error(TCA9548A::TransportErr::OTHER,
-                                            ESP_ERR_NOT_SUPPORTED);
-  }
-  error = i2c_master_receive(bus->device, rxData, rxLength,
-                             timeoutArg(timeoutMs));
   return mapI2c(error);
 }
 
@@ -225,7 +205,33 @@ bool initBus() {
   // Every active segment needs external pull-ups sized for the bus (see
   // docs/HARDWARE_NOTES.md). The ~45 kOhm internal ones cannot drive 400 kHz.
   config.flags.enable_internal_pullup = false;
-  return i2c_new_master_bus(&config, &gBus.bus) == ESP_OK;
+  const esp_err_t busError = i2c_new_master_bus(&config, &gBus.bus);
+  if (busError != ESP_OK) {
+    printf("I2C bus initialization failed: %ld\n", static_cast<long>(busError));
+    return false;
+  }
+
+  // Register the fixed device during owner setup, outside timed callbacks.
+  // Callbacks only issue their one transfer through this registered handle.
+  i2c_device_config_t deviceConfig = {};
+  deviceConfig.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+  deviceConfig.device_address = I2C_ADDRESS;
+  deviceConfig.scl_speed_hz = I2C_FREQ_HZ;
+  const esp_err_t deviceError =
+      i2c_master_bus_add_device(gBus.bus, &deviceConfig, &gBus.device);
+  if (deviceError != ESP_OK) {
+    printf("I2C device registration failed: %ld\n",
+           static_cast<long>(deviceError));
+    const esp_err_t cleanupError = i2c_del_master_bus(gBus.bus);
+    if (cleanupError == ESP_OK) {
+      gBus.bus = nullptr;
+    } else {
+      printf("I2C setup cleanup failed: %ld\n", static_cast<long>(cleanupError));
+    }
+    return false;
+  }
+  gBus.deviceAddress = I2C_ADDRESS;
+  return true;
 }
 
 void configureDriver() {
@@ -233,7 +239,7 @@ void configureDriver() {
   gConfig.i2cWriteRead = i2cWriteRead;
   gConfig.i2cUser = &gBus;
   gConfig.nowMs = nowMs;
-  gConfig.i2cAddress = TCA9548A::cmd::DEFAULT_ADDRESS;
+  gConfig.i2cAddress = I2C_ADDRESS;
   gConfig.i2cTimeoutMs = I2C_TIMEOUT_MS;
   gConfig.resetTimeoutMs = RESET_TIMEOUT_MS;
   gConfig.offlineThreshold = 5U;
@@ -318,6 +324,8 @@ void printConfig() {
   printf("  Initialized: %s\n", snapshot.initialized ? "yes" : "no");
   printf("  I2C address: 0x%02X\n", static_cast<unsigned>(snapshot.i2cAddress));
   printf("  I2C frequency: %lu Hz\n", static_cast<unsigned long>(I2C_FREQ_HZ));
+  puts("  Scan probe frequency: 100000 Hz (native IDF probe)");
+  printf("  Controller restart required: %s\n", gBus.receiveFaulted ? "yes" : "no");
   printf("  I2C timeout: %lu ms\n",
          static_cast<unsigned long>(snapshot.i2cTimeoutMs));
   printf("  RESET timeout: %lu ms\n",
@@ -376,7 +384,7 @@ void printHelp() {
   puts("  reset / hardreset              RESET then verify 0x00");
   puts("  invalidate                     Mark cached mask unknown");
   puts("  begin / end                    Bind+probe / bus-silent unbind");
-  puts("  scan                           Scan active topology: 126 probes");
+  puts("  scan                           Scan active topology: 112 probes");
   puts("  stress <1-1000>                Select sample, finish all-off");
   puts("  stress_mix <1-1000>            Primitive mix, finish all-off");
   puts("  selftest                       Live checks, restore entry mask");
@@ -404,31 +412,8 @@ cli_shell::LineResult pollConsoleLine(char* output, size_t capacity) {
 void printPrompt() {
   printf("%s> %s", COLOR_CYAN, COLOR_RESET);
 }
-
-bool parseUnsignedArgument(const char* command, const char* prefix,
-                           uint32_t maximum, uint32_t& output) {
-  const size_t prefixLength = strlen(prefix);
-  if (strncmp(command, prefix, prefixLength) != 0 ||
-      command[prefixLength] != ' ') {
-    return false;
-  }
-  const char* text = command + prefixLength + 1U;
-  if (*text == '\0') {
-    return false;
-  }
-  errno = 0;
-  char* end = nullptr;
-  const unsigned long value = strtoul(text, &end, 0);
-  if (errno == ERANGE || end == text || *end != '\0' ||
-      value > static_cast<unsigned long>(maximum)) {
-    return false;
-  }
-  output = static_cast<uint32_t>(value);
-  return true;
-}
-
 void scanBus() {
-  if (!gI2cReady || gBus.bus == nullptr) {
+  if (!gI2cReady || gBus.bus == nullptr || gBus.receiveFaulted) {
     puts("scan: NOT_INITIALIZED (I2C controller unavailable)");
     return;
   }
@@ -444,17 +429,29 @@ void scanBus() {
     fputs(" active_mask=unknown", stdout);
   }
   puts(" (select a one-hot mask before scan to isolate a branch)");
-  puts("Scanning I2C bus (126 bounded probes)...");
+  if (!topologyStatus.ok()) {
+    puts("scan: I2C_ERROR (topology unavailable; restart after a receive fault)");
+    return;
+  }
+  puts("Scanning I2C bus (112 bounded probes)...");
   unsigned found = 0U;
-  for (uint16_t address = 1U; address <= 126U; ++address) {
+  unsigned errors = 0U;
+  for (uint16_t address = 0x08U; address <= 0x77U; ++address) {
     const esp_err_t error = i2c_master_probe(
         gBus.bus, static_cast<uint16_t>(address), timeoutArg(I2C_TIMEOUT_MS));
     if (error == ESP_OK) {
       printf("  Found device at 0x%02X\n", static_cast<unsigned>(address));
       ++found;
+    } else if (error != ESP_ERR_NOT_FOUND) {
+      ++errors;
+      printf("  Scan error at 0x%02X: %ld\n", static_cast<unsigned>(address),
+             static_cast<long>(error));
+    }
+    if ((address % 16U) == 0U) {
+      vTaskDelay(1);
     }
   }
-  printf("Scan complete: devices=%u\n", found);
+  printf("Scan complete: devices=%u errors=%u\n", found, errors);
 }
 
 struct HilCounts {
@@ -649,6 +646,22 @@ void runHil(bool dryRun, bool includeReset) {
     if (gConfig.hardReset == nullptr) {
       reportCheck(counts, "hardReset", false, "callback not configured");
     } else {
+      // Start from verified nonzero state so an unwired RESET cannot pass.
+      status = gDevice.selectChannel(TCA9548A::Channel::CH0);
+      reportCheck(counts, "hardReset seed write", status.ok(),
+                  errorName(status.code));
+      if (!status.ok()) {
+        finishHilRestored(counts, originalMask);
+        return;
+      }
+      status = gDevice.readChannelMask(observed);
+      const bool seedVerified = status.ok() && observed.raw() == 0x01U;
+      reportCheck(counts, "hardReset seed readback", seedVerified,
+                  errorName(status.code));
+      if (!seedVerified) {
+        finishHilRestored(counts, originalMask);
+        return;
+      }
       status = gDevice.hardReset();
       const bool resetOk = status.ok();
       reportCheck(counts, "hardReset exact-zero verification", resetOk,
@@ -674,6 +687,7 @@ void runStress(uint32_t count, bool mixed) {
   const uint32_t failuresBefore = gDevice.totalFailures();
   const uint32_t startedMs = nowMs(nullptr);
   uint32_t completed = 0U;
+  bool readbackMatched = true;
   for (; completed < count; ++completed) {
     if (!mixed) {
       status = gDevice.selectChannel(
@@ -691,12 +705,14 @@ void runStress(uint32_t count, bool mixed) {
         case 2U: {
           TCA9548A::ChannelMask observed;
           status = gDevice.readChannelMask(observed);
+          readbackMatched = !status.ok() ||
+              observed.raw() == static_cast<uint8_t>(completed - 1U);
           break;
         }
         default: status = gDevice.disableAll(); break;
       }
     }
-    if (!status.ok()) {
+    if (!status.ok() || !readbackMatched) {
       break;
     }
     // Each transaction already blocks in the I2C driver, so a periodic
@@ -706,6 +722,9 @@ void runStress(uint32_t count, bool mixed) {
     if ((completed % 64U) == 0U) {
       vTaskDelay(1);
     }
+  }
+  if (!readbackMatched) {
+    puts("  [FAIL] stress mask readback mismatch");
   }
   const bool safeOff = safeOffVerified();
   if (mixed) {
@@ -776,7 +795,7 @@ void processCommand(const char* command) {
              strcmp(command, "hil parser") == 0 || strcmp(command, "hil") == 0) {
     runHil(true, false);
   } else {
-    uint32_t value = 0U;
+    unsigned long value = 0U;
     if (parseUnsignedArgument(command, "select", 7U, value)) {
       printf("select %lu: ", static_cast<unsigned long>(value));
       printStatusValue(gDevice.selectChannel(
@@ -836,11 +855,15 @@ extern "C" void app_main(void) {
       printf("%s[W]%s Command discarded: destination buffer is too small\n\n",
              COLOR_YELLOW, COLOR_RESET);
       printPrompt();
+    } else if (lineResult == cli_shell::LineResult::INVALID_INPUT) {
+      printf("%s[W]%s Command discarded: invalid control byte\n\n",
+             COLOR_YELLOW, COLOR_RESET);
+      printPrompt();
     }
     // getchar() is non-blocking on the default console, so this delay is the
     // only thing that lets lower-priority tasks (including idle) run. It must
     // round to at least one tick: pdMS_TO_TICKS(1) is 0 at the ESP-IDF default
     // 100 Hz tick rate, which would starve the idle task and trip its watchdog.
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(10) > 0 ? pdMS_TO_TICKS(10) : 1);
   }
 }

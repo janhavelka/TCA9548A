@@ -43,6 +43,12 @@ control protocol and truthful local diagnostics.
 
 ## Installation
 
+The core requires a C++17 compiler and application-supplied transport callbacks.
+It works with bare-metal code or an RTOS and has no framework or MCU dependency.
+Package metadata permits any framework/platform; the maintained firmware
+examples and target build coverage are Arduino and native ESP-IDF on
+ESP32-S2/S3. Other targets require a suitable adapter and hardware validation.
+
 The latest release is [v1.1.0](https://github.com/janhavelka/TCA9548A/releases/tag/v1.1.0).
 It adds native ESP-IDF support and enum-name helpers while retaining the 1.x
 API. See the [changelog](CHANGELOG.md#110---2026-09-07) for the release changes.
@@ -63,9 +69,23 @@ lib_deps =
   https://github.com/janhavelka/TCA9548A.git#<peeled-40-character-commit-sha>
 ```
 
-For manual installation, copy `include/TCA9548A/` and `src/` into the
-project. For ESP-IDF, the repository root is a component (`CMakeLists.txt`
-and `idf_component.yml`); see `examples/espidf_basic/`.
+For a CMake project, vendor the repository and link its target, which supplies
+the public include directory and C++17 requirement:
+
+```cmake
+add_subdirectory(external/TCA9548A)
+target_link_libraries(your_application PRIVATE TCA9548A::TCA9548A)
+```
+
+For a manual build, compile `src/TCA9548A.cpp` with C++17 and add `include/`
+to your include search path. PlatformIO users must also select C++17 or later
+if their framework defaults to an older standard. Example adapters under
+`examples/common/` are application code and are not compiled into the library.
+
+For ESP-IDF, the repository root is also a component (`CMakeLists.txt`
+and `idf_component.yml`); see `examples/espidf_basic/`. The manifest's SDK
+version range applies to that component integration, not to the standalone core.
+The CMake/wildcard packaging changes are currently unreleased.
 
 ## Quick Start
 
@@ -155,6 +175,13 @@ safe empty mask for such a cast.
 - `i2cWriteRead` receives `txData == nullptr`, `txLen == 0`, and `rxLen == 1`
   for one read-only control-byte transaction. Success also includes STOP.
 
+The default transfer timeout is **20 ms**, shared by both firmware examples.
+It is an upper budget, not a delay. Applications may override it within
+1..60000 ms. An owner with an operation deadline must further shorten each
+attempt to the remaining budget and refuse expired work before I/O. See the
+[owner integration recipe](docs/PORTING.md#integrating-a-bounded-bus-owner)
+for staged initialization, result mapping, and cleanup after expiry.
+
 Both callbacks must return within `timeoutMs`, perform one physical attempt,
 and map the platform result to the narrow transport type:
 
@@ -175,8 +202,9 @@ to device absence. Callback contexts are borrowed and must remain valid until
 `end()`.
 
 Error fidelity is limited by the backend. The example `Wire` adapter can map
-the documented `endTransmission()` write results, but `requestFrom()` exposes
-only a received-byte count. Zero or short reads are therefore reported as
+distinct `endTransmission()` timeout/data-NACK results, but ESP32's generic
+NACK result `2` has no phase information and maps to `OTHER` with detail `2`.
+`requestFrom()` exposes only a received-byte count. Zero or short reads are reported as
 `OTHER`, not guessed to be NACK, timeout, or bus errors. Production backends
 such as ESP-IDF should preserve the more precise cause when it is available.
 
@@ -217,7 +245,7 @@ The core emits these result classes:
 
 `DEVICE_NOT_FOUND` and `IN_PROGRESS` remain append-only compatibility values;
 the synchronous core does not synthesize them. Device absence is reported as
-the exact transport failure, normally `I2C_NACK_ADDR`.
+the exact available transport failure; Wire may expose only `I2C_ERROR`.
 The RESET callback may return only `OK`, `TIMEOUT`, or `RESET_ERROR`; valid
 failures preserve the callback detail and static message. Any other code
 violates the callback contract and is returned as `INVALID_CONFIG`, with the
@@ -257,6 +285,11 @@ There is no delay, retry, or previous-mask restore. Success requires exactly
 `0x00`. A different observed byte returns `RESET_STATE_MISMATCH` with the byte
 in `Status::detail`. A missing callback returns `UNSUPPORTED`.
 
+With default settings, the two callback budgets sum to 30 ms (10 ms RESET plus
+20 ms read). Treat this as explicit maintenance. An owner requiring at most
+one 20 ms step can pulse RESET itself after invalidating the mask observation,
+then perform a separate tracked read on a later step and require exact zero.
+
 The callback must complete the active-low RESET pulse within its supplied
 timeout. GPIO ownership and electrical safety remain application concerns.
 
@@ -265,10 +298,11 @@ timeout. GPIO ownership and electrical safety remain application concerns.
 The TCA9548A has no conversion, measurement, nonvolatile programming,
 calibration, interrupt, or other long-running device procedure. The library
 therefore has no job queue, progress/result identity, or cancellation API.
-External owner tasks compose route selection, downstream transfers, cleanup,
-deadlines, cancellation, and exactly-once result delivery across their own
-polls. If owner recovery, POR, or external RESET may have changed the mask,
-call `invalidateChannelMask()`.
+The application can select a route, transfer to its downstream target, and
+clean up synchronously, or stage those calls across its own scheduler polls.
+Serialize the entire routed operation, including cleanup; no task, queue, or
+polling model is required. If controller recovery, POR, or external RESET may
+have changed the mask, call `invalidateChannelMask()`.
 
 ## Mask Observation And Ambiguous Effects
 
@@ -311,6 +345,8 @@ controller recovery, RESET policy, and route reconciliation.
 - POR and RESET clear the byte to `0x00`.
 - The supported address range is `0x70` through `0x77`.
 - Standard-mode and Fast-mode are supported up to 400 kHz.
+- The controller must provide at least 4.7 us (Standard-mode) or 1.3 us
+  (Fast-mode) between STOP and the next START.
 - Enabled branches contribute pull-ups and capacitance to the active bus.
 
 See [Hardware Notes](docs/HARDWARE_NOTES.md) and the
@@ -352,6 +388,9 @@ fails that case. The run also exits nonzero if required cases are `NOT_RUN`.
 `--allow-not-run` accepts an explicitly missing fixture; FAIL and UNKNOWN
 remain failures. `--dry-run` validates only the plan. The runner writes
 a report or transcript only when `--report` or `--transcript` is supplied.
+The [fixture procedure](docs/VALIDATION_STATUS.md#live-hil-procedure) covers
+route isolation (`--route CH:ADDR`), the optional all-256-mask sweep,
+stress/soak limits, and hardware measurements still required.
 
 ## Example
 
@@ -370,23 +409,35 @@ build to select another compatible Arduino serial object.
 
 The example-only `CliLineBuffer` accepts commands only after CR or LF, trims
 outer spaces/tabs, accepts at most 127 command bytes, and discards every byte
-of an overlong line through its terminator. The native CLI polls this
+of an overlong or control-byte-contaminated line through its terminator.
+Numeric arguments reject signed input, overflow, and trailing data. The native CLI polls this
 accumulator in bounded chunks because the default ESP-IDF UART VFS may be
 nonblocking; it does not use `fgets()` to dispatch whatever partial bytes happen
 to be ready.
 
 `scan`, `stress`, and `stress_mix` are explicit maintenance diagnostics: they
-are finite, block command processing until complete, and always finish stress
-at verified all-off. Scan first reports the observed active mask, then makes
-exactly 126 probes; use `select N` before `scan` to isolate one downstream
-branch. Live self-test captures its entry mask, checks all eight one-hot
-selections, and restores that mask with readback on every terminal path after
-capture. Stress makes at most the requested 1,000 operations plus one safe-off
-write and one verification read; with the default 50 ms timeout its transport
-bound is 50.1 seconds. The Arduino example yields after each stress
+are finite, block command processing until complete, and require a final
+all-off write/readback for stress success. Scan first reports the observed active mask, then makes
+exactly 112 probes; use `select N` before `scan` to isolate one downstream
+branch. Scans exclude reserved addresses, stop if topology cannot be read,
+and report controller errors separately from address NACKs. Live self-test captures its entry mask, checks all eight one-hot
+selections, and attempts to restore that mask with readback on every terminal
+path after capture. Failed cleanup is reported; controller faults can prevent
+it and leave channels connected until external RESET or power handling.
+Stress makes at most the requested 1,000 operations plus one safe-off
+write and one verification read; with the default 20 ms timeout the sum of
+configured transfer budgets is 20.04 seconds, plus SDK scheduling and console
+overhead. The Arduino example yields after each stress
 transaction; the native one relies on each transaction blocking in the I2C
 driver and additionally sleeps one scheduler tick every 64 operations, so the
 idle task always runs without pacing the run.
+
+Both example owners stop controller access after a receive failure on the
+pinned SDK and show `Controller restart required: yes` in `cfg`; restart the
+MCU after correcting the fixture. This guards stale SDK receive state before
+later probes. A mux RESET or driver `end()`/`begin()` does not recreate the
+controller. The library core remains passive and never gates operations on
+health. See [adapter limitations](docs/PORTING.md#backend-fault-and-timing-limits).
 
 ## License
 

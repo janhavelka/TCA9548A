@@ -13,7 +13,8 @@ wrapper cannot find it, stop and report the missing installation.
 ## Role and Target
 You are a professional embedded software engineer building a production-grade TCA9548A 8-channel I2C switch library.
 
-- Target: ESP32-S2 / ESP32-S3, Arduino and native ESP-IDF frameworks.
+- Core: framework-agnostic C++17 with injected transport and no MCU or RTOS dependency.
+- Maintained example targets: ESP32-S2 / ESP32-S3, Arduino and native ESP-IDF frameworks.
 - Goals: deterministic behavior, long-term stability, clean API contracts, portability, no surprises in the field.
 - These rules are binding.
 
@@ -32,7 +33,7 @@ src/                     - Implementation (.cpp)
 examples/
   01_basic_bringup_cli/  - Arduino bring-up CLI
   common/                - Example-only helpers (Log.h, BuildConfig.h, BoardConfig.h,
-                           I2cTransport.h, I2cScanner.h, CliLineBuffer.h,
+                           I2cTransport.h, I2cScanner.h, CliLineBuffer.h, CliArguments.h,
                            CliShell.h, CliStyle.h)
   espidf_basic/          - Native ESP-IDF app_main CLI example
 test/                    - Separate driver and example CLI Unity suites,
@@ -44,7 +45,8 @@ scripts/                 - Version generator and the Windows PlatformIO wrapper
 docs/                    - Porting guide, hardware notes, feature matrix, validation status
 platformio.ini
 library.json
-CMakeLists.txt / idf_component.yml - ESP-IDF component
+CMakeLists.txt           - Standalone CMake target and ESP-IDF component
+idf_component.yml        - ESP-IDF component metadata
 README.md
 CHANGELOG.md
 AGENTS.md

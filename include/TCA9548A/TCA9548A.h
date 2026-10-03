@@ -223,6 +223,10 @@ public:
   /// exact transport Status is returned. The owner may retry probe(),
   /// readChannelMask(), or another primitive without rebinding. Rebinding is
   /// rejected with BUSY until end() is called.
+  /// Owners requiring a bus-silent setup phase must store Config first and
+  /// defer this call until their transport is ready and a read is permitted.
+  /// After a failed presence read, use a tracked readChannelMask() to retry
+  /// initialization; probe() remains diagnostic and cannot make state READY.
   /// @param config Valid callback, timeout, address, and health configuration.
   /// @return Presence-read result, or a validation/lifecycle error without I2C.
   Status begin(const Config& config);

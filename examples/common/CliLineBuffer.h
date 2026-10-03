@@ -17,7 +17,8 @@ enum class LineResult : uint8_t {
   NONE,              ///< No complete line is available yet
   READY,             ///< A trimmed command was copied to the caller buffer
   TOO_LONG,          ///< The complete overlong line was discarded
-  OUTPUT_TOO_SMALL   ///< The destination cannot hold the complete command
+  OUTPUT_TOO_SMALL,  ///< The destination cannot hold the complete command
+  INVALID_INPUT     ///< An embedded control byte invalidated the complete line
 };
 
 /// Fixed-capacity CR/LF command accumulator shared by both example CLIs.
@@ -30,18 +31,24 @@ public:
   ///
   /// Empty and whitespace-only lines produce NONE. Once an overlong line is
   /// detected, every remaining byte is discarded through the next CR or LF so
-  /// no partial command can be dispatched.
+  /// no partial command can be dispatched. Embedded control bytes other than
+  /// tab also discard the complete line, preventing a NUL-truncated command.
   /// @param value Received byte.
   /// @param output Destination for a completed, trimmed command.
   /// @param outputCapacity Destination capacity including its null byte.
   /// @return Current line result.
   LineResult push(char value, char* output, size_t outputCapacity) {
     if (value != '\r' && value != '\n') {
-      if (_discarding) {
+      if (_discardReason != LineResult::NONE) {
+        return LineResult::NONE;
+      }
+      if (static_cast<unsigned char>(value) < 0x20U && value != '\t') {
+        _discardReason = LineResult::INVALID_INPUT;
+        _length = 0U;
         return LineResult::NONE;
       }
       if (_length >= CAPACITY - 1U) {
-        _discarding = true;
+        _discardReason = LineResult::TOO_LONG;
         _length = 0U;
         return LineResult::NONE;
       }
@@ -49,9 +56,10 @@ public:
       return LineResult::NONE;
     }
 
-    if (_discarding) {
+    if (_discardReason != LineResult::NONE) {
+      const LineResult result = _discardReason;
       reset();
-      return LineResult::TOO_LONG;
+      return result;
     }
     if (_length == 0U) {
       return LineResult::NONE;
@@ -88,13 +96,13 @@ public:
   /// Discard any partial input and return to the empty state.
   void reset() {
     _length = 0U;
-    _discarding = false;
+    _discardReason = LineResult::NONE;
   }
 
 private:
   char _buffer[CAPACITY]{};
   size_t _length = 0U;
-  bool _discarding = false;
+  LineResult _discardReason = LineResult::NONE;
 };
 
 }  // namespace cli_shell

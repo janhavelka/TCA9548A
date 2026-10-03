@@ -91,8 +91,11 @@ def main() -> int:
         errors.append("idf_component.yml lacks a quoted version")
     elif version_match.group(1) != metadata.get("version"):
         errors.append("idf_component.yml version differs from library.json")
-    if "espidf" not in metadata.get("frameworks", []):
-        errors.append("library.json does not advertise the ESP-IDF framework")
+    for field in ("frameworks", "platforms"):
+        if metadata.get(field) != "*":
+            errors.append(f"library.json restricts framework-neutral core {field}")
+    if re.search(r"^targets:", manifest, re.MULTILINE):
+        errors.append("idf_component.yml restricts the framework-neutral core to specific chips")
 
     for pattern in FORBIDDEN_PATTERNS:
         if re.search(pattern, main_cpp):

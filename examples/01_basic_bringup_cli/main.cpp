@@ -4,9 +4,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 
-#include <cerrno>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 
 #include "examples/common/BoardConfig.h"
@@ -15,6 +13,7 @@
 #include "examples/common/I2cScanner.h"
 #include "examples/common/I2cTransport.h"
 #include "examples/common/Log.h"
+#include "examples/common/CliArguments.h"
 #include "TCA9548A/TCA9548A.h"
 #include "TCA9548A/Version.h"
 
@@ -23,9 +22,15 @@ namespace {
 TCA9548A::TCA9548A device;
 TCA9548A::Config config;
 bool i2cReady = false;
+struct ArduinoBus {
+  TwoWire* wire = &Wire;
+  bool receiveFaulted = false;
+};
+ArduinoBus bus;
 constexpr unsigned long MAX_STRESS_COUNT = 1000UL;
 
 bool safeOffVerified();
+using cli_shell::parseUnsignedArgument;
 using TCA9548A::errorName;
 using TCA9548A::driverStateName;
 using TCA9548A::maskProvenanceName;
@@ -120,6 +125,10 @@ void printConfig() {
   LOG_SERIAL.printf("  Bound: %s\n", snapshot.bound ? "yes" : "no");
   LOG_SERIAL.printf("  Initialized: %s\n", snapshot.initialized ? "yes" : "no");
   LOG_SERIAL.printf("  I2C address: 0x%02X\n", snapshot.i2cAddress);
+  LOG_SERIAL.printf("  I2C frequency: %lu Hz\n",
+                    static_cast<unsigned long>(board::I2C_FREQ_HZ));
+  LOG_SERIAL.printf("  Controller restart required: %s\n",
+                    bus.receiveFaulted ? "yes" : "no");
   LOG_SERIAL.printf("  I2C timeout: %lu ms\n",
                 static_cast<unsigned long>(snapshot.i2cTimeoutMs));
   LOG_SERIAL.printf("  RESET timeout: %lu ms\n",
@@ -151,7 +160,7 @@ void printHelp() {
   LOG_SERIAL.println(F("  reset / hardreset              RESET then verify 0x00"));
   LOG_SERIAL.println(F("  invalidate                     Mark cached mask unknown"));
   LOG_SERIAL.println(F("  begin / end                    Bind+probe / bus-silent unbind"));
-  LOG_SERIAL.println(F("  scan                           Scan active topology: 126 probes"));
+  LOG_SERIAL.println(F("  scan                           Scan active topology: 112 probes"));
   LOG_SERIAL.println(F("  stress <1-1000>                Select sample, finish all-off"));
   LOG_SERIAL.println(F("  stress_mix <1-1000>            Primitive mix, finish all-off"));
   LOG_SERIAL.println(F("  selftest                       Live checks, restore entry mask"));
@@ -179,10 +188,38 @@ TCA9548A::Status pulseReset(uint32_t timeoutMs, void*) {
   return TCA9548A::Status::Ok();
 }
 
+TCA9548A::TransportStatus ownerWrite(uint8_t address, const uint8_t* data,
+                                    size_t length, uint32_t timeoutMs,
+                                    void* user) {
+  auto& owner = *static_cast<ArduinoBus*>(user);
+  if (owner.receiveFaulted) {
+    return TCA9548A::TransportStatus::Error(TCA9548A::TransportErr::BUS, -1);
+  }
+  return transport::wireWrite(address, data, length, timeoutMs, owner.wire);
+}
+
+TCA9548A::TransportStatus ownerRead(uint8_t address, const uint8_t* txData,
+                                   size_t txLength, uint8_t* rxData,
+                                   size_t rxLength, uint32_t timeoutMs,
+                                   void* user) {
+  auto& owner = *static_cast<ArduinoBus*>(user);
+  if (owner.receiveFaulted) {
+    return TCA9548A::TransportStatus::Error(TCA9548A::TransportErr::BUS, -1);
+  }
+  const auto status = transport::wireWriteRead(address, txData, txLength,
+                                               rxData, rxLength, timeoutMs,
+                                               owner.wire);
+  // The pinned Wire backend uses the same native IDF controller. Retire this
+  // owner after a receive failure to avoid stale SDK receive state reaching
+  // a later probe. Reboot explicitly; do not retry or recreate in callbacks.
+  owner.receiveFaulted = !status.ok();
+  return status;
+}
+
 void configureDriver() {
-  config.i2cWrite = transport::wireWrite;
-  config.i2cWriteRead = transport::wireWriteRead;
-  config.i2cUser = &Wire;
+  config.i2cWrite = ownerWrite;
+  config.i2cWriteRead = ownerRead;
+  config.i2cUser = &bus;
   config.nowMs = nowMs;
   config.i2cAddress = TCA9548A::cmd::DEFAULT_ADDRESS;
   config.i2cTimeoutMs = board::I2C_TIMEOUT_MS;
@@ -219,29 +256,6 @@ void beginDriver() {
                   LOG_COLOR_RESET);
   }
 }
-
-bool parseUnsignedArgument(const char* command, const char* prefix,
-                           unsigned long maximum, unsigned long& output) {
-  const size_t prefixLength = std::strlen(prefix);
-  if (std::strncmp(command, prefix, prefixLength) != 0 ||
-      command[prefixLength] != ' ') {
-    return false;
-  }
-
-  const char* text = command + prefixLength + 1U;
-  if (*text == '\0') {
-    return false;
-  }
-  errno = 0;
-  char* end = nullptr;
-  const unsigned long value = std::strtoul(text, &end, 0);
-  if (errno == ERANGE || end == text || *end != '\0' || value > maximum) {
-    return false;
-  }
-  output = value;
-  return true;
-}
-
 bool safeOffVerified() {
   auto status = device.disableAll();
   if (!status.ok()) {
@@ -267,7 +281,7 @@ bool safeOffVerified() {
 }
 
 void scanBus() {
-  if (!i2cReady) {
+  if (!i2cReady || bus.receiveFaulted) {
     LOG_SERIAL.println(F("scan: NOT_INITIALIZED (I2C controller unavailable)"));
     return;
   }
@@ -283,6 +297,10 @@ void scanBus() {
     LOG_SERIAL.print(F(" active_mask=unknown"));
   }
   LOG_SERIAL.println(F(" (select a one-hot mask before scan to isolate a branch)"));
+  if (!topologyStatus.ok()) {
+    LOG_SERIAL.println(F("scan: I2C_ERROR (topology unavailable)"));
+    return;
+  }
   (void)i2c::scan();
 }
 
@@ -483,7 +501,23 @@ void runHil(bool dryRun, bool includeReset) {
     if (config.hardReset == nullptr) {
       reportCheck(counts, "hardReset", false, "callback not configured");
     } else {
-      status = device.hardReset();
+      // Start from verified nonzero state so an unwired RESET cannot pass.
+        status = device.selectChannel(TCA9548A::Channel::CH0);
+        reportCheck(counts, "hardReset seed write", status.ok(),
+                    errorName(status.code));
+        if (!status.ok()) {
+          finishHilRestored(counts, originalMask);
+          return;
+        }
+        status = device.readChannelMask(observed);
+        const bool seedVerified = status.ok() && observed.raw() == 0x01U;
+        reportCheck(counts, "hardReset seed readback", seedVerified,
+                    errorName(status.code));
+        if (!seedVerified) {
+          finishHilRestored(counts, originalMask);
+          return;
+        }
+        status = device.hardReset();
       const bool resetOk = status.ok();
       reportCheck(counts, "hardReset exact-zero verification", resetOk,
                   errorName(status.code));
@@ -510,6 +544,7 @@ void runStress(unsigned long count, bool mixed) {
   const uint32_t startedMs = millis();
   unsigned long completed = 0;
 
+  bool readbackMatched = true;
   for (; completed < count; ++completed) {
     if (!mixed) {
       status = device.selectChannel(
@@ -527,17 +562,22 @@ void runStress(unsigned long count, bool mixed) {
         case 2: {
           TCA9548A::ChannelMask observed;
           status = device.readChannelMask(observed);
+          readbackMatched = !status.ok() ||
+              observed.raw() == static_cast<uint8_t>(completed - 1U);
           break;
         }
         default: status = device.disableAll(); break;
       }
     }
-    if (!status.ok()) {
+    if (!status.ok() || !readbackMatched) {
       break;
     }
     yield();
   }
 
+  if (!readbackMatched) {
+    LOG_SERIAL.println(F("  [FAIL] stress mask readback mismatch"));
+  }
   const bool safeOff = safeOffVerified();
   const uint32_t durationMs = millis() - startedMs;
   if (mixed) {
@@ -686,7 +726,8 @@ void loop() {
     LOG_SERIAL.println();
     cli::printPrompt();
   } else if (lineResult == cli_shell::LineResult::TOO_LONG ||
-             lineResult == cli_shell::LineResult::OUTPUT_TOO_SMALL) {
+             lineResult == cli_shell::LineResult::OUTPUT_TOO_SMALL ||
+             lineResult == cli_shell::LineResult::INVALID_INPUT) {
     LOG_SERIAL.println();
     cli::printPrompt();
   }

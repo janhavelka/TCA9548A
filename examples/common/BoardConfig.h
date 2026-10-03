@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 
+#include "TCA9548A/Config.h"
 #include "examples/common/I2cTransport.h"
 
 namespace board {
@@ -32,7 +33,7 @@ static constexpr int I2C_SCL = 9;
 static constexpr uint32_t I2C_FREQ_HZ = 400000;
 
 /// @brief I2C timeout in milliseconds for example transactions.
-static constexpr uint16_t I2C_TIMEOUT_MS = 50;
+static constexpr uint32_t I2C_TIMEOUT_MS = TCA9548A::Config{}.i2cTimeoutMs;
 
 /// @brief Optional active-low TCA9548A RESET pin. Set to -1 when unwired.
 static constexpr int TCA_RESET = -1;

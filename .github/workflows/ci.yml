@@ -63,10 +63,16 @@ jobs:
         run: python tools/check_repository_hygiene.py
 
       - name: Run native tests
-        run: python -m platformio test -e native -e native_cli
+        run: python -m platformio test -e native -e native_cli -e native_transport
 
       - name: Build framework-neutral core
         run: python -m platformio run -e native_core_no_arduino
+
+      - name: Build and run standalone CMake consumer
+        run: |
+          cmake -S test/core_no_arduino -B "${RUNNER_TEMP}/tca9548a-cmake"
+          cmake --build "${RUNNER_TEMP}/tca9548a-cmake"
+          cmake -E chdir "${RUNNER_TEMP}/tca9548a-cmake" ctest --output-on-failure
 
       - name: Enforce strict host warnings
         run: |
@@ -77,7 +83,9 @@ jobs:
           "${RUNNER_TEMP}/tca9548a-core"
 
       - name: Run HIL parser contract tests
-        run: python tools/tca9548a_hil.py --parser-self-test
+        run: |
+          python tools/tca9548a_hil.py --parser-self-test
+          python tools/test_tca9548a_hil.py
 
       - name: Build Doxygen documentation
         run: doxygen Doxyfile
