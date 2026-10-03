@@ -10,6 +10,7 @@ ALLOW_UNICODE_NAMES    = NO
 OUTPUT_LANGUAGE        = English
 
 MARKDOWN_SUPPORT       = YES
+MARKDOWN_ID_STYLE      = GITHUB
 TOC_INCLUDE_HEADINGS   = 3
 AUTOLINK_SUPPORT       = YES
 BUILTIN_STL_SUPPORT    = YES
@@ -41,14 +42,17 @@ INPUT                  = README.md \
                          docs/FEATURE_MATRIX.md \
                          docs/HARDWARE_NOTES.md \
                          docs/PORTING.md \
-                         docs/VALIDATION_STATUS.md
+                         docs/VALIDATION_STATUS.md \
+                         examples/espidf_basic/README.md
 FILE_PATTERNS          = *.h *.md *
 EXTENSION_MAPPING      = no_extension=md
 RECURSIVE              = YES
 EXCLUDE_PATTERNS       = */.doxygen/* */.pio/* */.git/* */test/*
 EXAMPLE_PATH           = examples/01_basic_bringup_cli
 
-USE_MDFILE_AS_MAINPAGE = README.md
+USE_MDFILE_AS_MAINPAGE = ./README.md
+# Keep the native example README as a linkable page, not directory metadata.
+IMPLICIT_DIR_DOCS      = NO
 FULL_PATH_NAMES        = NO
 SORT_MEMBER_DOCS       = YES
 SORT_BRIEF_DOCS        = YES

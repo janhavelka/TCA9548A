@@ -83,27 +83,39 @@ implementation or electrical timing.
 Configured CI additionally compiles the core with strict C++17 warnings and no Arduino
 include paths, links/runs a standalone CMake consumer using only the exported
 target's include path and C++17 requirement, builds the Arduino example for ESP32-S2/S3, builds the native
-ESP-IDF example for both targets, runs the CLI, ESP-IDF, and hygiene checkers
+ESP-IDF example for both targets on SDK versions 5.4.4 and 5.5.5, runs the CLI, ESP-IDF, and hygiene checkers
 plus the HIL parser self-test, and builds the Doxygen documentation with
-warnings as errors. The commands are listed in
+warnings as errors. The package checker verifies exported file contents against
+the checkout, rejects unexpected files, and builds and runs an isolated native
+consumer of the archive. Each CI job checks for tracked and untracked changes
+after validation. The commands are listed in
 [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 `tools/test_tca9548a_hil.py` adds host regression tests for strict result parsing,
 serial prompt/deadline handling, route isolation, mask sweep, cleanup, and
-argument rejection. Configuration checks require exactly one valid reported
+argument rejection. It also covers oversized numeric fields, extracting masks
+and addresses only from validated records, transcript failures, and reporting
+route checks that never ran. Configuration checks require exactly one valid reported
 I2C timeout and record that setting in the result notes; this is not a timing
 measurement. These use scripted responses and are not hardware evidence.
 
 Local validation on 2026-10-03 passed 47 driver, 3 CLI, and 7 Wire-adapter
-native tests, 37 Python HIL host regressions, parser checks, the framework-neutral
+native tests, 49 Python HIL host regressions, parser checks, the framework-neutral
 strict-warning build, standalone CMake library and consumer builds (including
 CTest), both Arduino ESP32-S2/S3 builds, Doxygen, repository contracts, and
-package creation/content inspection. A native PlatformIO consumer also built
+package creation and the automated archive checker. A native PlatformIO consumer also built
 and ran from the packaged archive with strict dependency compatibility, without
-an Arduino or ESP-IDF framework. The native ESP-IDF
-application builds were not run locally because `idf.py` is unavailable; their
-configured CI matrix still needs to run on these changes. No live fixture was
-accessed and no physical qualification result is implied.
+an Arduino or ESP-IDF framework. Thirteen focused package-checker cases passed,
+including source mismatches, missing files, unsafe paths, links, duplicate
+members, and an invalid work directory.
+
+[CI run 37146753916](https://github.com/janhavelka/TCA9548A/actions/runs/37146753916)
+passed host checks, both Arduino builds, and both native ESP-IDF 5.5.5 builds
+at commit `54965b51ef300f51c54ba5d8dfd99cf1f59eb5f6`. The expanded SDK matrix
+and package checker are covered by subsequent workflow runs; check the run for
+the exact commit being used. Native ESP-IDF builds were not run locally because
+`idf.py` is unavailable. No live fixture was accessed and no physical
+qualification result is implied.
 
 For the Windows Arduino builds, the installed compiler's directory
 `%USERPROFILE%\.platformio\packages\toolchain-xtensa-esp-elf\bin` had to be

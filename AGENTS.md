@@ -10,6 +10,14 @@ On Windows, use `.\scripts\pio.cmd <arguments>`; it selects the current user's
 VS Code-managed installation. Never install another PlatformIO Core; if the
 wrapper cannot find it, stop and report the missing installation.
 
+## Commit and Sync
+
+After each completed prompt or logical block, run the relevant checks, commit
+the scoped changes, and push the working branch to its upstream. Check CI for
+that commit and fix failures in follow-up commits. Preserve unrelated work and
+published history. Use simple engineering language in code comments,
+documentation, commit messages, and progress reports.
+
 ## Role and Target
 You are a professional embedded software engineer building a production-grade TCA9548A 8-channel I2C switch library.
 

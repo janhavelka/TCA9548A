@@ -15,8 +15,10 @@ this repository.
 5. Update public API comments and focused Markdown documentation in the same
    change.
 6. Add a concise entry under `[Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
-7. Run the validation below, then commit with a clear message and open a pull
-   request.
+7. After each completed prompt or logical block, run the relevant validation,
+   commit the scoped changes, and push the working branch to its upstream.
+   Check CI for that commit and fix failures in follow-up commits. Use a pull
+   request when the branch or repository workflow requires one.
 
 ## Engineering Expectations
 
@@ -52,7 +54,9 @@ this repository.
 
 ## Local Validation
 
-Run the repository checks from its root:
+Run these checks from the root of a Git checkout. The distributed library
+archive contains the core, examples, and live HIL runner; it deliberately omits
+development tests and repository checkers.
 
 On Windows, use the checked-in wrapper so these commands resolve the existing
 VS Code-managed PlatformIO installation:
@@ -75,15 +79,29 @@ python tools/tca9548a_hil.py --parser-self-test
 python tools/test_tca9548a_hil.py
 doxygen Doxyfile
 .\scripts\pio.cmd pkg pack . --output .pio\TCA9548A.tar.gz
+python tools/check_package.py .pio\TCA9548A.tar.gz
 git diff --check
 ```
 
 Linux CI invokes its separately installed, pinned Core with
 `python -m platformio`; do not copy that CI-only path into Windows workflows.
 
-With ESP-IDF 5.4 or 5.5 installed, build `examples/espidf_basic` for both
-`esp32s2` and `esp32s3`. CI performs those native-IDF builds even when a local
-ESP-IDF installation is unavailable.
+If the Windows build cannot find `xtensa-esp32s2-elf-g++` or
+`xtensa-esp32s3-elf-g++`, first check that the executable exists in the managed
+installation's `packages/toolchain-xtensa-esp-elf/bin` directory. If it does,
+add that directory to the current shell's PATH and rerun the wrapper. Do not
+install a second Core or change the system-wide PATH to work around it.
+
+With ESP-IDF 5.4 or 5.5 installed, follow the
+[native example build commands](examples/espidf_basic/README.md) for both
+`esp32s2` and `esp32s3`. CI builds both targets with pinned SDK versions 5.4.4
+and 5.5.5, even when a local ESP-IDF installation is unavailable.
+
+The package checker verifies archive contents, then builds and runs a separate
+native application from that archive with strict dependency compatibility.
+It uses the existing Windows wrapper and retains its isolated project under
+`.pio/package-check/` for inspection. No repository include paths are used by
+the consumer. A successful package command alone does not prove this.
 
 The CI workflow additionally compiles the framework-neutral core with strict
 C++17 warnings and builds a standalone CMake consumer to verify the target's

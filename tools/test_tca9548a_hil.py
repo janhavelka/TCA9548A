@@ -234,6 +234,39 @@ class EvidenceTests(unittest.TestCase):
             self.assertEqual(hil.classify(text + fault, step)[0], hil.FAIL)
         self.assertEqual(hil.classify("\x1b[32m" + text + "\x1b[0m", step)[0], hil.PASS)
 
+    def test_oversized_summary_counters_never_raise_or_pass(self):
+        oversized = "9" * 5000
+        cases = (
+            ("hil dry", hil_text(dry=True).replace("pass=3", "pass=" + oversized)),
+            ("hil dry", hil_text(dry=True).replace("skip=3", "skip=" + oversized)),
+            ("hil dry", hil_text(dry=True).replace("fail=0", "fail=" + "0" * 5000)),
+            ("scan", scan_text(0, {0x70}).replace("devices=1", "devices=" + oversized)),
+            ("scan", scan_text(0, {0x70}).replace("errors=0", "errors=" + "0" * 5000)),
+        )
+        for command, response in cases:
+            with self.subTest(command=command, suffix=response[-40:]):
+                step = next(step for step in self.plan.values() if step.command == command)
+                self.assertNotEqual(hil.classify(response, step)[0], hil.PASS)
+        stress = ("Stress results: completed=1 requested=1 status=OK safe_off=OK\n"
+                  "Health delta: success=3 failure=0\n> ")
+        for field in ("completed=1", "requested=1", "success=3"):
+            response = stress.replace(field, field.split("=")[0] + "=" + oversized)
+            self.assertNotEqual(hil.classify(response, hil.operation_step("stress 1"))[0], hil.PASS)
+
+    def test_stress_health_counter_is_uint32_and_unique(self):
+        prefix = "Stress results: completed=1 requested=1 status=OK safe_off=OK\n"
+        step = hil.operation_step("stress 1")
+        for suffix in ("Health delta: success=4294967296 failure=0\n",
+                       "Health delta: success=3 failure=0\nHealth delta: success=3 failure=0\n"):
+            self.assertEqual(hil.classify(prefix + suffix, step)[0], hil.FAIL)
+
+    def test_scan_requires_one_topology_and_extracts_only_device_records(self):
+        text = scan_text(0, {0x70})
+        self.classify("scan", text + "\nScan topology: OK active_mask=0x01\n", hil.FAIL)
+        text = "debug: Found device at 0x48\n" + text
+        self.classify("scan", text)
+        self.assertEqual(hil.scan_addresses(text, 0), {0x70})
+
 
 class SerialTests(unittest.TestCase):
     def exchange(self, chunks, *, timeout=2.0, short_write=False):
@@ -327,6 +360,29 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(runner.commands[1:-2:2], [f"mask {mask}" for mask in range(256)])
         self.assertEqual(runner.mask, 0x12)
 
+    def test_entry_mask_comes_from_validated_read_line(self):
+        runner = FixtureRunner()
+        original_command = runner.command
+
+        def command(value):
+            response = original_command(value)
+            if value == "read":
+                return hil.Response("debug mask=0x55\n" + response.text, response.elapsed_s, response.completion)
+            return response
+
+        runner.command = command
+        text, _ = hil.run_mask_checks(runner, hil.parse_args([]), lambda _: None, routing=False)
+        self.assertIn("completed=256 failures=0", text)
+        self.assertEqual(runner.mask, 0x12)
+        self.assertEqual(runner.commands[-2:], ["mask 18", "read"])
+
+    def test_malformed_route_summary_still_restores_entry_mask(self):
+        runner = FixtureRunner()
+        runner.responses["scan"] = scan_text(0, {0x70}).replace("devices=1", "devices=" + "9" * 5000)
+        text, _ = hil.run_mask_checks(runner, self.route_args(), lambda _: None, routing=True)
+        self.assertIn("[FAIL]", text)
+        self.assertEqual(runner.mask, 0x12)
+
     def test_sweep_failure_restores_and_does_not_continue(self):
         runner = FixtureRunner()
         runner.responses["mask 5"] = "mask 0x05: I2C_TIMEOUT\n> "
@@ -370,6 +426,17 @@ class FixtureTests(unittest.TestCase):
 
 
 class RunTests(unittest.TestCase):
+    def test_parser_self_test_checks_configuration_timeout(self):
+        original_classify = hil.classify
+
+        def classify(text, step, completion="prompt"):
+            if step.command == "cfg":
+                return hil.PASS, "firmware I2C timeout=20 ms"
+            return original_classify(text, step, completion)
+
+        with patch.object(hil, "classify", classify), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(hil.parser_self_test(hil.parse_args([])), 1)
+
     def test_complete_live_plan_including_optional_host_checks(self):
         clock = Clock()
         runner = FixtureRunner(clock=clock)
@@ -429,6 +496,91 @@ class RunTests(unittest.TestCase):
             self.assertEqual(runner.commands, ["version", "help"])
             self.assertEqual(transcript, path)
             self.assertIn("unexpected command", path.read_text(encoding="utf-8"))
+
+    def test_live_oversized_summary_stops_and_remains_reportable(self):
+        runner = FixtureRunner()
+        runner.responses.update({"version": "=== Version Info ===\nLibrary: test\n> ",
+                                 "help": "=== TCA9548A CLI Help ===\nhil [dry|parser|run|run reset]\n> ",
+                                 "cfg": "=== Configuration ===\nI2C address: 0x70\nI2C timeout: 20 ms\n> ",
+                                 "scan": scan_text(0, {0x70}).replace("devices=1", "devices=" + "9" * 5000)})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.md"
+            args = hil.parse_args(["--report", str(path), "--command-delay-s", "0"])
+            with patch.object(hil, "SerialRunner", return_value=runner):
+                results, _ = hil.run_live(args)
+            self.assertEqual(results[4].status, hil.UNKNOWN)
+            self.assertTrue(all(result.status == hil.NOT_RUN for result in results[5:]))
+            with patch.object(hil, "git_text", return_value="host"), patch.object(hil, "tool_text", return_value="tool"):
+                hil.write_report(path, args, results, None)
+            self.assertIn("UNKNOWN", path.read_text(encoding="utf-8"))
+
+    def test_transcript_write_error_preserves_attempted_step_result(self):
+        class BrokenTranscript(io.StringIO):
+            writes = 0
+
+            def write(self, text):
+                self.writes += 1
+                if self.writes > 1:
+                    raise OSError("disk full")
+                return super().write(text)
+
+        runner = FixtureRunner()
+        runner.responses["version"] = "=== Version Info ===\nLibrary: test\n> "
+        stream = BrokenTranscript()
+        args = hil.parse_args(["--transcript", "transcript.txt"])
+        with patch.object(hil.Path, "open", return_value=stream), patch.object(hil, "SerialRunner", return_value=runner):
+            results, _ = hil.run_live(args)
+        self.assertEqual(results[0].status, hil.UNKNOWN)
+        self.assertIn("transcript write failed", results[0].notes)
+        self.assertTrue(all(result.status == hil.NOT_RUN for result in results[1:]))
+        self.assertTrue(stream.closed)
+
+    def test_transcript_close_error_does_not_escape_result_reporting(self):
+        class BrokenClose(io.StringIO):
+            def close(self):
+                super().close()
+                raise OSError("flush failed")
+
+        runner = FixtureRunner()
+        stream = BrokenClose()
+        args = hil.parse_args(["--transcript", "transcript.txt"])
+        with patch.object(hil.Path, "open", return_value=stream), patch.object(hil, "SerialRunner", return_value=runner):
+            results, _ = hil.run_live(args)
+        self.assertEqual(results[0].status, hil.UNKNOWN)
+        self.assertIn("transcript close failed", results[0].notes)
+
+    def test_transcript_write_error_still_verifies_entry_mask_restore(self):
+        class BrokenTranscript(io.StringIO):
+            writes = 0
+
+            def write(self, text):
+                self.writes += 1
+                if self.writes > 2:
+                    raise OSError("disk full during mask write")
+                return super().write(text)
+
+        runner = FixtureRunner()
+        stream = BrokenTranscript()
+        args = hil.parse_args(["--transcript", "transcript.txt", "--sweep-masks"])
+        step = next(step for step in hil.build_plan(args) if step.command == "<host all-256 mask sweep>")
+        with patch.object(hil.Path, "open", return_value=stream), \
+                patch.object(hil, "build_plan", return_value=[step]), \
+                patch.object(hil, "SerialRunner", return_value=runner):
+            results, _ = hil.run_live(args)
+        self.assertEqual(results[0].status, hil.FAIL)
+        self.assertIn("transcript write failed", results[0].notes)
+        self.assertEqual(runner.commands, ["read", "mask 0", "mask 18", "read"])
+        self.assertEqual(runner.mask, 0x12)
+
+    def test_transcript_open_failure_prevents_serial_session(self):
+        args = hil.parse_args(["--transcript", "transcript.txt"])
+        with patch.object(hil.Path, "open", side_effect=OSError("cannot create transcript")), \
+                patch.object(hil, "SerialRunner") as serial_runner:
+            results, transcript = hil.run_live(args)
+        serial_runner.assert_not_called()
+        self.assertIsNone(transcript)
+        self.assertTrue(all(result.status == hil.NOT_RUN for result in results))
+        self.assertIn("transcript unavailable", results[0].notes)
 
     def test_soak_rejects_nonempty_garbage_and_cleans_up(self):
         clock = Clock()
@@ -527,6 +679,19 @@ class RunTests(unittest.TestCase):
             self.assertIn("serial port was not opened", report)
             self.assertIn("No live timing samples", report)
             self.assertIn("not established by this run", report)
+
+    def test_report_does_not_claim_unexecuted_route_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.md"
+            args = hil.parse_args(["--route", "0:0x48"])
+            plan = hil.build_plan(args)
+            results = [hil.Result(plan[0], hil.FAIL, "version failed")]
+            hil.append_not_run_results(results, plan, "stopped before routing")
+            with patch.object(hil, "git_text", return_value="host"), patch.object(hil, "tool_text", return_value="tool"):
+                hil.write_report(path, args, results, None)
+            report = path.read_text(encoding="utf-8")
+            self.assertIn("Declared routing fixture result: NOT_RUN", report)
+            self.assertNotIn("fixtures were checked", report)
 
     def test_live_unavailable_and_not_run_exit_semantics(self):
         args = hil.parse_args([])

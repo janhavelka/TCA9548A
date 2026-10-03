@@ -1,13 +1,15 @@
 # TCA9548A Feature Matrix
 
 Datasheet behavior (TI SCPS207H, Rev. H) mapped to the core API, the CLI
-command in both examples, and the native test coverage.
+command in both examples, and its verification method. Host tests and source
+checks establish software contracts; live fixture checks and electrical
+measurements remain separate requirements.
 `examples/01_basic_bringup_cli` (Arduino) and `examples/espidf_basic` (native
 ESP-IDF) share one command set. Electrical constraints have no software API
 and are covered in [HARDWARE_NOTES.md](HARDWARE_NOTES.md); the owner
 integration pattern is in [PORTING.md](PORTING.md).
 
-| Datasheet behavior | Core API | CLI command | Native test coverage |
+| Datasheet behavior | Core API | CLI command | Verification |
 | --- | --- | --- | --- |
 | Strap address `0x70` through `0x77` | `Config::i2cAddress`, `cmd::isValidAddress()`, `cmd::addressFromPins()` | `cfg`; `scan` lists responding addresses | every valid address and both invalid boundaries |
 | One control-byte read, no register-address phase | `begin()`, `readChannelMask()`, raw `probe()` | `begin`, `read`/`dump`, `probe` | null transmit pointer, zero transmit length, one receive byte |
@@ -23,7 +25,7 @@ integration pattern is in [PORTING.md](PORTING.md).
 | No identity register | `probe()` is a raw control-byte read without health effects | `probe` | observation updated, health unchanged |
 | Downstream visibility follows the mask | owner composes mask selection and downstream transfers | `scan` prints the active mask, then 112 non-reserved probes; reports bus errors | optional host `--route CH:ADDR` verifies all-off isolation and all eight branches |
 | Mask truth after success, failure, or external action | `ChannelMaskObservation` with `UNKNOWN`, `WRITE_COMPLETED`, `READBACK_OBSERVED` | `health`, `probe`, `read`, `invalidate`, `cfg` | successful, ambiguous, probe, RESET, and explicit-invalidation paths |
-| Passive transport health | `DriverState`, timestamps, last error, saturating counters | `health`/`drv`/`state` | READY/DEGRADED/OFFLINE recovery, failed begin, saturation, timestamp wrap |
+| Passive transport health | `DriverState`, timestamps, last error, saturating counters | `health`/`drv`/`state` | READY/DEGRADED/OFFLINE recovery, failed begin, consecutive-counter saturation, lifetime-counter retention, timestamp wrap; lifetime-counter saturation is code-reviewed |
 | Bounded diagnostics | core primitives stay one callback each; the examples own their loops | `selftest`, `stress`, `stress_mix` (cap 1000, verify cleanup or report failure) | CLI contract checker |
 | Application-owned transfer budget (not a chip register) | `Config::i2cTimeoutMs` defaults to 20 ms; callbacks may shorten it | `cfg`; HIL records the reported timeout | all I2C primitives, owner cap/64-bit deadline clipping, expiry and late completion, separate cleanup budget |
 
@@ -32,5 +34,6 @@ Primary source: [TI TCA9548A datasheet SCPS207H](https://www.ti.com/lit/ds/symli
 The existing core already exposes every programmable chip feature; no extra
 register or mode is needed. Electrical translation, loading, POR, and hot
 insertion are board properties, not missing driver APIs. The host runner's
-optional `--sweep-masks` adds live readback of all 256 masks; the RESET test
-now starts from verified nonzero state. See [validation and fixture requirements](VALIDATION_STATUS.md).
+optional `--sweep-masks` checks live readback of all 256 masks; the RESET test
+starts from verified nonzero state. These are runner capabilities, not completed
+hardware results. See [validation and fixture requirements](VALIDATION_STATUS.md).

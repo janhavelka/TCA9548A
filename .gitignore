@@ -7,3 +7,10 @@ docs/doxygen/
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+
+# Native ESP-IDF example outputs; keep sdkconfig.defaults tracked.
+/examples/espidf_basic/build/
+/examples/espidf_basic/managed_components/
+/examples/espidf_basic/dependencies.lock
+/examples/espidf_basic/sdkconfig
+/examples/espidf_basic/sdkconfig.old

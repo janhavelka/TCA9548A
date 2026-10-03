@@ -25,6 +25,9 @@ Entries describe changes relative to the previous release.
 - Owner-adapter regressions for deferred initialization, 64-bit deadlines,
   per-call caps, late transfers, and separately budgeted cleanup; a concrete
   integration recipe keeps routing policy in the application.
+- Package validation now checks archive contents and builds/runs an isolated
+  native consumer with strict dependency compatibility. CI also tests native
+  ESP-IDF 5.4.4 and 5.5.5 on both ESP32 targets and checks for unexpected files.
 
 ### Changed
 
@@ -33,6 +36,9 @@ Entries describe changes relative to the previous release.
   from 1 to 60000 ms; the RESET callback default remains 10 ms.
 - HIL configuration checks require and record the firmware's reported I2C
   timeout. Host serial-command deadlines remain separate from transfer budgets.
+- Doxygen includes the native example guide and uses GitHub-style heading
+  links. Contributor instructions separate checkout-only checks from the
+  files available in a distributed library archive.
 
 ### Fixed
 
@@ -42,6 +48,10 @@ Entries describe changes relative to the previous release.
 - HIL result parsing requires complete prompt-framed responses, consistent
   counts, explicit success, READY health, and verified cleanup. Serial storage
   and waits are bounded; optional transcripts stream to disk.
+- Oversized HIL counters fail validation without crashing the runner. Saved
+  masks, scan results, and health counts come from their exact response records.
+  Transcript errors remain visible in the report and do not prevent bounded
+  cleanup while the serial connection remains usable.
 - Scans exclude reserved addresses and distinguish bus faults from absent
   targets; failed topology reads abort probing. CLI argument parsing rejects
   signed wraparound and overflow, and control bytes discard the whole line.
@@ -55,6 +65,8 @@ Entries describe changes relative to the previous release.
 - Remove previously tracked Doxygen output and ignore its legacy
   `docs/doxygen/` location, keeping generated files out of source control and
   preserving the existing repository-hygiene gate.
+- Keep native ESP-IDF build output out of source control and library packages;
+  include the Windows PlatformIO wrapper with packaged examples.
 
 ## [1.1.0] - 2026-09-07
 

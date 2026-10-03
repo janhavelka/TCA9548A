@@ -56,11 +56,15 @@
       "idf_component.yml",
       "examples/01_basic_bringup_cli/main.cpp",
       "examples/common/*.h",
-      "examples/espidf_basic/**",
+      "examples/espidf_basic/CMakeLists.txt",
+      "examples/espidf_basic/README.md",
+      "examples/espidf_basic/main/CMakeLists.txt",
+      "examples/espidf_basic/main/main.cpp",
       "include/TCA9548A/*.h",
       "library.json",
       "platformio.ini",
       "scripts/generate_version.py",
+      "scripts/pio.cmd",
       "src/*.cpp",
       "tools/tca9548a_hil.py"
     ]

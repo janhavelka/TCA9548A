@@ -39,14 +39,16 @@ also enforce the bus-free interval from STOP to the next START: at least
 applies to immediate successive calls and downstream transfers after a mask
 write. The core does not delay or configure controller timing.
 
-Each callback must make one physical attempt, finish within `timeoutMs`, and
-return `OK` or a failure: `NACK_ADDR`, `NACK_DATA`, `TIMEOUT`, `BUS`, or `OTHER`,
-without retrying or collapsing the cause. The driver maps that narrow result to public `Status`.
+Each callback may make at most one physical attempt, must finish within
+`timeoutMs`, and return `OK` or a failure: `NACK_ADDR`, `NACK_DATA`, `TIMEOUT`,
+`BUS`, or `OTHER`, without retrying or collapsing the cause. The driver maps
+that narrow result to public `Status`.
 The timeout is a callback contract, not a preemption mechanism: this synchronous
 driver cannot interrupt a backend that ignores it.
 
-`TransportStatus::detail` is an opaque signed backend diagnostic preserved in
-the mapped public `Status::detail`. Applications must branch on the typed error
+On failure, `TransportStatus::detail` is an opaque signed backend diagnostic
+preserved in the mapped public `Status::detail`. Successful callbacks produce
+`Status::Ok()` with detail zero. Applications must branch on the typed error
 code, not on `detail` or the human-readable `Status::msg`, unless a specific
 adapter separately defines stable detail values.
 
@@ -63,12 +65,12 @@ diagnostic timestamps are supported. Retain the full-width operation deadline
 in the owner, independently of this hook.
 
 `hardReset(resetTimeoutMs, resetUser)` is an optional callback that owns the
-active-low GPIO pulse. It must return only after RESET is released, the
-500 ns maximum propagation time from assertion has elapsed, and must
-honor the supplied finite timeout. Return `Err::TIMEOUT` when that bound expires
+active-low GPIO pulse. Assert RESET low for at least 6 ns, release it, and wait
+until the 500 ns maximum propagation time from assertion has elapsed, all within
+the supplied finite timeout. Return `Err::TIMEOUT` when that bound expires
 and `Err::RESET_ERROR` for another GPIO/reset failure. `hardReset()` invokes it
-once, then performs one exact-zero verification read. The library never restores
-the previous mask.
+once and, only if it succeeds, performs one exact-zero verification read.
+The library never restores the previous mask.
 
 ## Owner Integration Pattern
 
@@ -225,8 +227,9 @@ If the backend cannot distinguish address NACK from data NACK, or timeout from a
 generic failure, return the narrowest truthful result it actually exposes.
 Never infer a more specific fault from elapsed time or a short byte count alone.
 
-The maintained ESP-IDF adapter maps `ESP_ERR_TIMEOUT` to `TIMEOUT` and all other
-non-OK results to `OTHER`, preserving the original `esp_err_t` in `detail`.
+For physical transfers, the maintained ESP-IDF adapter maps `ESP_ERR_TIMEOUT`
+to `TIMEOUT` and other non-OK SDK results to `OTHER`, preserving the original
+`esp_err_t` in `detail`.
 It does not infer an address or data NACK phase from these generic results.
 
 ## Arduino Adapter Shape
@@ -236,7 +239,8 @@ outside the library. Its serialized callback applies the supplied timeout to
 the bus before each attempt. `endTransmission(true)` supplies the required STOP
 and its result is mapped to `TransportStatus`. A production owner that cannot
 set a per-attempt timeout must configure its bus-level timeout no larger than
-`Config::i2cTimeoutMs`.
+`Config::i2cTimeoutMs` and the owner's cap. If the remaining operation budget
+is shorter than that fixed timeout, refuse the attempt.
 `TwoWire::requestFrom()` exposes only the received length, so this adapter maps
 zero or short reads to `OTHER`; it does not invent a read-side NACK, timeout, or
 bus cause that the API did not provide.

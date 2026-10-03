@@ -91,12 +91,18 @@ jobs:
         run: doxygen Doxyfile
 
       - name: Validate package creation
-        run: python -m platformio pkg pack . --output "${RUNNER_TEMP}/TCA9548A.tar.gz"
+        run: |
+          python -m platformio pkg pack . --output "${RUNNER_TEMP}/TCA9548A.tar.gz"
+          python tools/check_package.py "${RUNNER_TEMP}/TCA9548A.tar.gz"
 
-      - name: Check tracked generated files and whitespace
+      - name: Check clean working tree and whitespace
         run: |
           git diff --check
-          git diff --exit-code
+          status="$(git status --porcelain --untracked-files=all)"
+          if [[ -n "$status" ]]; then
+            printf '%s\n' "$status"
+            exit 1
+          fi
 
   firmware:
     name: Firmware example (${{ matrix.environment }})
@@ -130,16 +136,24 @@ jobs:
       - name: Build example
         run: python -m platformio run -e "${{ matrix.environment }}"
 
-      - name: Check tracked generated files
-        run: git diff --exit-code
+      - name: Check clean working tree
+        run: |
+          status="$(git status --porcelain --untracked-files=all)"
+          if [[ -n "$status" ]]; then
+            printf '%s\n' "$status"
+            exit 1
+          fi
 
   idf-example:
-    name: Native ESP-IDF example (${{ matrix.target }})
+    name: Native ESP-IDF example (${{ matrix.idf_version }}, ${{ matrix.target }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        idf_version:
+          - v5.4.4
+          - v5.5.5
         target:
           - esp32s2
           - esp32s3
@@ -151,6 +165,14 @@ jobs:
       - name: Build native ESP-IDF example
         uses: espressif/esp-idf-ci-action@9d38657f3d789ca759b2b37aaf5ceffbc42c4f0d # v1
         with:
-          esp_idf_version: v5.5.5
+          esp_idf_version: ${{ matrix.idf_version }}
           target: ${{ matrix.target }}
           path: examples/espidf_basic
+
+      - name: Check clean working tree
+        run: |
+          status="$(git status --porcelain --untracked-files=all)"
+          if [[ -n "$status" ]]; then
+            printf '%s\n' "$status"
+            exit 1
+          fi

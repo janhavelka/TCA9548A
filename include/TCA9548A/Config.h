@@ -105,9 +105,9 @@ using I2cWriteReadFn = TransportStatus (*)(uint8_t addr,
 /// release it, and return only after RESET is complete, including the worst-case
 /// cmd::RESET_SDA_RELEASE_MAX_NS measured from assertion. The zero recovery
 /// time after release does not remove that propagation-time requirement.
-/// The callback is invoked
-/// at most once per hardReset() call and must itself have a finite, documented
-/// execution bound; the driver performs no delay or retry. Return Err::TIMEOUT
+/// The callback is invoked at most once per hardReset() call and must itself
+/// have a finite, documented execution bound; the driver performs no delay or
+/// retry. Return Err::TIMEOUT
 /// when the bound expires and Err::RESET_ERROR for another GPIO/reset failure.
 /// Any other non-OK code violates the callback contract and hardReset() maps it
 /// to Err::INVALID_CONFIG with the original numeric Err value in Status::detail.
@@ -119,7 +119,8 @@ using I2cWriteReadFn = TransportStatus (*)(uint8_t addr,
 using HardResetFn = Status (*)(uint32_t timeoutMs, void* user);
 
 /// Optional millisecond timestamp callback used only for passive diagnostics.
-/// It must be monotonic, nonblocking, bounded, and perform no bus I/O.
+/// It must advance monotonically modulo uint32_t wrap, be nonblocking and
+/// bounded, and perform no bus I/O. It does not enforce transport deadlines.
 /// @param user User context pointer passed through from Config
 /// @return Current monotonic milliseconds
 using NowMsFn = uint32_t (*)(void* user);

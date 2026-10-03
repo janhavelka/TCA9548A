@@ -31,10 +31,10 @@ control protocol and truthful local diagnostics.
 - [Hardware notes](docs/HARDWARE_NOTES.md) - protocol, RESET, topology, and
   electrical constraints
 - [Feature matrix](docs/FEATURE_MATRIX.md) - datasheet behavior mapped to the
-  core API, CLI commands, and native test coverage
+  core API, CLI commands, and verification methods
 - Example firmware: `examples/01_basic_bringup_cli/` - bounded Arduino bring-up
   CLI and HIL firmware contract
-- Native ESP-IDF example: `examples/espidf_basic/` - the same command surface
+- [Native ESP-IDF example](examples/espidf_basic/README.md) - the same command surface
   using `app_main` and `driver/i2c_master.h`, with no Arduino facade; both CLIs
   share one framework-neutral fixed-line accumulator
 - [Validation status](docs/VALIDATION_STATUS.md) - reviewed datasheet revision,
@@ -49,8 +49,8 @@ Package metadata permits any framework/platform; the maintained firmware
 examples and target build coverage are Arduino and native ESP-IDF on
 ESP32-S2/S3. Other targets require a suitable adapter and hardware validation.
 
-The latest release is [v1.1.0](https://github.com/janhavelka/TCA9548A/releases/tag/v1.1.0).
-It adds native ESP-IDF support and enum-name helpers while retaining the 1.x
+The published [v1.1.0 release](https://github.com/janhavelka/TCA9548A/releases/tag/v1.1.0)
+adds native ESP-IDF support and enum-name helpers while retaining the 1.x
 API. See the [changelog](CHANGELOG.md#110---2026-09-07) for the release changes.
 
 For reproducible production builds, pin a reviewed full commit SHA rather than
@@ -85,7 +85,10 @@ if their framework defaults to an older standard. Example adapters under
 For ESP-IDF, the repository root is also a component (`CMakeLists.txt`
 and `idf_component.yml`); see `examples/espidf_basic/`. The manifest's SDK
 version range applies to that component integration, not to the standalone core.
-The CMake/wildcard packaging changes are currently unreleased.
+The standalone CMake target, wildcard package metadata, 20 ms default timeout,
+and audit fixes described here are currently unreleased; they are not included
+in the v1.1.0 tag. Review [Unreleased changes](CHANGELOG.md#unreleased) before
+choosing a commit.
 
 ## Quick Start
 
@@ -126,6 +129,7 @@ void useChannelZero() {
   const TCA9548A::Status selected =
       mux.selectChannel(TCA9548A::Channel::CH0);
   if (!selected.ok()) {
+    reportTransportFailure(selected);
     return;
   }
 
@@ -133,6 +137,7 @@ void useChannelZero() {
 
   const TCA9548A::Status safe = mux.disableAll();
   if (!safe.ok()) {
+    reportTransportFailure(safe);
     // Route state is now unknown; owner recovery/reconciliation is required.
   }
 }
@@ -142,9 +147,9 @@ void useChannelZero() {
 and performs no I2C; call and check `disableAll()` first when the application
 requires a safe-off shutdown.
 
-The example owner additionally forces and verifies `0x00` after its initial
-binding. An MCU-only restart does not prove the mux was power-cycled, so an
-example must not inherit a previously selected route silently.
+After a successful initial presence read, both example owners additionally
+write and verify `0x00`. An MCU-only restart does not prove the mux was
+power-cycled, so an example must not inherit a previously selected route silently.
 
 ## Typed Channel Masks
 
@@ -182,8 +187,8 @@ attempt to the remaining budget and refuse expired work before I/O. See the
 [owner integration recipe](docs/PORTING.md#integrating-a-bounded-bus-owner)
 for staged initialization, result mapping, and cleanup after expiry.
 
-Both callbacks must return within `timeoutMs`, perform one physical attempt,
-and map the platform result to the narrow transport type:
+Both callbacks must return within `timeoutMs`, perform at most one physical
+attempt, and map the platform result to the narrow transport type:
 
 ```cpp
 enum class TransportErr : uint8_t {
@@ -361,7 +366,7 @@ manually.
 
 ```cpp
 #include "TCA9548A/Version.h"
-Serial.println(TCA9548A::VERSION);
+constexpr const char* version = TCA9548A::VERSION;
 ```
 
 ## Repository Validation
@@ -373,6 +378,10 @@ pioarduino `platform-espressif32` `55.03.311` (Arduino-ESP32 `3.3.11`, ESP-IDF
 The `version` command reports the runtime framework and MCU identity, so
 hardware evidence names the actual stack. The Arduino CLI additionally reports
 flash and PSRAM.
+
+The host runner requires Python 3.10 or later. Live serial runs also require
+`pyserial` (`python -m pip install pyserial`). Parser self-tests and dry runs
+use only the Python standard library.
 
 Live HIL requires an attached ESP32 and TCA9548A fixture:
 
@@ -429,8 +438,8 @@ write and one verification read; with the default 20 ms timeout the sum of
 configured transfer budgets is 20.04 seconds, plus SDK scheduling and console
 overhead. The Arduino example yields after each stress
 transaction; the native one relies on each transaction blocking in the I2C
-driver and additionally sleeps one scheduler tick every 64 operations, so the
-idle task always runs without pacing the run.
+driver and additionally sleeps one scheduler tick every 64 operations to
+provide regular scheduler opportunities.
 
 Both example owners stop controller access after a receive failure on the
 pinned SDK and show `Controller restart required: yes` in `cfg`; restart the
@@ -441,4 +450,4 @@ health. See [adapter limitations](docs/PORTING.md#backend-fault-and-timing-limit
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/janhavelka/TCA9548A/blob/main/LICENSE).

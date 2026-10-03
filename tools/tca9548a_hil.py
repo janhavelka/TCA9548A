@@ -30,6 +30,8 @@ MAX_RESPONSE_BYTES = 65536
 MAX_SOAK_COMMANDS = 100000
 PROMPT_RE = re.compile(r"(?:^|[\r\n])> $")
 ANY_PROMPT_RE = re.compile(r"(?:^|[\r\n])> ")
+READ_MASK_RE = re.compile(r"^read: OK\b[^\r\n]* mask=0x([0-9A-Fa-f]{2})\b", re.M)
+SCAN_ADDRESS_RE = re.compile(r"^[ \t]*Found device at 0x([0-9A-Fa-f]{2})[ \t]*\r?$", re.M)
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 COMMON_FAILURE_PATTERNS = (
@@ -135,7 +137,7 @@ def classify(text: str, step: Step, completion: str = "prompt") -> tuple[str, st
         timeout_ms = int(timeout_match[1])
         return PASS, f"complete configuration; firmware I2C timeout={timeout_ms} ms (reported setting)"
     if command.startswith("hil "):
-        summaries = re.findall(r"^HIL result: pass=(\d+) fail=(\d+) skip=(\d+)\s*$", clean, re.M)
+        summaries = re.findall(r"^HIL result: pass=([0-9]{1,5}) fail=([0-9]{1,5}) skip=([0-9]{1,5})\s*$", clean, re.M)
         checks = re.findall(r"^\s*\[(PASS|FAIL|SKIP)\] ([^\r\n]+)", clean, re.M)
         if len(summaries) != 1 or not checks:
             return UNKNOWN, "missing or ambiguous HIL summary/check records"
@@ -169,28 +171,29 @@ def classify(text: str, step: Step, completion: str = "prompt") -> tuple[str, st
                    for field in ("Bound", "Initialized", "State alias parity")):
             return FAIL, "driver binding/state aliases invalid"
     elif command == "scan":
-        summaries = re.findall(r"^Scan complete: devices=(\d+) errors=(\d+)\s*$", clean, re.M)
-        addresses = [int(value, 16) for value in re.findall(r"^\s*Found device at 0x([0-9A-Fa-f]{2})\s*$", clean, re.M)]
+        summaries = re.findall(r"^Scan complete: devices=([0-9]{1,3}) errors=([0-9]{1,3})\s*$", clean, re.M)
+        addresses = [int(value, 16) for value in SCAN_ADDRESS_RE.findall(clean)]
         if len(summaries) != 1:
             return UNKNOWN, "missing or ambiguous scan completion"
         devices, errors = map(int, summaries[0])
         if (errors or devices != len(addresses) or len(addresses) != len(set(addresses))
                 or any(not 0x08 <= address <= 0x77 for address in addresses)):
             return FAIL, "scan errors or inconsistent device count"
-        if not re.search(r"^Scan topology: OK\b.*active_mask=0x[0-9A-Fa-f]{2}\b", clean, re.M):
+        if len(re.findall(r"^Scan topology: OK\b.*active_mask=0x[0-9A-Fa-f]{2}\b", clean, re.M)) != 1:
             return FAIL, "scan topology read failed"
     elif command.startswith("stress"):
-        summaries = re.findall(r"^Stress results: completed=(\d+) requested=(\d+) status=(\w+) safe_off=(\w+)\s*$", clean, re.M)
+        summaries = re.findall(r"^Stress results: completed=([0-9]{1,4}) requested=([0-9]{1,4}) status=(\w+) safe_off=(\w+)\s*$", clean, re.M)
         if len(summaries) != 1:
             return UNKNOWN, "missing or ambiguous stress completion"
         completed, requested, status, safe_off = summaries[0]
         count = int(command.split()[1])
         if int(completed) != count or int(requested) != count or status != "OK" or safe_off != "OK":
             return FAIL, "stress incomplete or safe-off unverified"
-        if not re.search(r"^Health delta: success=\d+ failure=0\s*$", clean, re.M):
+        deltas = re.findall(r"^Health delta: success=([0-9]{1,10}) failure=0\s*$", clean, re.M)
+        if len(deltas) != 1 or int(deltas[0]) > 0xFFFFFFFF:
             return FAIL, "stress health failures or missing counters"
     elif command == "read":
-        matches = re.findall(r"^read: OK\b[^\r\n]* mask=0x([0-9A-Fa-f]{2})\b", clean, re.M)
+        matches = READ_MASK_RE.findall(clean)
         if len(matches) != 1:
             return UNKNOWN, "missing or ambiguous control-byte read"
         if step.expected_mask is not None and int(matches[0], 16) != step.expected_mask:
@@ -428,6 +431,10 @@ def write_report(
         ),
         None,
     )
+    route_result = next(
+        (result for result in results if result.step.command == "<host routing isolation checks>"),
+        None,
+    )
 
     if session_executed and probe_result is not None:
         device_note = (
@@ -521,8 +528,8 @@ def write_report(
             "it does not prove the connected firmware was built from that commit.",
             "- A responding control byte cannot prove exact chip identity.",
             "- Control-byte readback alone does not prove downstream routing. "
-            + ("Declared --route fixtures were checked; undeclared endpoints remain untested."
-               if args.route else "No --route fixture was supplied; downstream routing is untested."),
+            + (f"Declared routing fixture result: {route_result.status}; undeclared endpoints remain untested."
+               if route_result is not None else "No --route fixture was supplied; downstream routing is untested."),
             "- RESET pulse width, STOP timing, voltage translation, rise times, "
             "power-on reset, and stuck-bus recovery require separate fixture/instrument evidence.",
         ]
@@ -783,7 +790,7 @@ def checked_command(runner: SerialRunner, command: str, record: Callable[[str], 
 
 def read_mask(runner: SerialRunner, record: Callable[[str], None], expected: int | None = None) -> int:
     text = checked_command(runner, "read", record, expected)
-    return int(re.search(r" mask=0x([0-9A-Fa-f]{2})\b", strip_ansi(text)).group(1), 16)
+    return int(READ_MASK_RE.search(strip_ansi(text)).group(1), 16)
 
 
 def run_mask_checks(runner: SerialRunner, args: argparse.Namespace, record: Callable[[str], None],
@@ -848,7 +855,7 @@ def scan_addresses(text: str, expected_mask: int) -> set[int]:
     clean = strip_ansi(text)
     if not re.search(rf"^Scan topology: OK\b.*active_mask=0x{expected_mask:02X}\b", clean, re.M):
         raise ValueError("scan active topology differs from verified selection")
-    return {int(value, 16) for value in re.findall(r"Found device at 0x([0-9A-Fa-f]{2})\b", clean)}
+    return {int(value, 16) for value in SCAN_ADDRESS_RE.findall(clean)}
 
 
 def run_soak(runner: SerialRunner, args: argparse.Namespace,
@@ -922,14 +929,39 @@ def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
     plan = build_plan(args)
     with contextlib.ExitStack() as stack:
         transcript = None
+        transcript_error = ""
         if transcript_path is not None:
-            transcript_path.parent.mkdir(parents=True, exist_ok=True)
-            transcript = stack.enter_context(transcript_path.open("w", encoding="utf-8"))
+            try:
+                transcript_path.parent.mkdir(parents=True, exist_ok=True)
+                transcript = transcript_path.open("w", encoding="utf-8")
+            except OSError as exc:
+                append_not_run_results(results, plan, f"transcript unavailable: {exc}")
+                return results, None
+
+            def close_transcript() -> None:
+                try:
+                    transcript.close()
+                except OSError as exc:
+                    # Preserve the result list/report even if the final flush fails.
+                    if results:
+                        result = next((item for item in reversed(results) if item.status != NOT_RUN), results[0])
+                        if result.status != FAIL:
+                            result.status = UNKNOWN
+                        result.notes += f"; transcript close failed: {exc}"
+
+            stack.callback(close_transcript)
 
         def record(text: str) -> None:
-            if transcript is not None:
-                transcript.write(text + "\n")
-                transcript.flush()
+            nonlocal transcript_error
+            if transcript is not None and not transcript_error:
+                try:
+                    transcript.write(text + "\n")
+                    transcript.flush()
+                except OSError as exc:
+                    # Raise once to stop the active test. Later cleanup commands
+                    # still run and their status remains available to the report.
+                    transcript_error = f"transcript write failed: {exc}"
+                    raise RuntimeError(transcript_error) from exc
             if args.verbose:
                 print(text)
 
@@ -989,6 +1021,26 @@ def parser_self_test(args: argparse.Namespace) -> int:
     version_step = by_id["TCA-HIL-001"]
     scan_step = by_id["TCA-HIL-005"]
     selftest_step = by_id["TCA-HIL-008"]
+    cfg_step = by_id["TCA-HIL-003"]
+    cfg_prefix = "=== Configuration ===\nI2C address: 0x70\n"
+    cfg_status, cfg_notes = classify(cfg_prefix + "I2C timeout: 20 ms\n", cfg_step)
+    invalid_cfg = (
+        "", "I2C timeout: 0 ms\n", "I2C timeout: 60001 ms\n",
+        "I2C timeout: nan ms\n", "I2C timeout: 20 ms\nI2C timeout: 20 ms\n",
+    )
+    if (cfg_status != PASS or "firmware I2C timeout=20 ms" not in cfg_notes
+            or any(classify(cfg_prefix + value, cfg_step)[0] != FAIL for value in invalid_cfg)):
+        print("Parser self-test: FAIL - configuration timeout evidence")
+        return 1
+    oversized = "9" * 5000
+    for command, response in (
+        ("hil dry", f"hil\n[PASS] version\nHIL result: pass={oversized} fail=0 skip=3\n"),
+        ("scan", f"Scan topology: OK active_mask=0x00\nScan complete: devices={oversized} errors=0\n"),
+        ("stress 1", f"Stress results: completed={oversized} requested=1 status=OK safe_off=OK\n"),
+    ):
+        if classify(response, operation_step(command))[0] == PASS:
+            print("Parser self-test: FAIL - oversized summary counter")
+            return 1
 
     pass_status, _ = classify(
         "=== Version Info ===\n  Library: test-version\n",
