@@ -79,6 +79,7 @@ cmake -E chdir .pio/cmake-core ctest --output-on-failure
 .\scripts\pio.cmd run -e esp32s2dev
 python tools/tca9548a_hil.py --parser-self-test
 python tools/test_tca9548a_hil.py
+python tools/test_hil_artifacts.py
 doxygen Doxyfile
 .\scripts\pio.cmd pkg pack . --output .pio\TCA9548A.tar.gz
 python tools/check_package.py .pio\TCA9548A.tar.gz

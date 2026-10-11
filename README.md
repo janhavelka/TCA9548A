@@ -404,6 +404,10 @@ a report or transcript only when `--report` or `--transcript` is supplied.
 The [fixture procedure](docs/VALIDATION_STATUS.md#live-hil-procedure) covers
 route isolation (`--route CH:ADDR`), the optional all-256-mask sweep,
 stress/soak limits, and hardware measurements still required.
+Use `--output-dir .pio/hil` to preserve a unique JSON/Markdown/transcript bundle
+with a SHA-256 manifest. The runner cancels stale input, verifies fresh response
+markers, checks parser and enable/disable procedures, and detects newly recovered
+health failures. Existing evidence files are never overwritten.
 
 ## Example
 

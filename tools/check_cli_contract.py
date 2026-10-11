@@ -19,7 +19,7 @@ COMMANDS = (
     "begin", "init", "end", "unbind", "scan", "discover", "detect",
     "read", "dump", "select", "mask", "enable", "disable", "verify", "off",
     "recover", "reset", "hardreset", "invalidate", "health", "drv", "state",
-    "online", "probe", "selftest", "hil", "sweep", "stress", "stress_mix",
+    "online", "probe", "selftest", "hil", "hilmark", "sweep", "stress", "stress_mix",
     "watch", "soak", "stop", "cancel", "stats", "result", "xfer_stats",
     "counters", "xfer_reset", "xfer_assert",
 )

@@ -10,9 +10,12 @@ Entries describe changes relative to the previous release.
 
 ### Added
 
+- Host HIL response framing with fresh markers and buffered-input cancellation,
+  parser and read-modify-write procedures, health-history checks, and optional
+  preserved JSON/Markdown/transcript evidence bundles with SHA-256 manifests.
 - Shared example CLI with grouped help, runtime colors and staged settings,
   address detection, physical transfer assertions, cancellable scan/stress/
-  sweep/watch/soak sessions, retained results, and 39 executed command tests.
+  sweep/watch/soak sessions, retained results, and 40 executed command tests.
 - Topic help, retained discovery candidates and target ACK evidence, and a
   `console` command exposing USB backlog, loss counters and RX observability.
 - Fixed 8 KiB example output queue with partial-write retention, visible loss

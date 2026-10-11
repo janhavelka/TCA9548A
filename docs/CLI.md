@@ -98,6 +98,7 @@ without their own Git checkout report unknown source identity.
 | Command | Work bound | Final routing |
 | --- | --- | --- |
 | `hil parser` / `hil dry` | Parser/type checks; no I2C | Unchanged |
+| `hilmark token` | Echo 1..32 ASCII letters/digits/underscore/hyphen for host framing; no I2C | Unchanged |
 | `selftest` / `hil run` | All eight one-hot masks, `0xA5`, raw probe, recovery | Capture and verify restoration of entry mask |
 | `hil run reset` | Above plus RESET from verified `0x01` seed | Restore entry mask |
 | `sweep` | 256 mask writes/readbacks, entry read and restoration | Restore entry mask |
@@ -171,6 +172,10 @@ does not prove loss-free reception. Native S2 also reports connection state
 as unknown. The host runner fails on loss-counter changes, saturated loss
 counters, malformed responses, or reset/startup banners. A reset retires its
 serial session; it does not restore a mask captured before that reset.
+The runner cancels buffered input at startup and requires fresh framing markers
+for each completed command. It also compares lifetime health snapshots, so a
+tracked failure followed by recovery cannot disappear behind a READY state.
+Use `--output-dir .pio/hil` to retain a separate evidence bundle for each run.
 
 Arduino S2 disables CDC-triggered reboot for long runs; subsequent uploads may
 require holding BOOT while pressing RESET to enter download mode. Native S2

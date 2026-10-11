@@ -75,12 +75,13 @@ It additionally rejects embedded control bytes and signed/wrapping, overflowing,
 or trailing numeric arguments through the same helper used by both CLIs.
 
 The `native_cli_commands` suite executes the shared command handlers with the
-real core and a test-only controller fixture. Its 39 tests cover staged settings,
+real core and a test-only controller fixture. Its 40 tests cover staged settings,
 address preflight, all channel operations, detection, physical counter assertions,
 parser rejection, cache/health reporting, exhaustive sweep, all eight mixed-stress
 channels, cancellation, failed restoration, receive-fault retirement, and
 watch/soak deadlines across clock wrap, soak drift including terminal readback,
-topic help, retained detection outcomes, and discarding partial console input.
+topic help, retained detection outcomes, discarding partial console input, and
+bounded bus-silent HIL markers.
 This is software evidence, not a device
 simulator embedded in production code.
 
@@ -116,12 +117,17 @@ transfer evidence. Tests cover serial control-line setup before open, required
 firmware identity, rejection of contradictory summaries, actual startup/reset
 banners, completed discovery evidence, console loss and counter saturation,
 complete eight-round soak batches, empty coverage and cleanup after lost framing.
+It also covers input cancellation, fresh response markers, absolute command
+deadlines, partial responses on serial failure, complete health history, and
+read-modify-write controls. `tools/test_hil_artifacts.py` tests evidence-file
+reservation, JSON/manifest integrity, exact invocation metadata, and output
+failures without device access.
 The timeout is
 recorded in the result notes; this is not a timing
 measurement. These use scripted responses and are not hardware evidence.
 
-Local validation on 2026-10-11 passed 47 driver, 3 line/parser, 39 executed
-CLI-command, 6 console-queue, and 7 Wire-adapter tests (102 total), plus 67 Python HIL regressions.
+Local validation on 2026-10-11 passed 47 driver, 3 line/parser, 40 executed
+CLI-command, 6 console-queue, and 7 Wire-adapter tests (103 total), plus 101 Python HIL regressions.
 The framework-neutral build, standalone CMake consumer/CTest, both Arduino
 builds, Doxygen, repository contracts, and packed-archive consumer are checked
 for this change. Check the CI run attached to the exact commit for all four
@@ -146,19 +152,20 @@ were used; no system-wide PATH change or new installation was made.
 3. On a fixture safe for the built-in one-hot and `0xA5` selections, run:
 
    ```powershell
-   python tools/tca9548a_hil.py --port COM8 --address 0x70 --report .pio/hil/live.md --transcript .pio/hil/live.serial.txt --fixture-note "PCB revision, MCU, RESET GPIO, rails, pull-ups, targets and flashed binary identity"
+   python tools/tca9548a_hil.py --port COM8 --address 0x70 --output-dir .pio/hil --fixture-note "PCB revision, MCU, RESET GPIO, rails, pull-ups, targets and flashed binary identity"
    ```
 
    This checks complete command responses, healthy READY state, all eight
    possible mux addresses, configured target ACK, console loss, scan errors,
-   every one-hot control mask, arbitrary mask `0xA5`, recovery, and verified
+   parser behavior, every one-hot control mask, arbitrary mask `0xA5`, recovery,
+   enable/disable read-modify-write operations and verified entry-mask
    restoration. RESET must clear a verified `0x01` seed, so an unwired pin
    cannot pass merely because the device was already all-off.
 4. To check physical route visibility, declare every occurrence of the selected
    downstream fixture addresses, for example:
 
    ```powershell
-   python tools/tca9548a_hil.py --port COM8 --route 0:0x48 --route 1:0x48 --report .pio/hil/routes.md --transcript .pio/hil/routes.serial.txt
+   python tools/tca9548a_hil.py --port COM8 --route 0:0x48 --route 1:0x48 --output-dir .pio/hil
    ```
 
    Declared addresses must be absent upstream with all channels off, visible
@@ -183,17 +190,42 @@ were used; no system-wide PATH change or new installation was made.
 The runner has separate finite command budgets: 5 s normally, 30 s for scan,
 and 240 s for firmware stress by default, configurable through `--timeout-s`,
 `--scan-timeout-s`, and `--stress-timeout-s`. Receive storage is capped at
-64 KiB per response and optional transcripts stream to disk. Soak may extend
+64 KiB per response and optional transcripts are flushed after each bounded
+exchange, including fresh markers and partially received failed commands. Soak may extend
 past its scheduling deadline by the in-flight command and bounded cleanup.
 These host budgets do not establish the firmware's physical timing bound.
+At startup the runner discards buffered input with a control byte and requires
+a fresh `hilmark` exchange. Command completion also requires a fresh marker,
+so a stale prompt alone cannot establish success. The marker is bus-silent;
+its serial overhead is included in host elapsed time. Firmware without this
+command is rejected before live checks. Lost framing, resets and late responses
+stop the session; the runner never retries a hardware command blindly.
 Incomplete responses, skipped required RESET checks, unknown results, scan
 faults, mismatched readbacks, and incomplete stress all fail the run.
 Console loss-counter changes and saturation fail evidence checks; zero RX
 overflow counters do not prove reception when the backend cannot observe loss.
 Reset banners retire the session and prohibit restoration of stale captured
 routing. Reconnect and establish a new session before continuing.
+Health checkpoints compare complete lifetime counters. Historical errors before
+the initial snapshot are allowed if the device is READY, but any new tracked
+failure fails the run even after recovery. Saturated failure counts cannot prove
+an error-free interval and are rejected.
+
+`--output-dir` creates a unique child directory with `report.md`, `results.json`,
+`transcript.log`, and `manifest.json`. The JSON records exact arguments, start/end
+host provenance, full firmware version response, per-step evidence and an overall
+status separate from process exit. A bundle is complete only when its manifest
+exists and all recorded hashes match. The manifest hashes the runner and artifacts;
+these hashes detect changes but do not authenticate a device. Dry runs write no
+serial transcript and remain NOT_RUN hardware evidence. Existing `--report` and
+`--transcript` options remain available separately; all output paths are checked
+before opening serial and existing files are never overwritten. Artifact I/O,
+serial admission, synchronization, interruption, and serial-close failures are fatal even with
+`--allow-not-run`. Without output options, results
+are displayed without persisted evidence.
 
 Reports record host checkout identity separately from runtime version output.
+`--target-env` is an operator-supplied label, not a verified firmware identity.
 Both firmware builds refresh their full Git identity on each build. Add
 `--expect-commit <full-40-character-SHA> --require-clean` to reject missing,
 wrong, dirty, or unknown reported firmware identity. These checks compare

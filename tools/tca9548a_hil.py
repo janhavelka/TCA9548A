@@ -11,9 +11,12 @@ import argparse
 import contextlib
 import dataclasses
 import datetime as dt
+import hashlib
+import json
 import math
 import platform
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -37,7 +40,7 @@ SCAN_ADDRESS_RE = re.compile(r"^[ \t]*Found device at 0x([0-9A-Fa-f]{2})[ \t]*\r
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 RESTART_RE = re.compile(
-    r"(?:^|[\r\n])[ \t]*(?:ESP-ROM:|rst:0x|boot:0x|Brownout|"
+    r"(?:^|[\r\n])[ \t]*(?:>[ \t]*)?(?:ESP-ROM:|rst:0x|boot:0x|Brownout|"
     r"TCA9548A (?:Arduino|native ESP-IDF) bring-up CLI)"
     r"|\b(?:Guru Meditation|PANIC|Rebooting)\b", re.I
 )
@@ -87,6 +90,7 @@ class Response:
     text: str
     elapsed_s: float
     completion: str
+    wire_text: str | None = None
 
 
 class SessionLost(RuntimeError):
@@ -176,13 +180,10 @@ def classify(text: str, step: Step, completion: str = "prompt") -> tuple[str, st
         if failed or not required.issubset(labels):
             return FAIL, "required HIL checks failed or missing"
     elif command == "health":
-        states = re.findall(r"^\s*State: (\w+)\b", clean, re.M)
-        failures = re.findall(r"^\s*Consecutive failures: (\d+)\s*$", clean, re.M)
-        if states != ["READY"] or failures != ["0"]:
-            return FAIL, "driver is not healthy READY"
-        if not all(re.findall(rf"^\s*{field}: (\w+)\s*$", clean, re.M) == ["yes"]
-                   for field in ("Bound", "Initialized", "State alias parity")):
-            return FAIL, "driver binding/state aliases invalid"
+        try:
+            parse_health(clean)
+        except ValueError as exc:
+            return FAIL, str(exc)
     elif command in ("discover", "detect"):
         summaries = re.findall(
             r"^Detection: tested=([0-9]{1,2}) ack=([0-9]{1,2}) absent=([0-9]{1,2}) errors=([0-9]{1,2}) "
@@ -221,16 +222,12 @@ def classify(text: str, step: Step, completion: str = "prompt") -> tuple[str, st
         deltas = re.findall(r"^Health delta: success=([0-9]{1,10}) failure=0\s*$", clean, re.M)
         if len(deltas) != 1 or int(deltas[0]) > 0xFFFFFFFF:
             return FAIL, "stress health failures or missing counters"
-        # A passing run needs real successful traffic, even when a lifetime
-        # health counter has saturated. New firmware also reports session I/O.
+        # Session counts prove every operation even if lifetime success has saturated.
         session_lines = re.findall(r"^Session transfers:([^\r\n]*)", clean, re.M)
-        if session_lines:
-            session = re.fullmatch(r" success=([0-9]{1,7}) failure=0", session_lines[0])
-            expected = (7 if command.startswith("stress_mix ") else 2) * count + 2
-            if len(session_lines) != 1 or session is None or int(session[1]) != expected:
-                return FAIL, "stress session did not verify every iteration and cleanup"
-        elif int(deltas[0]) < count + 2:
-            return FAIL, "stress success counter does not cover iterations and cleanup"
+        session = re.fullmatch(r" success=([0-9]{1,7}) failure=0", session_lines[0]) if len(session_lines) == 1 else None
+        expected = (7 if command.startswith("stress_mix ") else 2) * count + 2
+        if session is None or int(session[1]) != expected:
+            return FAIL, "missing or invalid per-session transfer evidence for every iteration and cleanup"
     elif command == "read":
         matches = READ_MASK_RE.findall(clean)
         if len(matches) != 1:
@@ -247,12 +244,20 @@ def classify(text: str, step: Step, completion: str = "prompt") -> tuple[str, st
         requested = None if command == "verbose" else ("on" if command.split()[1] in ("1", "on") else "off")
         if len(values) != 1 or (requested is not None and values[0] != requested):
             return FAIL, "verbose setting missing, ambiguous or different from requested value"
-    elif command in ("probe", "off", "recover") or command.startswith(("mask ", "select ")):
+    elif command in ("probe", "off", "recover", "invalidate") or command.startswith(("mask ", "select ", "enable ", "disable ", "verify ")):
         prefix = {"recover": "recover (safe-off write)"}.get(command, command)
+        if command.startswith("verify "):
+            prefix = "verify"
         if command.startswith("mask "):
             prefix = f"mask 0x{int(command.split()[1], 0):02X}"
         if not re.search(rf"^{re.escape(prefix)}: OK(?:\s|$)", clean, re.M):
             return FAIL, "operation did not report explicit OK"
+        if command == "invalidate":
+            observations = re.findall(r"^Mask cache: ([^\r\n]*)", clean, re.M)
+            if len(observations) != 1 or re.fullmatch(
+                    r"UNKNOWN known=no verified=no value=0x[0-9A-Fa-f]{2} \[(?:none|[0-7](?:,[0-7])*)\]",
+                    observations[0]) is None:
+                return FAIL, "cache invalidation did not report a complete unknown observation"
     return PASS, "complete response and required checks verified"
 
 
@@ -280,6 +285,8 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
             "Configuration snapshot includes a valid bounded I2C timeout.",
             ("=== Configuration ===", "I2C address:"),
         ),
+        Step("TCA-HIL-015", "console", "console",
+             "Capture complete unsaturated console loss counters before live diagnostics.", ("Console:",)),
         Step(
             "TCA-HIL-004",
             "health",
@@ -287,6 +294,9 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
             "Driver health snapshot is printed.",
             ("=== Driver Health ===", "State:"),
         ),
+        Step("TCA-HIL-016", "detection", "discover",
+             "All eight legal addresses tested; configured target ACKs without claiming silicon identity.",
+             ("Detection:", "CLI result:"), status_patterns),
         Step(
             "TCA-HIL-005",
             "bus",
@@ -310,6 +320,9 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
             ("=== TCA9548A HIL DRY-RUN ===", "HIL result:"),
             status_patterns,
         ),
+        Step("TCA-HIL-018", "contract", "hil parser",
+             "Device-side numeric and line parsers reject invalid input without I2C.",
+             ("=== TCA9548A HIL DRY-RUN ===", "HIL result:"), status_patterns),
         Step(
             "TCA-HIL-008",
             "contract",
@@ -323,13 +336,10 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
             ),
             status_patterns,
         ),
+        Step("TCA-HIL-019", "controls", "<host control operation checks>",
+             "Enable/disable preserve unrelated bits; verify and cache invalidation work; entry mask restored.",
+             ("controls complete",), status_patterns),
     ]
-
-    plan.insert(3, Step("TCA-HIL-015", "console", "console",
-                        "Capture complete unsaturated console loss counters before live diagnostics.", ("Console:",)))
-    plan.insert(5, Step("TCA-HIL-016", "detection", "discover",
-                        "All eight legal addresses tested; configured target ACKs without claiming silicon identity.",
-                        ("Detection:", "CLI result:"), status_patterns))
 
     if args.route:
         plan.append(Step("TCA-HIL-012", "routing", "<host routing isolation checks>",
@@ -448,6 +458,137 @@ def result_exit_code(
     return 0
 
 
+def overall_status(results: Iterable[Result], artifact_errors: Iterable[str] = ()) -> str:
+    """Describe evidence independently of dry-run/NOT_RUN exit-code allowances."""
+    counts = status_counts(results)
+    if counts[FAIL] or any(artifact_errors):
+        return FAIL
+    if counts[UNKNOWN]:
+        return UNKNOWN
+    if counts[NOT_RUN] or not counts[PASS]:
+        return NOT_RUN
+    return PASS
+
+
+def repository_provenance(exclude_paths: Iterable[Path] = ()) -> dict[str, str]:
+    status_args = ["status", "--short", "--untracked-files=all", "--", "."]
+    for path in exclude_paths:
+        try:
+            relative = path.resolve().relative_to(ROOT)
+        except ValueError:
+            continue
+        status_args.append(f":(exclude){relative.as_posix()}")
+    status = git_text(status_args, "unknown", allow_empty=True)
+    return {
+        "branch": git_text(["branch", "--show-current"], "unknown"),
+        "commit": git_text(["rev-parse", "HEAD"], "unknown"),
+        "worktree": "unknown" if status == "unknown" else "dirty" if status else "clean",
+        "status_short": status,
+    }
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(65536), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def artifact_error(args: argparse.Namespace, message: str) -> None:
+    if not hasattr(args, "_artifact_errors"):
+        args._artifact_errors = []
+    args._artifact_errors.append(message)
+
+
+def prepare_artifacts(args: argparse.Namespace) -> dict[str, Path]:
+    """Reserve all requested outputs exclusively before opening the device."""
+    args._artifact_handles = {}
+    paths: dict[str, Path] = {}
+    if args.output_dir is not None:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("tca9548a_%Y%m%dT%H%M%S_%fZ")
+        for attempt in range(1000):
+            run_dir = args.output_dir / (stamp if attempt == 0 else f"{stamp}_{attempt:03d}")
+            try:
+                run_dir.mkdir()
+                break
+            except FileExistsError:
+                continue
+        else:
+            raise OSError("unable to create a unique HIL output directory")
+        args._run["run_id"] = run_dir.name
+        args.report = run_dir / "report.md"
+        args.transcript = None if args.dry_run else run_dir / "transcript.log"
+        paths.update(results=run_dir / "results.json", manifest=run_dir / "manifest.json")
+    if args.report is not None:
+        paths["report"] = args.report
+    if args.transcript is not None and not args.dry_run:
+        paths["transcript"] = args.transcript
+    # Check every destination before creating any files, including existing aliases.
+    requested = [path for path in (args.report, args.transcript) if path is not None]
+    resolved = [path.resolve() for path in requested]
+    if len(resolved) != len(set(resolved)):
+        raise OSError("artifact paths refer to the same file")
+    for path in requested + list(paths.values()):
+        if path.exists() or path.is_symlink():
+            raise FileExistsError(f"refusing to overwrite existing artifact: {path}")
+    for path in paths.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        args._artifact_handles[path.resolve()] = path.open("x", encoding="utf-8", newline="\n")
+    args._artifact_paths = paths
+    return paths
+
+
+def write_artifact_text(path: Path, args: argparse.Namespace, text: str) -> None:
+    handle = getattr(args, "_artifact_handles", {}).get(path.resolve())
+    if handle is None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("x", encoding="utf-8", newline="\n") as output:
+            output.write(text)
+    else:
+        try:
+            handle.write(text)
+            handle.flush()
+        finally:
+            # Detect buffered/close failures before sealing the bundle manifest.
+            handle.close()
+
+
+def write_bundle(args: argparse.Namespace, results: list[Result], paths: dict[str, Path],
+                 exit_code: int) -> None:
+    errors = getattr(args, "_artifact_errors", [])
+    settings = {key: str(value) if isinstance(value, Path) else value
+                for key, value in vars(args).items() if not key.startswith("_")}
+    document = {
+        "schema_version": 1,
+        "run": args._run,
+        "mode": "dry-run" if args.dry_run else "live",
+        "settings": settings,
+        "overall_status": overall_status(results, errors),
+        "exit_code": exit_code,
+        "counts": status_counts(results),
+        "firmware_version_response": getattr(args, "_firmware_version", None),
+        "artifact_errors": errors,
+        "completion_contract": "The bundle is complete only when manifest.json is present and its artifact hashes match.",
+        "claim_boundary": "Host checkout metadata is not verified firmware identity; dry-run is not hardware evidence.",
+        "results": [dataclasses.asdict(result) for result in results],
+    }
+    write_artifact_text(paths["results"], args, json.dumps(document, indent=2) + "\n")
+    artifacts = {name: {"path": str(path.resolve()), "bytes": path.stat().st_size,
+                        "sha256": sha256_file(path)}
+                 for name, path in paths.items() if name != "manifest"}
+    manifest = {
+        "schema_version": 1,
+        "run_id": args._run["run_id"],
+        "overall_status": document["overall_status"],
+        "runner": {"path": str(Path(__file__).resolve()),
+                   "sha256": args._run["runner_sha256"]},
+        "artifacts": artifacts,
+    }
+    write_artifact_text(paths["manifest"], args, json.dumps(manifest, indent=2) + "\n")
+
+
 def write_report(
     path: Path,
     args: argparse.Namespace,
@@ -455,23 +596,22 @@ def write_report(
     transcript_path: Path | None,
 ) -> None:
     now = dt.datetime.now().astimezone()
-    dirty = git_text(["status", "--short"], "unknown", allow_empty=True)
-    if dirty == "unknown":
-        dirty_summary = "unknown"
-    elif dirty == "":
-        dirty_summary = "clean"
-    else:
-        dirty_summary = "dirty before report generation or local edits present"
+    run = getattr(args, "_run", {})
+    provenance = run.get("host_start") or repository_provenance()
+    dirty_summary = provenance["worktree"]
 
     counts = status_counts(results)
-    command_line = subprocess.list2cmdline([sys.executable, *sys.argv])
+    command_line = subprocess.list2cmdline([sys.executable, str(Path(__file__).resolve()),
+                                          *getattr(args, "_argv", [])])
     platformio_version = tool_text(
         platformio_tool_args("--version"), "not checked"
     )
     live_mode = not args.dry_run and not args.parser_self_test
     port_note = args.port if live_mode else f"{args.port} (not opened in dry-run mode)"
     executed_results = [result for result in results if result.status != NOT_RUN]
-    session_executed = live_mode and bool(executed_results)
+    session_executed = live_mode and getattr(args, "_serial_commands_executed", bool(executed_results))
+    if not session_executed:
+        executed_results = []
     probe_result = next(
         (result for result in results if result.step.command == "probe"), None
     )
@@ -601,15 +741,21 @@ def write_report(
         "## Metadata",
         "",
         f"- Date/time: `{now.isoformat(timespec='seconds')}`",
+        f"- Run ID: `{run.get('run_id', 'not captured')}`",
+        f"- Started UTC: `{run.get('started_utc', 'not captured')}`",
+        f"- Finished UTC: `{run.get('finished_utc', 'not captured')}`",
+        f"- Overall evidence status: `{overall_status(results, getattr(args, '_artifact_errors', []))}`",
         f"- Timezone: `{now.tzname() or 'local'}`",
         f"- Repository path: `{ROOT}`",
-        f"- Branch: `{git_text(['branch', '--show-current'], 'unknown')}`",
-        f"- Host checkout commit (not verified firmware identity): `{git_text(['rev-parse', 'HEAD'], 'unknown')}`",
+        f"- Branch: `{provenance['branch']}`",
+        f"- Host checkout commit (not verified firmware identity): `{provenance['commit']}`",
         f"- Dirty status: `{dirty_summary}`",
+        f"- Host provenance changed during run: `{run.get('host_changed', 'not captured')}`",
+        f"- Runner source changed during run: `{run.get('runner_changed', 'not captured')}`",
         f"- Operating system: `{platform.platform()}`",
         f"- Python: `{platform.python_version()}`",
         f"- PlatformIO: `{platformio_version}`",
-        f"- Target environment: `{args.target_env}`",
+        f"- Operator-supplied target environment (not verified): `{args.target_env}`",
         f"- Serial port: `{port_note}`",
         f"- Baud rate: `{args.baud}`",
         f"- Expected mux address: `0x{args.address:02X}`",
@@ -710,8 +856,10 @@ def write_report(
         lines.append("- Not recorded by the runner.")
 
     lines.append("")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines), encoding="utf-8")
+    firmware_version = getattr(args, "_firmware_version", None)
+    if firmware_version is not None:
+        lines.extend(["## Captured Firmware Version Response", "", "```text", firmware_version, "```", ""])
+    write_artifact_text(path, args, "\n".join(lines))
 
 
 def dry_run(args: argparse.Namespace) -> list[Result]:
@@ -731,7 +879,8 @@ class SerialRunner:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.serial = None
-        self.synchronized = True
+        self.synchronized = False
+        self._synchronization_attempted = False
 
     def __enter__(self) -> "SerialRunner":
         try:
@@ -771,6 +920,7 @@ class SerialRunner:
         size = 0
 
         while time.monotonic() < deadline:
+            self.serial.timeout = min(0.05, max(0.0, deadline - time.monotonic()))
             waiting = getattr(self.serial, "in_waiting", 0)
             data = self.serial.read(min(waiting or 1, MAX_RESPONSE_BYTES - size))
             if data:
@@ -785,6 +935,22 @@ class SerialRunner:
 
         return b"".join(chunks).decode("utf-8", errors="replace")
 
+    def synchronize(self) -> Response:
+        """Discard retained input and prove freshness once, before any test I/O."""
+        if self._synchronization_attempted:
+            raise SessionLost("initial synchronization is not a retry after lost framing")
+        self._synchronization_attempted = True
+        response = self._exchange("\x15", self.args.timeout_s)
+        if response.completion == "prompt":
+            acknowledgement = strip_ansi(response.text).replace("\r", "").strip()
+            if acknowledgement not in (
+                "[E] Command discarded: invalid input\n>",
+                "[E] Command discarded: line too long\n>",
+            ):
+                self.synchronized = False
+                response = dataclasses.replace(response, completion="initial command discard was not proven")
+        return response
+
     def command(self, command: str, timeout_s: float | None = None) -> Response:
         assert self.serial is not None
         if not self.synchronized:
@@ -792,36 +958,98 @@ class SerialRunner:
         if timeout_s is None:
             timeout_s = self.args.scan_timeout_s if command == "scan" else (
                 self.args.stress_timeout_s if command.startswith("stress") else self.args.timeout_s)
+        return self._exchange(command, timeout_s)
+
+    def _exchange(self, command: str, timeout_s: float) -> Response:
+        assert self.serial is not None
         start = time.monotonic()
         deadline = start + timeout_s
-        request = (command + "\n").encode("utf-8")
-        self.serial.write_timeout = timeout_s
         self.synchronized = False
-        # pyserial flush() can wait without a deadline. A bounded write already
-        # queues this tiny command; the returned prompt proves it was consumed.
-        if self.serial.write(request) != len(request):
-            raise SessionLost("short serial command write")
         received = bytearray()
         completion = "timeout waiting for CLI prompt"
-        while time.monotonic() < deadline:
-            self.serial.timeout = min(0.05, max(0.0, deadline - time.monotonic()))
+        marker = None
+
+        def write(payload: bytes) -> None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SessionLost("command deadline expired before serial write")
+            self.serial.write_timeout = min(self.args.timeout_s, remaining)
+            # flush() can wait without a deadline. The fresh marker below proves
+            # the queued command was consumed without an unbounded drain wait.
+            if self.serial.write(payload) != len(payload):
+                raise SessionLost("short serial command write")
+            if time.monotonic() >= deadline:
+                raise SessionLost("serial write exceeded command deadline")
+
+        def read() -> bytes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return b""
+            self.serial.timeout = min(0.05, remaining)
             waiting = getattr(self.serial, "in_waiting", 0)
-            data = self.serial.read(min(waiting or 1, MAX_RESPONSE_BYTES - len(received)))
-            received.extend(data)
-            if len(received) >= MAX_RESPONSE_BYTES:
-                completion = "response exceeded bounded receive buffer"
-                break
-            clean = strip_ansi(received.decode("utf-8", errors="replace"))
-            if RESTART_RE.search(clean):
-                completion = "firmware restarted; reconnect before further I/O"
-                break
-            if PROMPT_RE.search(clean):
-                if len(ANY_PROMPT_RE.findall(clean)) != 1:
-                    completion = "multiple CLI responses; command attribution lost"
+            return self.serial.read(min(waiting or 1, 4096, MAX_RESPONSE_BYTES - len(received)))
+
+        try:
+            # Leftover prompts are harmless. Any other pending payload is not a
+            # response to the command we are about to send.
+            while getattr(self.serial, "in_waiting", 0):
+                data = read()
+                received.extend(data)
+                if len(received) >= MAX_RESPONSE_BYTES:
+                    raise SessionLost("pending output exceeded bounded receive buffer")
+                if not data or time.monotonic() >= deadline:
+                    raise SessionLost("deadline expired draining pending output")
+            if strip_ansi(received.decode("utf-8", errors="replace")).strip("> \r\n\t"):
+                raise SessionLost("unsolicited serial payload before command; command was not sent")
+            received.clear()
+            write((command + "\n").encode("utf-8"))
+            while time.monotonic() < deadline:
+                data = read()
+                received.extend(data)
+                if len(received) >= MAX_RESPONSE_BYTES:
+                    completion = "response exceeded bounded receive buffer"
                     break
+                if time.monotonic() >= deadline:
+                    if data:
+                        completion = "response arrived after command deadline"
+                    break
+                if not data:
+                    continue
+                clean = strip_ansi(received.decode("utf-8", errors="replace"))
+                if RESTART_RE.search(clean):
+                    completion = "firmware restarted; reconnect before further I/O"
+                    break
+                if not PROMPT_RE.search(clean):
+                    continue
+                prompts = len(ANY_PROMPT_RE.findall(clean))
+                if marker is None:
+                    if prompts != 1:
+                        completion = "multiple CLI responses; command attribution lost"
+                        break
+                    if "HIL marker:" in clean:
+                        completion = "unsolicited command marker; command attribution lost"
+                        break
+                    marker = secrets.token_hex(16)
+                    write(("hilmark " + marker + "\n").encode("ascii"))
+                    completion = "timeout waiting for fresh command marker"
+                    continue
+                marker_matches = list(re.finditer(r"HIL marker: ([A-Za-z0-9_-]{1,32})\r?\n", clean))
+                if len(marker_matches) != 1 or marker_matches[0][1] != marker or prompts != 2:
+                    completion = "missing, stale, or duplicate command marker; command attribution lost"
+                    break
+                marker_start = marker_matches[0].start()
+                if (not PROMPT_RE.search(clean[:marker_start]) or
+                        clean[marker_matches[0].end():] != "> "):
+                    completion = "unexpected payload around command marker; command attribution lost"
+                    break
+                # Keep the original response and its prompt for the existing
+                # command validators. The marker is framing, not chip evidence.
+                original = received.decode("utf-8", errors="replace").split("HIL marker:", 1)[0]
                 self.synchronized = True
-                completion = "prompt"
-                break
+                return Response(original, time.monotonic() - start, "prompt",
+                                received.decode("utf-8", errors="replace"))
+        except (OSError, SessionLost, KeyboardInterrupt) as exc:
+            completion = str(exc) or "operator interrupted the command"
         return Response(received.decode("utf-8", errors="replace"), time.monotonic() - start, completion)
 
 
@@ -847,7 +1075,7 @@ def checked_command(runner: SerialRunner, command: str, record: Callable[[str], 
     response = runner.command(command)
     if RESTART_RE.search(strip_ansi(response.text)):
         runner.synchronized = False
-    record(f"\n$ {command}\n{response.text}")
+    record(f"\n$ {command}\n{response.wire_text or response.text}")
     status, notes = classify(response.text, operation_step(command, expected_mask), response.completion)
     if status != PASS:
         if response.completion != "prompt":
@@ -862,16 +1090,18 @@ def read_mask(runner: SerialRunner, record: Callable[[str], None], expected: int
 
 
 def run_mask_checks(runner: SerialRunner, args: argparse.Namespace, record: Callable[[str], None],
-                    *, routing: bool) -> tuple[str, float]:
+                    *, mode: str) -> tuple[str, float]:
     """Host fixture checks restore only a mask first verified by a real read."""
+    if mode not in ("routing", "sweep", "controls"):
+        raise ValueError("unknown mask-check mode")
     started = time.monotonic()
-    label = "routing" if routing else "mask sweep"
+    label = "mask sweep" if mode == "sweep" else mode
     original: int | None = None
     completed = 0
     errors: list[str] = []
     try:
         original = read_mask(runner, record)
-        if routing:
+        if mode == "routing":
             declared = {address for _, address in args.route}
             checked_command(runner, "off", record)
             read_mask(runner, record, 0)
@@ -895,10 +1125,17 @@ def run_mask_checks(runner: SerialRunner, args: argparse.Namespace, record: Call
             final = scan_addresses(checked_command(runner, "scan", record), 0)
             if final & declared or not baseline.issubset(final):
                 raise ValueError("final all-off scan did not isolate downstream devices")
-        else:
+        elif mode == "sweep":
             for mask in range(256):
                 checked_command(runner, f"mask {mask}", record)
                 read_mask(runner, record, mask)
+                completed += 1
+        else:
+            for command, expected in (("off", 0), ("enable 0", 1), ("enable 7", 0x81),
+                                      ("invalidate", 0x81), ("disable 0", 0x80), ("disable 7", 0)):
+                checked_command(runner, command, record)
+                read_mask(runner, record, expected)
+                checked_command(runner, f"verify {expected}", record)
                 completed += 1
     except (ValueError, OSError, RuntimeError) as exc:
         errors.append(str(exc))
@@ -924,6 +1161,62 @@ def scan_addresses(text: str, expected_mask: int) -> set[int]:
     if not re.search(rf"^Scan topology: OK\b.*active_mask=0x{expected_mask:02X}\b", clean, re.M):
         raise ValueError("scan active topology differs from verified selection")
     return {int(value, 16) for value in SCAN_ADDRESS_RE.findall(clean)}
+
+
+def parse_health(text: str) -> dict[str, int]:
+    """Require every cached health row; historical errors may remain sticky."""
+    rows = [line.strip() for line in strip_ansi(text).splitlines() if line.strip()]
+    if rows and rows[0] == "health":
+        rows.pop(0)
+    if rows and rows[-1] == ">":
+        rows.pop()
+    patterns = (
+        r"=== Driver Health ===",
+        r"State: READY \(passive; never gates I2C\)",
+        r"State alias parity: yes", r"Bound: yes", r"Initialized: yes", r"Online: yes",
+        r"Consecutive failures: 0",
+        r"Total success/failure: (?P<successes>[0-9]{1,10})/(?P<failures>[0-9]{1,10})",
+        r"Last OK/error ms: (?P<last_ok_ms>[0-9]{1,10})/(?P<last_error_ms>[0-9]{1,10})",
+        r"Last error: (?:OK|[A-Z][A-Z0-9_]* \(detail=(?P<detail>-?[0-9]{1,10}), [^\r\n]*\))",
+        r"Mask cache: (?P<provenance>UNKNOWN|WRITE_COMPLETED|READBACK_OBSERVED) "
+        r"known=(?P<known>yes|no) verified=(?P<verified>yes|no) value=0x(?P<mask>[0-9A-Fa-f]{2}) \[(?P<channels>none|[0-7](?:,[0-7])*)\]",
+    )
+    if len(rows) != len(patterns):
+        raise ValueError("incomplete or ambiguous driver health snapshot")
+    fields = {}
+    for row, pattern in zip(rows, patterns):
+        match = re.fullmatch(pattern, row)
+        if match is None:
+            raise ValueError("malformed or unhealthy driver health row: " + row)
+        fields.update({name: value for name, value in match.groupdict().items() if value is not None})
+    counters = {name: int(fields[name]) for name in ("successes", "failures", "last_ok_ms", "last_error_ms")}
+    if any(value > 0xFFFFFFFF for value in counters.values()):
+        raise ValueError("driver health counters exceed uint32 bounds")
+    if counters["successes"] == 0:
+        raise ValueError("READY health snapshot lacks a tracked success")
+    if "detail" in fields and not -0x80000000 <= int(fields["detail"]) <= 0x7FFFFFFF:
+        raise ValueError("driver health error detail exceeds int32 bounds")
+    if counters["failures"] == 0xFFFFFFFF:
+        raise ValueError("saturated driver failure counter cannot prove a fault-free run")
+    provenance = fields["provenance"]
+    if (fields["known"] != ("no" if provenance == "UNKNOWN" else "yes")
+            or fields["verified"] != ("yes" if provenance == "READBACK_OBSERVED" else "no")):
+        raise ValueError("driver mask provenance and validity flags disagree")
+    mask = int(fields["mask"], 16)
+    channels = ",".join(str(channel) for channel in range(8) if mask & (1 << channel)) or "none"
+    if fields["channels"] != channels:
+        raise ValueError("driver mask value and channel list disagree")
+    return counters
+
+
+def compare_health(text: str, baseline: dict[str, int] | None) -> dict[str, int]:
+    current = parse_health(text)
+    if baseline is not None:
+        if current["failures"] != baseline["failures"]:
+            raise ValueError("driver total failures changed during session")
+        if current["successes"] < baseline["successes"]:
+            raise ValueError("driver success counter moved backwards; possible restart")
+    return current
 
 
 def parse_console(text: str) -> dict[str, int | str]:
@@ -969,7 +1262,9 @@ def run_soak(runner: SerialRunner, args: argparse.Namespace,
     errors: list[str] = []
     command = "<between commands>"
     baseline = None
+    health_baseline = None
     final_console_verified = False
+    final_health_verified = False
     previous_verbose = None
     deadline = started
 
@@ -981,7 +1276,7 @@ def run_soak(runner: SerialRunner, args: argparse.Namespace,
             runner.synchronized = False
         commands += 1
         worst = max(worst, response.elapsed_s)
-        record(f"\n$ {text}\n{response.text}")
+        record(f"\n$ {text}\n{response.wire_text or response.text}")
         status, notes = classify(response.text, operation_step(text, expected_mask), response.completion)
         if status != PASS:
             if response.completion != "prompt":
@@ -993,8 +1288,13 @@ def run_soak(runner: SerialRunner, args: argparse.Namespace,
         nonlocal baseline
         baseline = compare_console(run("console"), baseline)
 
+    def check_health() -> None:
+        nonlocal health_baseline
+        health_baseline = compare_health(run("health"), health_baseline)
+
     try:
         baseline = parse_console(run("console"))
+        check_health()
         previous_verbose = re.search(r"^verbose: (on|off)", strip_ansi(run("verbose")), re.M)[1]
         if previous_verbose == "on":
             run("verbose off")
@@ -1002,11 +1302,9 @@ def run_soak(runner: SerialRunner, args: argparse.Namespace,
         while time.monotonic() < deadline and attempts < MAX_SOAK_BATCHES:
             batch_started = time.monotonic()
             attempts += 1
-            batch = run(f"stress_mix {SOAK_BATCH_ROUNDS}")
-            if not re.search(rf"^Session transfers: success={7 * SOAK_BATCH_ROUNDS + 2} failure=0[ \t]*\r?$", strip_ansi(batch), re.M):
-                raise ValueError("soak requires current firmware with complete per-session transfer evidence")
+            run(f"stress_mix {SOAK_BATCH_ROUNDS}")
             run("read", 0)
-            run("health")
+            check_health()
             check_console()
             batches += 1
             # One new batch per second bounds even a very fast 24-hour run.
@@ -1034,6 +1332,12 @@ def run_soak(runner: SerialRunner, args: argparse.Namespace,
             except (ValueError, OSError, RuntimeError, KeyboardInterrupt) as exc:
                 errors.append(f"cleanup {text} unverified: {str(exc) or 'operator interrupted'}")
         if baseline is not None and runner.synchronized:
+            if health_baseline is not None:
+                try:
+                    check_health()
+                    final_health_verified = True
+                except (ValueError, OSError, RuntimeError, KeyboardInterrupt) as exc:
+                    errors.append(f"final health evidence unverified: {str(exc) or 'operator interrupted'}")
             try:
                 check_console()
                 final_console_verified = True
@@ -1043,6 +1347,7 @@ def run_soak(runner: SerialRunner, args: argparse.Namespace,
         f"soak complete batches={batches} cycles={batches * SOAK_BATCH_ROUNDS} failures={len(errors)} "
         f"commands={commands} worst_latency_s={worst:.3f} "
         f"console_loss_checked={'yes' if final_console_verified else 'no'} "
+        f"health_history_checked={'yes' if final_health_verified else 'no'} "
         "SDK_RX_loss_observability=backend-dependent"
     )
     if errors:
@@ -1066,18 +1371,43 @@ def append_not_run_results(
 
 
 def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
+    args._serial_commands_executed = False
     transcript_path = Path(args.transcript) if args.transcript else None
     results: list[Result] = []
     plan = build_plan(args)
     console_baseline = None
+    health_baseline = None
+
+    def fail_session(note: str) -> None:
+        append_not_run_results(results, plan, note)
+        if not results:
+            artifact_error(args, note)
+            return
+        result = next((item for item in reversed(results) if item.status == FAIL), None)
+        if result is None:
+            result = next((item for item in reversed(results) if item.status != NOT_RUN), results[0])
+            result.status = UNKNOWN
+        if note not in result.notes:
+            result.notes += "; " + note
+
     with contextlib.ExitStack() as stack:
         transcript = None
         transcript_error = ""
         if transcript_path is not None:
             try:
                 transcript_path.parent.mkdir(parents=True, exist_ok=True)
-                transcript = transcript_path.open("w", encoding="utf-8")
+                transcript = getattr(args, "_artifact_handles", {}).get(transcript_path.resolve())
+                if transcript is None:
+                    transcript = transcript_path.open("x", encoding="utf-8", newline="\n")
+                if hasattr(args, "_run"):
+                    transcript.write("# TCA9548A HIL serial transcript\n"
+                                     + json.dumps(args._run, sort_keys=True) + "\n")
+                    transcript.flush()
             except OSError as exc:
+                artifact_error(args, f"transcript unavailable: {exc}")
+                if transcript is not None:
+                    with contextlib.suppress(OSError):
+                        transcript.close()
                 append_not_run_results(results, plan, f"transcript unavailable: {exc}")
                 return results, None
 
@@ -1085,6 +1415,7 @@ def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
                 try:
                     transcript.close()
                 except OSError as exc:
+                    artifact_error(args, f"transcript close failed: {exc}")
                     # Preserve the result list/report even if the final flush fails.
                     if results:
                         result = next((item for item in reversed(results) if item.status != NOT_RUN), results[0])
@@ -1104,27 +1435,50 @@ def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
                     # Raise once to stop the active test. Later cleanup commands
                     # still run and their status remains available to the report.
                     transcript_error = f"transcript write failed: {exc}"
+                    artifact_error(args, transcript_error)
                     raise RuntimeError(transcript_error) from exc
             if args.verbose:
                 print(text)
 
         try:
-            runner = stack.enter_context(SerialRunner(args))
+            runner = SerialRunner(args).__enter__()
+
+            def close_runner() -> None:
+                try:
+                    runner.__exit__(None, None, None)
+                except (OSError, RuntimeError, KeyboardInterrupt) as exc:
+                    reason = str(exc) or "operator interrupted serial close"
+                    fail_session("serial close failed: " + reason)
+
+            stack.callback(close_runner)
             boot = runner.read_until_idle()
             if boot:
                 record("$ boot\n" + boot)
+            synchronization = runner.synchronize()
+            record("$ initial input discard and fresh marker\n" +
+                   (synchronization.wire_text or synchronization.text))
+            if synchronization.completion != "prompt":
+                raise SessionLost("initial synchronization failed: " + synchronization.completion)
             for step in plan:
                 started = time.monotonic()
                 completion = "prompt"
+                wire_text = None
                 try:
+                    args._serial_commands_executed = True
                     if step.command == "<host bounded soak loop>":
                         text, elapsed = run_soak(runner, args, record)
-                    elif step.command in ("<host routing isolation checks>", "<host all-256 mask sweep>"):
+                    elif step.command in ("<host routing isolation checks>", "<host all-256 mask sweep>",
+                                          "<host control operation checks>"):
                         text, elapsed = run_mask_checks(runner, args, record,
-                                                       routing=step.command == "<host routing isolation checks>")
+                                                       mode={"<host routing isolation checks>": "routing",
+                                                             "<host all-256 mask sweep>": "sweep",
+                                                             "<host control operation checks>": "controls"}[step.command])
                     else:
                         response = runner.command(step.command)
                         text, elapsed, completion = response.text, response.elapsed_s, response.completion
+                        wire_text = response.wire_text
+                    if step.command == "version":
+                        args._firmware_version = text
                     status, notes = classify(text, step, completion)
                     if status != PASS and step.command.startswith("<host "):
                         notes += "; " + short_observed(text, limit=2000)
@@ -1148,6 +1502,12 @@ def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
                             notes = "console counters intact; accepted bytes do not prove terminal delivery or unobservable SDK RX loss"
                         except ValueError as exc:
                             status, notes = FAIL, str(exc)
+                    if status == PASS and step.command == "health":
+                        try:
+                            health_baseline = compare_health(text, health_baseline)
+                            notes = "complete READY snapshot; no new tracked failures since the initial health baseline"
+                        except ValueError as exc:
+                            status, notes = FAIL, str(exc)
                     if status == PASS and step.command == "version":
                         clean = strip_ansi(text)
                         if args.expect_commit:
@@ -1158,7 +1518,7 @@ def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
                             trees = re.findall(r"^[ \t]*Firmware tree: (\w+)[ \t]*$", clean, re.M)
                             if trees != ["clean"]:
                                 status, notes = FAIL, "firmware was not built from a reported clean checkout"
-                    record(f"\n$ {step.command}\n{text}")
+                    record(f"\n$ {step.command}\n{wire_text or text}")
                 except (OSError, RuntimeError, KeyboardInterrupt) as exc:
                     text, elapsed = str(exc), time.monotonic() - started
                     reason = str(exc) or "operator interrupted the run"
@@ -1172,7 +1532,9 @@ def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
                 time.sleep(args.command_delay_s)
         except (OSError, RuntimeError, KeyboardInterrupt) as exc:
             reason = str(exc) or "operator interrupted the run"
-            append_not_run_results(results, plan, f"serial session unavailable: {reason}")
+            # Failure between commands still retires the run, including after
+            # the final command. An omission allowance must not hide it.
+            fail_session(f"serial session interrupted or unavailable: {reason}")
     return results, transcript_path
 
 
@@ -1382,8 +1744,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="repeatable downstream fixture CH:ADDR; verifies all eight branch isolations")
     parser.add_argument("--sweep-masks", action="store_true",
                         help="write/read all 256 masks; use a collision-safe fixture (every channel can be enabled)")
-    parser.add_argument("--report", type=Path)
-    parser.add_argument("--transcript", type=Path)
+    parser.add_argument("--output-dir", type=Path,
+                        help="create a unique run directory with Markdown, JSON, transcript and hash manifest")
+    parser.add_argument("--report", type=Path, help="new Markdown report file; existing files are never overwritten")
+    parser.add_argument("--transcript", type=Path, help="new transcript file; existing files are never overwritten")
     parser.add_argument(
         "--not-run-reason",
         default="NOT RUN: no board with TCA9548A attached to the host.",
@@ -1395,6 +1759,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--fix-note", action="append", default=[])
     parser.add_argument("--verification-result", action="append", default=[])
     args = parser.parse_args(argv)
+    args._argv = list(argv)
+    if args.output_dir is not None and (args.report is not None or args.transcript is not None):
+        parser.error("--output-dir cannot be combined with --report or --transcript")
     if args.expect_commit is not None:
         if re.fullmatch(r"[0-9a-fA-F]{40}", args.expect_commit) is None:
             parser.error("--expect-commit must be a full 40-character hexadecimal commit")
@@ -1427,6 +1794,25 @@ def main(argv: list[str]) -> int:
     if args.parser_self_test:
         return parser_self_test(args)
 
+    args._artifact_errors = []
+    args._run = {
+        "run_id": dt.datetime.now(dt.timezone.utc).strftime("tca9548a_%Y%m%dT%H%M%S_%fZ"),
+        "started_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "argv": list(argv),
+        "host_start": repository_provenance(),
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+    }
+    try:
+        args._run["runner_sha256"] = sha256_file(Path(__file__).resolve())
+        paths = prepare_artifacts(args)
+    except OSError as exc:
+        print(f"Artifact preflight failed: {exc}", file=sys.stderr)
+        for handle in getattr(args, "_artifact_handles", {}).values():
+            with contextlib.suppress(OSError):
+                handle.close()
+        return 1
+
     if args.dry_run:
         results = dry_run(args)
         print_plan(results)
@@ -1440,15 +1826,46 @@ def main(argv: list[str]) -> int:
             f"unknown={counts[UNKNOWN]} not_run={counts[NOT_RUN]}"
         )
 
+    args._run["finished_utc"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    args._run["host_end"] = repository_provenance(paths.values())
+    args._run["host_changed"] = args._run["host_start"] != args._run["host_end"]
+    try:
+        args._run["runner_sha256_end"] = sha256_file(Path(__file__).resolve())
+        args._run["runner_changed"] = args._run["runner_sha256"] != args._run["runner_sha256_end"]
+    except OSError as exc:
+        artifact_error(args, f"runner source hash unavailable after run: {exc}")
+    exit_code = result_exit_code(results, dry_run=args.dry_run, allow_not_run=args.allow_not_run)
     if args.report is not None:
-        write_report(args.report, args, results, transcript_path)
-        print(f"Report written: {args.report}")
-
-    return result_exit_code(
-        results,
-        dry_run=args.dry_run,
-        allow_not_run=args.allow_not_run,
-    )
+        try:
+            write_report(args.report, args, results, transcript_path)
+            print(f"Report written: {args.report}")
+        except OSError as exc:
+            artifact_error(args, f"report write failed: {exc}")
+            print(args._artifact_errors[-1], file=sys.stderr)
+    if args._artifact_errors:
+        exit_code = 1
+    if args.output_dir is not None:
+        try:
+            write_bundle(args, results, paths, exit_code)
+            print(f"Evidence directory: {args.report.parent}")
+        except OSError as exc:
+            artifact_error(args, f"evidence bundle write failed: {exc}")
+            print(args._artifact_errors[-1], file=sys.stderr)
+            exit_code = 1
+            # Only this run created this path. A failed seal must not leave a
+            # parseable PASS manifest, even when the bytes reached the file.
+            with contextlib.suppress(OSError):
+                args._artifact_handles[paths["manifest"].resolve()].close()
+            with contextlib.suppress(OSError):
+                paths["manifest"].unlink()
+    for handle in args._artifact_handles.values():
+        if not handle.closed:
+            try:
+                handle.close()
+            except OSError as exc:
+                print(f"Artifact close failed: {exc}", file=sys.stderr)
+                exit_code = 1
+    return exit_code
 
 
 if __name__ == "__main__":

@@ -237,6 +237,7 @@ void Cli::printHelp(const char* topic) {
     helpItem("probe", "Raw read; no tracked health effects");
     helpItem("selftest", "Live mask tests; restore entry mask");
     helpItem("hil [dry|parser|run|run reset]", "No-I2C checks / live tests with optional RESET");
+    helpItem("hilmark <token>", "Bus-silent host framing; 1..32 letters/digits/_/-");
     helpItem("sweep", "Verify all 256 masks; restore entry mask");
     helpItem("stress / stress_mix [1-1000]", "Readback-verified rounds; finish all-off");
     helpItem("watch [N [interval_ms]]", "1..1000 reads; defaults 20 at 1000 ms");
@@ -336,6 +337,21 @@ void Cli::processCommand(const char* command) {
   uint32_t value = 0;
   _inCommand = true;
   do {
+    if (equals(name, "hilmark")) {
+      bool valid = count == 2;
+      size_t length = 0;
+      if (valid) {
+        for (const char* item = args[1]; *item; ++item) {
+          valid = valid && ((*item >= 'a' && *item <= 'z') ||
+                            (*item >= 'A' && *item <= 'Z') ||
+                            (*item >= '0' && *item <= '9') || *item == '_' || *item == '-');
+          ++length;
+        }
+      }
+      if (!valid || length == 0 || length > 32) invalid("hilmark <1..32 letters/digits/_/->");
+      else print("HIL marker: %s\n", args[1]);
+      break;
+    }
     if ((equals(name, "help") || equals(name, "?")) && count <= 2) { printHelp(count == 2 ? args[1] : nullptr); break; }
     if (count == 1 && (equals(name, "version") || equals(name, "ver"))) { printVersion(); break; }
     if (count == 1 && (equals(name, "cfg") || equals(name, "settings") || equals(name, "snapshot"))) { printConfig(); break; }

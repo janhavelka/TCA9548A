@@ -86,6 +86,7 @@ jobs:
         run: |
           python tools/tca9548a_hil.py --parser-self-test
           python tools/test_tca9548a_hil.py
+          python tools/test_hil_artifacts.py
 
       - name: Build Doxygen documentation
         run: doxygen Doxyfile

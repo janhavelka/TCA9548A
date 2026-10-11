@@ -888,6 +888,29 @@ void test_console_telemetry_is_cached_and_reports_unknown_backend_connection() {
   TEST_ASSERT_EQUAL_UINT32(0, fixture.transfers.size());
 }
 
+void test_host_marker_is_bounded_bus_silent_and_preserves_active_session() {
+  CliFixture fixture;
+  fixture.command("color off");
+  fixture.command("hilmark A_z-0123456789012345678901234567");
+  TEST_ASSERT_TRUE(fixture.contains("HIL marker: A_z-0123456789012345678901234567\n"));
+  TEST_ASSERT_EQUAL_UINT32(0, fixture.transfers.size());
+  for (const char* command : {"hilmark", "hilmark a b", "hilmark a.b",
+                              "hilmark 012345678901234567890123456789012"}) {
+    fixture.output.clear();
+    fixture.command(command);
+    TEST_ASSERT_FALSE(fixture.contains("HIL marker:"));
+    TEST_ASSERT_TRUE(fixture.contains("[E] Unknown or invalid command"));
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.transfers.size());
+  }
+  fixture.command("begin");
+  fixture.command("stress 2");
+  fixture.clearHistory();
+  fixture.command("hilmark active_1");
+  TEST_ASSERT_TRUE(fixture.contains("HIL marker: active_1\n"));
+  TEST_ASSERT_TRUE(fixture.cli.active());
+  TEST_ASSERT_EQUAL_UINT32(0, fixture.transfers.size());
+}
+
 }  // namespace
 
 void setUp() {}
@@ -934,5 +957,6 @@ int main(int, char**) {
   RUN_TEST(test_discovery_retains_unvisited_absent_and_error_as_different_evidence);
   RUN_TEST(test_console_discard_rejects_fragment_until_newline_and_preserves_active_run);
   RUN_TEST(test_console_telemetry_is_cached_and_reports_unknown_backend_connection);
+  RUN_TEST(test_host_marker_is_bounded_bus_silent_and_preserves_active_session);
   return UNITY_END();
 }
