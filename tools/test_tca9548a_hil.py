@@ -51,6 +51,28 @@ def scan_text(mask: int, addresses: set[int], errors: int = 0) -> str:
             + f"Scan complete: devices={len(addresses)} errors={errors}\n> ")
 
 
+def console_text(*, dropped=0, messages=0, overflows=0, accepted=100, connected="yes") -> str:
+    return (f"Console: backend=test connected={connected} queued_bytes=0 accepted_bytes={accepted} "
+            f"dropped_bytes={dropped} dropped_messages={messages} rx_overflows={overflows}\n> ")
+
+
+def stress_text(count: int, *, mixed=True) -> str:
+    return (("=== stress_mix summary ===\n" if mixed else "")
+            + f"Stress results: completed={count} requested={count} status=OK safe_off=OK\n"
+            + f"Duration: 3 ms\nHealth delta: success={(6 if mixed else 2) * count + 2} failure=0\n"
+            + f"Session transfers: success={(7 if mixed else 2) * count + 2} failure=0\n> ")
+
+
+def discover_text(addresses=None, target=0x70) -> str:
+    addresses = {0x70} if addresses is None else addresses
+    return ("discover started: requested=8; stop cancels\n"
+            + "".join(f"  Found device at 0x{address:02X}\n" for address in sorted(addresses))
+            + f"Discover complete: devices={len(addresses)} errors=0\n"
+            + f"Detection: tested=8 ack={len(addresses)} absent={8 - len(addresses)} errors=0 "
+            + f"target=0x{target:02X} target_ack={'yes' if target in addresses else 'no'} identity=unverified\n"
+            + "CLI result: command=discover outcome=PASS completed=8 requested=8\n> ")
+
+
 class Clock:
     def __init__(self) -> None:
         self.now = 0.0
@@ -105,6 +127,7 @@ class FixtureRunner:
         self.responses: dict[str, str] = {}
         self.clock = clock
         self.interrupt_at: str | None = None
+        self.verbose = False
 
     def __enter__(self):
         return self
@@ -143,6 +166,17 @@ class FixtureRunner:
             text = HEALTH
         elif command == "probe":
             text = "probe: OK\n> "
+        elif command == "console":
+            text = console_text()
+        elif command in ("discover", "detect"):
+            text = discover_text(self.upstream & set(range(0x70, 0x78)))
+        elif command.startswith("verbose"):
+            if command != "verbose":
+                self.verbose = command.split()[1] == "on"
+            text = f"verbose: {'on' if self.verbose else 'off'}\n> "
+        elif command.startswith("stress_mix "):
+            self.mask = 0
+            text = stress_text(int(command.split()[1]))
         else:
             text = "unexpected command\n> "
         return hil.Response(text, 0.1, "prompt")
@@ -173,6 +207,45 @@ class EvidenceTests(unittest.TestCase):
         step = next(step for step in hil.build_plan(hil.parse_args(["--skip-reset"])) if step.test_id == "TCA-HIL-008")
         self.assertEqual(hil.classify(hil_text(reset=False), step)[0], hil.PASS)
         self.classify("hil run reset", hil_text(reset=False), hil.FAIL)
+
+    def test_parser_check_requires_actual_parser_results(self):
+        self.classify("hil parser", hil_text(dry=True), hil.FAIL)
+        text = hil_text(dry=True).replace("HIL result: pass=3", "  [PASS] numeric parser rejects invalid input\n"
+                                       "  [PASS] line parser rejects controls and overflow\nHIL result: pass=5")
+        self.classify("hil parser", text)
+
+    def test_restart_banners_cannot_be_valid_command_evidence(self):
+        for banner in ("ESP-ROM:esp32s3-20210327", "rst:0x1 (POWERON)", "boot:0x8", "Brownout detector was triggered",
+                       "Guru Meditation Error", "Rebooting...", "TCA9548A Arduino bring-up CLI",
+                       "TCA9548A native ESP-IDF bring-up CLI"):
+            with self.subTest(banner=banner):
+                self.classify("version", banner + "\n=== Version Info ===\nLibrary: test\n> ", hil.FAIL)
+
+    def test_discovery_requires_full_unique_address_and_terminal_evidence(self):
+        self.classify("discover", discover_text({0x70, 0x76}))
+        self.classify("detect", discover_text(set()))
+        for text in (discover_text().replace("tested=8", "tested=7"),
+                     discover_text().replace("absent=7", "absent=6"),
+                     discover_text().replace("target_ack=yes", "target_ack=no"),
+                     discover_text().replace("completed=8", "completed=7"),
+                     discover_text().replace("Discover complete: devices=1", "Discover complete: devices=2"),
+                     discover_text({0x69}),
+                     discover_text().replace("Found device at 0x70", "Found device at 0x70\n  Found device at 0x70"),
+                     discover_text() + discover_text()):
+            with self.subTest(text=text):
+                self.assertNotEqual(hil.classify(text, hil.operation_step("discover"))[0], hil.PASS)
+
+    def test_console_loss_evidence_is_bounded_unambiguous_and_monotonic(self):
+        baseline = hil.parse_console(console_text(dropped=10, messages=2, accepted=100))
+        hil.compare_console(console_text(dropped=10, messages=2, accepted=101), baseline)
+        hil.parse_console(console_text(connected="unknown"))
+        for text in (console_text(dropped=11, messages=2), console_text(dropped=9, messages=2),
+                     console_text(dropped=10, messages=3), console_text(dropped=10, messages=2, overflows=1),
+                     console_text(dropped=10, messages=2, accepted=99), console_text(dropped=0xFFFFFFFF),
+                     console_text(accepted=0x100000000), console_text(connected="no"),
+                     console_text() + console_text(), console_text().replace("rx_overflows=0", "rx_overflows=nan")):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                hil.compare_console(text, baseline)
 
     def test_cfg_reports_valid_owner_timeout_without_hard_coding_default(self):
         for timeout_ms in (1, 20, 50, 60000):
@@ -373,10 +446,36 @@ class SerialTests(unittest.TestCase):
         with self.assertRaises(hil.SessionLost):
             self.exchange([], short_write=True)
 
+    def test_reset_retires_session_even_when_boot_contains_valid_response(self):
+        runner, response, _ = self.exchange([b"ESP-", b"ROM:esp32s3\n=== Version Info ===\nLibrary: test\n> "])
+        self.assertIn("restarted", response.completion)
+        self.assertFalse(runner.synchronized)
+        with self.assertRaises(hil.SessionLost):
+            runner.command("off")
+        self.assertEqual(runner.serial.writes, [b"version\n"])
+
+    def test_framework_startup_banners_retire_session_without_rom_output(self):
+        for banner in (b"TCA9548A Arduino bring-up CLI", b"TCA9548A native ESP-IDF bring-up CLI"):
+            with self.subTest(banner=banner):
+                runner, response, _ = self.exchange([banner + b"\n=== Version Info ===\nLibrary: test\n> "])
+                self.assertIn("restarted", response.completion)
+                self.assertFalse(runner.synchronized)
+                with self.assertRaises(hil.SessionLost):
+                    runner.command("off")
+                self.assertEqual(runner.serial.writes, [b"version\n"])
+
 
 class FixtureTests(unittest.TestCase):
     def route_args(self):
         return hil.parse_args(["--route", "0:0x48", "--route", "7:0x48", "--route", "4:0x49"])
+
+    def test_restart_during_mask_write_prevents_restoring_captured_state(self):
+        runner = FixtureRunner()
+        runner.responses["mask 0"] = "ESP-ROM:esp32s3\nmask 0x00: OK\n> "
+        text, _ = hil.run_mask_checks(runner, hil.parse_args([]), lambda _: None, routing=False)
+        self.assertIn("restore NOT_RUN", text)
+        self.assertFalse(runner.synchronized)
+        self.assertEqual(runner.commands, ["read", "mask 0"])
 
     def test_routing_all_eight_channels_shared_address_and_restore(self):
         runner = FixtureRunner()
@@ -541,7 +640,7 @@ class RunTests(unittest.TestCase):
         with patch.object(hil, "SerialRunner", return_value=runner), \
                 patch.object(hil.time, "monotonic", clock.monotonic), patch.object(hil.time, "sleep", clock.sleep):
             results, _ = hil.run_live(args)
-        self.assertEqual(len(results), 14)
+        self.assertEqual(len(results), 17)
         self.assertTrue(all(result.status == hil.PASS for result in results), [(result.step.command, result.notes) for result in results])
         self.assertIn("firmware I2C timeout=20 ms (reported setting)", results[2].notes)
         self.assertEqual(runner.mask, 0)
@@ -569,7 +668,7 @@ class RunTests(unittest.TestCase):
                                "--stress-count", "1000", "--soak-duration-s", "1"])
         plan = hil.build_plan(args)
         self.assertEqual(len({step.test_id for step in plan}), len(plan))
-        self.assertEqual(plan[-1].command, "health")
+        self.assertEqual([step.command for step in plan[-2:]], ["health", "console"])
         self.assertTrue(all(result.status == hil.NOT_RUN for result in hil.dry_run(args)))
 
     def test_live_failure_aborts_and_persists_transcript(self):
@@ -598,8 +697,9 @@ class RunTests(unittest.TestCase):
             args = hil.parse_args(["--report", str(path), "--command-delay-s", "0"])
             with patch.object(hil, "SerialRunner", return_value=runner):
                 results, _ = hil.run_live(args)
-            self.assertEqual(results[4].status, hil.UNKNOWN)
-            self.assertTrue(all(result.status == hil.NOT_RUN for result in results[5:]))
+            scan_index = next(index for index, result in enumerate(results) if result.step.command == "scan")
+            self.assertEqual(results[scan_index].status, hil.UNKNOWN)
+            self.assertTrue(all(result.status == hil.NOT_RUN for result in results[scan_index + 1:]))
             with patch.object(hil, "git_text", return_value="host"), patch.object(hil, "tool_text", return_value="tool"):
                 hil.write_report(path, args, results, None)
             self.assertIn("UNKNOWN", path.read_text(encoding="utf-8"))
@@ -680,7 +780,7 @@ class RunTests(unittest.TestCase):
         with patch.object(hil.time, "monotonic", clock.monotonic), patch.object(hil.time, "sleep", clock.sleep):
             text, _ = hil.run_soak(runner, args, lambda _: None)
         self.assertIn("failures=1", text)
-        self.assertEqual(runner.commands, ["read", "health", "off", "read"])
+        self.assertEqual(runner.commands, ["console", "verbose", "stress_mix 8", "read", "health", "off", "read", "console"])
         self.assertEqual(runner.mask, 0)
 
     def test_soak_streams_and_stops_at_count_cap(self):
@@ -689,10 +789,10 @@ class RunTests(unittest.TestCase):
         args = hil.parse_args(["--soak-duration-s", "100", "--command-delay-s", "0"])
         records = []
         with patch.object(hil.time, "monotonic", clock.monotonic), patch.object(hil.time, "sleep", clock.sleep), \
-                patch.object(hil, "MAX_SOAK_COMMANDS", 8):
+                patch.object(hil, "MAX_SOAK_BATCHES", 2):
             text, _ = hil.run_soak(runner, args, records.append)
-        self.assertEqual(len(records), 10)
-        self.assertIn("command cap", text)
+        self.assertEqual(len(records), 13)
+        self.assertIn("batch cap", text)
         self.assertIn("failures=1", text)
         self.assertNotIn("$ read", text)
 
@@ -707,19 +807,151 @@ class RunTests(unittest.TestCase):
                 text, elapsed = hil.run_soak(runner, args, lambda _: None)
             self.assertIn(f"failures={int(fail_cleanup)}", text)
             self.assertGreaterEqual(elapsed, 1)
-            self.assertLess(elapsed, 1.4)
+            self.assertLess(elapsed, 1.7)
 
     def test_soak_interrupt_attempts_verified_cleanup(self):
         clock = Clock()
         runner = FixtureRunner(clock=clock)
-        runner.interrupt_at = "probe"
+        runner.interrupt_at = "health"
         args = hil.parse_args(["--soak-duration-s", "1", "--command-delay-s", "0"])
         with patch.object(hil.time, "monotonic", clock.monotonic), patch.object(hil.time, "sleep", clock.sleep):
             text, _ = hil.run_soak(runner, args, lambda _: None)
         self.assertIn("operator interrupted", text)
         self.assertIn("failures=1", text)
-        self.assertEqual(runner.commands[-2:], ["off", "read"])
+        self.assertEqual(runner.commands[-3:], ["off", "read", "console"])
         self.assertEqual(runner.mask, 0)
+
+    def test_soak_uses_complete_all_channel_batches_and_restores_verbose(self):
+        clock = Clock()
+        runner = FixtureRunner()
+        runner.verbose = True
+        batch_starts = []
+        original = runner.command
+
+        def command(text):
+            if text.startswith("stress_mix"):
+                batch_starts.append(clock.now)
+            return original(text)
+
+        runner.command = command
+        args = hil.parse_args(["--soak-duration-s", "3", "--command-delay-s", "0"])
+        with patch.object(hil.time, "monotonic", clock.monotonic), patch.object(hil.time, "sleep", clock.sleep):
+            text, elapsed = hil.run_soak(runner, args, lambda _: None)
+        self.assertIn("batches=3 cycles=24 failures=0", text)
+        self.assertEqual(batch_starts, [0, 1, 2])
+        self.assertEqual(elapsed, 3)
+        self.assertTrue(runner.verbose)
+        self.assertEqual(runner.commands[:3], ["console", "verbose", "verbose off"])
+        self.assertEqual(runner.commands[-4:], ["off", "read", "verbose on", "console"])
+
+    def test_soak_cannot_pass_without_a_complete_batch_or_current_transfer_evidence(self):
+        runner = FixtureRunner()
+        args = hil.parse_args(["--soak-duration-s", "0.001"])
+        with patch.object(hil.time, "monotonic", side_effect=range(1000)):
+            text, _ = hil.run_soak(runner, args, lambda _: None)
+        self.assertIn("without a complete verified batch", text)
+        self.assertIn("batches=0 cycles=0 failures=1", text)
+        self.assertFalse(any(command.startswith(("off", "stress", "mask")) for command in runner.commands))
+
+        clock = Clock()
+        runner = FixtureRunner(clock=clock)
+        runner.responses["stress_mix 8"] = stress_text(8).replace("Session transfers: success=58 failure=0\n", "")
+        with patch.object(hil.time, "monotonic", clock.monotonic), patch.object(hil.time, "sleep", clock.sleep):
+            text, _ = hil.run_soak(runner, args, lambda _: None)
+        self.assertIn("per-session transfer evidence", text)
+        self.assertIn("batches=0 cycles=0 failures=1", text)
+        self.assertEqual(runner.commands[-3:], ["off", "read", "console"])
+
+    def test_soak_console_loss_or_restart_cannot_hide_behind_successful_stress(self):
+        for fault in ("drop", "reset", "baseline"):
+            with self.subTest(fault=fault):
+                clock = Clock()
+                runner = FixtureRunner(clock=clock)
+                original = runner.command
+                calls = 0
+
+                def command(text):
+                    nonlocal calls
+                    if text == "console":
+                        calls += 1
+                        if (fault == "drop" and calls > 1) or fault == "baseline":
+                            return hil.Response(console_text(dropped=1 if fault == "drop" else 0xFFFFFFFF), 0, "prompt")
+                    return original(text)
+
+                runner.command = command
+                if fault == "reset":
+                    runner.responses["stress_mix 8"] = "rst:0x1 (POWERON_RESET)\n" + stress_text(8)
+                args = hil.parse_args(["--soak-duration-s", "1", "--command-delay-s", "0"])
+                with patch.object(hil.time, "monotonic", clock.monotonic), patch.object(hil.time, "sleep", clock.sleep):
+                    text, _ = hil.run_soak(runner, args, lambda _: None)
+                self.assertIn("[FAIL]", text)
+                self.assertNotIn("failures=0", text)
+                if fault == "reset":
+                    self.assertEqual(runner.commands, ["console", "verbose", "stress_mix 8"])
+                    self.assertFalse(runner.synchronized)
+                    self.assertIn("cleanup NOT_RUN", text)
+                elif fault == "baseline":
+                    self.assertEqual(runner.commands, [])
+
+    def test_live_console_end_snapshot_rejects_new_output_loss(self):
+        runner = FixtureRunner()
+        baseline = console_text()
+        original = runner.command
+        calls = 0
+
+        def command(text):
+            nonlocal calls
+            if text == "console":
+                calls += 1
+                return hil.Response(baseline if calls == 1 else console_text(dropped=1), 0, "prompt")
+            return original(text)
+
+        runner.command = command
+        args = hil.parse_args(["--command-delay-s", "0"])
+        plan = [step for step in hil.build_plan(args) if step.command == "console"]
+        with patch.object(hil, "build_plan", return_value=plan), patch.object(hil, "SerialRunner", return_value=runner):
+            results, _ = hil.run_live(args)
+        self.assertEqual([result.status for result in results], [hil.PASS, hil.FAIL])
+        self.assertIn("dropped_bytes changed", results[-1].notes)
+
+    def test_console_counter_regression_is_detected_between_successive_snapshots(self):
+        for mode in ("soak", "live"):
+            with self.subTest(mode=mode):
+                clock = Clock()
+                runner = FixtureRunner(clock=clock)
+                original = runner.command
+                accepted = iter((100, 500, 200))
+
+                def command(text):
+                    if text == "console":
+                        return hil.Response(console_text(accepted=next(accepted, 200)), 0, "prompt")
+                    return original(text)
+
+                runner.command = command
+                args = hil.parse_args(["--soak-duration-s", "2", "--command-delay-s", "0"])
+                with patch.object(hil.time, "monotonic", clock.monotonic), patch.object(hil.time, "sleep", clock.sleep):
+                    if mode == "soak":
+                        text, _ = hil.run_soak(runner, args, lambda _: None)
+                        self.assertIn("counter moved backwards", text)
+                        self.assertIn("[FAIL]", text)
+                        self.assertIn("batches=1 cycles=8", text)
+                    else:
+                        steps = [step for step in hil.build_plan(args) if step.command == "console"]
+                        with patch.object(hil, "build_plan", return_value=[steps[0], steps[0], steps[1]]), \
+                                patch.object(hil, "SerialRunner", return_value=runner):
+                            results, _ = hil.run_live(args)
+                        self.assertEqual([result.status for result in results], [hil.PASS, hil.PASS, hil.FAIL])
+                        self.assertIn("counter moved backwards", results[-1].notes)
+
+    def test_live_discovery_requires_configured_mux_address_before_later_tests(self):
+        runner = FixtureRunner()
+        runner.responses["discover"] = discover_text({0x72})
+        args = hil.parse_args(["--command-delay-s", "0"])
+        plan = [step for step in hil.build_plan(args) if step.command in ("discover", "scan")]
+        with patch.object(hil, "build_plan", return_value=plan), patch.object(hil, "SerialRunner", return_value=runner):
+            results, _ = hil.run_live(args)
+        self.assertEqual([result.status for result in results], [hil.FAIL, hil.NOT_RUN])
+        self.assertEqual(runner.commands, ["discover"])
 
     def test_live_keyboard_interrupt_records_unknown_and_rest_not_run(self):
         runner = FixtureRunner()

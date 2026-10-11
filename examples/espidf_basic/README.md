@@ -54,14 +54,19 @@ path. Neither mux RESET nor driver rebind recreates the controller. See
 The supplied defaults select native USB CDC on ESP32-S2 and USB Serial/JTAG
 on ESP32-S3, with secondary output disabled. Existing `sdkconfig` values take
 precedence; verify the console choice in `idf.py menuconfig` after upgrading.
+Other console configurations are rejected at compile time for this example.
 Use the native USB connector with DTR on and RTS off. Startup does not wait for
-a terminal. Output attempts have a 50 ms budget per piece, input is nonblocking,
-and every loop yields at least one FreeRTOS tick. `version` reports dropped
-output and Git commit/tree identity, refreshed even on incremental builds.
+a terminal. A fixed 8 KiB output queue drains at most 64 bytes per loop without
+waiting for the host. Input is nonblocking, and every loop yields at least one
+FreeRTOS tick (defaults select 1 kHz). `console` reports backlog and loss;
+`version` reports Git commit/tree identity, refreshed on incremental builds.
 
-S2 uses the SDK's internal ROM CDC buffer API to preserve partial-write results;
+S2 checks endpoint readiness and uses the SDK's internal ROM CDC buffer API to preserve partial-write results;
 its generic VFS can silently discard them. S3 uses the native driver with fixed
-queues allocated once during startup and zero-wait TX calls. These example-only
+1 KiB TX/RX queues allocated once during startup and zero-wait TX calls.
+S2 cannot report connection state; neither native backend reports RX overflow.
+Do not interpret zero overflow counts as proof of loss-free input. Send one
+command at a time and wait for its prompt. These example-only
 backend choices are checked by the pinned 5.4/5.5 build matrix and require review
 on SDK upgrades. Firmware build success does not validate USB endurance; follow
 the [disconnect and long-run procedure](../../docs/CLI.md#fixture-and-usb-endurance-procedure).

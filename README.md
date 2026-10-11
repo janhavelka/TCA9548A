@@ -420,15 +420,19 @@ configuration, transfer assertions, cancellation, and fixture procedures.
 
 ```text
 help
+help diagnostics
 color off
 detect
+stats
 cfg
+console
 hil parser
 stress 1000
 stats
 ```
 
-Detection probes the eight possible addresses without claiming chip identity.
+Detection probes the eight possible addresses without claiming chip identity;
+`stats` retains the candidates, tested/absent/error counts, and target ACK result.
 To change the target, use `end`, `addr 0x72` (matching the straps), and `begin`.
 Timeouts and the passive offline threshold can also be staged while ended.
 `begin` probes before receiving a control byte, then verifies all-off.
@@ -438,9 +442,14 @@ Timeouts and the passive offline threshold can also be staged while ended.
 original error separately from cleanup. Stress counts verified rounds, finishes
 all-off, and caps at 1,000 rounds. Self-test and sweep restore their entry mask.
 Use mask tests only on fixtures safe for the enabled channel combinations.
+Firmware `soak` verifies the initial control byte once per second and at its
+deadline. Host soak repeats eight-round mixed batches, covering every channel
+with readback, health, console loss checks, and verified all-off cleanup.
 
-The consoles use fixed input buffers, bounded output attempts, and no wait for
-a connected host at startup. PlatformIO and the host runner set DTR on and RTS
+The consoles use fixed input buffers, an 8 KiB output queue with zero-wait
+draining, and no wait for a connected host at startup. `console` reports backlog,
+loss counters, and backend observability. The host runner rejects reset banners
+and console loss. PlatformIO and the host runner set DTR on and RTS
 off for native USB. USB disconnect testing and long-run evidence are described
 in the [guide](docs/CLI.md#fixture-and-usb-endurance-procedure).
 

@@ -33,6 +33,8 @@ FORBIDDEN_PATTERNS = (
     r"\bSerial\.",
     r"\bString\b",
     r"\bfgets\(",
+    # A VFS stdout write can block or hide loss; use the selected USB backend.
+    r"\bwrite\(STDOUT_FILENO",
     r"examples/01_basic_bringup_cli/main\.cpp",
     # A combined transfer puts a repeated START on the mux, which does not
     # switch channels (TI SCPA063 section 4.1).
@@ -49,6 +51,8 @@ REQUIRED_NATIVE_TOKENS = (
     "vTaskDelay",
     "read(STDIN_FILENO",
     "O_NONBLOCK",
+    "usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_LF)",
+    '#error "The native example requires CONFIG_ESP_CONSOLE_USB_CDC or CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG"',
     "Tca9548aCli.h",
     ".feed(",
     ".tick(",

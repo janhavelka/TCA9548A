@@ -75,12 +75,18 @@ It additionally rejects embedded control bytes and signed/wrapping, overflowing,
 or trailing numeric arguments through the same helper used by both CLIs.
 
 The `native_cli_commands` suite executes the shared command handlers with the
-real core and a test-only controller fixture. Its 32 tests cover staged settings,
+real core and a test-only controller fixture. Its 39 tests cover staged settings,
 address preflight, all channel operations, detection, physical counter assertions,
 parser rejection, cache/health reporting, exhaustive sweep, all eight mixed-stress
 channels, cancellation, failed restoration, receive-fault retirement, and
-watch/soak deadlines across clock wrap. This is software evidence, not a device
+watch/soak deadlines across clock wrap, soak drift including terminal readback,
+topic help, retained detection outcomes, and discarding partial console input.
+This is software evidence, not a device
 simulator embedded in production code.
+
+The `native_console` suite tests the fixed output queue: partial/zero backend
+writes, wrap, saturation, and preserving a visible loss marker before later
+records or prompts. These tests cannot establish physical USB delivery.
 
 The `native_transport` suite exercises the actual example Wire adapter against
 a test-only recording double: exact one-byte shapes, explicit STOP, independent
@@ -107,12 +113,15 @@ route checks that never ran. Configuration checks require exactly one valid repo
 I2C timeout, a bound initialized driver, matching snapshot, and a usable
 controller. Scan must contain the configured mux; stress must provide nonzero
 transfer evidence. Tests cover serial control-line setup before open, required
-firmware identity, and rejection of contradictory summaries. The timeout is
+firmware identity, rejection of contradictory summaries, actual startup/reset
+banners, completed discovery evidence, console loss and counter saturation,
+complete eight-round soak batches, empty coverage and cleanup after lost framing.
+The timeout is
 recorded in the result notes; this is not a timing
 measurement. These use scripted responses and are not hardware evidence.
 
-Local validation on 2026-10-11 passed 47 driver, 3 line/parser, 32 executed
-CLI-command, and 7 Wire-adapter tests (89 total), plus 54 Python HIL regressions.
+Local validation on 2026-10-11 passed 47 driver, 3 line/parser, 39 executed
+CLI-command, 6 console-queue, and 7 Wire-adapter tests (102 total), plus 67 Python HIL regressions.
 The framework-neutral build, standalone CMake consumer/CTest, both Arduino
 builds, Doxygen, repository contracts, and packed-archive consumer are checked
 for this change. Check the CI run attached to the exact commit for all four
@@ -140,7 +149,8 @@ were used; no system-wide PATH change or new installation was made.
    python tools/tca9548a_hil.py --port COM8 --address 0x70 --report .pio/hil/live.md --transcript .pio/hil/live.serial.txt --fixture-note "PCB revision, MCU, RESET GPIO, rails, pull-ups, targets and flashed binary identity"
    ```
 
-   This checks complete command responses, healthy READY state, scan errors,
+   This checks complete command responses, healthy READY state, all eight
+   possible mux addresses, configured target ACK, console loss, scan errors,
    every one-hot control mask, arbitrary mask `0xA5`, recovery, and verified
    restoration. RESET must clear a verified `0x01` seed, so an unwired pin
    cannot pass merely because the device was already all-off.
@@ -163,9 +173,12 @@ were used; no system-wide PATH change or new installation was made.
    runner does not send further blind commands.
 6. Add `--sample-count 1000 --stress-count 1000 --soak-duration-s 3600` for
    bounded repetition on a suitable fixture. Counts are capped at 1,000 per
-   firmware stress command; soak duration is capped at one day and 100,000
-   host commands. Stress and soak require verified all-off cleanup. Mixed
-   stress checks its readbacks against the preceding mask write.
+   firmware stress command; soak duration is capped at one day and 86,401
+   batches, with at most one new batch per second. Each quiet batch executes
+   `stress_mix 8` (all eight channels, exactly 58 successful transfers), then
+   all-off readback, health and console checks. At least one complete batch
+   and verified all-off cleanup are required. Prior verbosity is restored
+   while the serial session remains usable.
 
 The runner has separate finite command budgets: 5 s normally, 30 s for scan,
 and 240 s for firmware stress by default, configurable through `--timeout-s`,
@@ -175,6 +188,10 @@ past its scheduling deadline by the in-flight command and bounded cleanup.
 These host budgets do not establish the firmware's physical timing bound.
 Incomplete responses, skipped required RESET checks, unknown results, scan
 faults, mismatched readbacks, and incomplete stress all fail the run.
+Console loss-counter changes and saturation fail evidence checks; zero RX
+overflow counters do not prove reception when the backend cannot observe loss.
+Reset banners retire the session and prohibit restoration of stale captured
+routing. Reconnect and establish a new session before continuing.
 
 Reports record host checkout identity separately from runtime version output.
 Both firmware builds refresh their full Git identity on each build. Add

@@ -154,6 +154,20 @@ void Cli::printBus() {
   print("  Cached application settings; no bus I/O.\n");
 }
 
+void Cli::printConsole() {
+  if (!_platform.consoleStats) {
+    result("console", Status::Error(Err::UNSUPPORTED, "console counters unavailable")); return;
+  }
+  const auto stats = _platform.consoleStats(_platform.user);
+  print("Console: backend=%s connected=%s queued_bytes=%lu accepted_bytes=%lu dropped_bytes=%lu dropped_messages=%lu rx_overflows=%lu\n",
+        stats.backend ? stats.backend : "unknown", stats.connected < 0 ? "unknown" : stats.connected ? "yes" : "no",
+        static_cast<unsigned long>(stats.queuedBytes), static_cast<unsigned long>(stats.acceptedBytes),
+        static_cast<unsigned long>(stats.droppedBytes), static_cast<unsigned long>(stats.droppedMessages),
+        static_cast<unsigned long>(stats.rxOverflows));
+  print("Accepted bytes reached the backend; terminal delivery is not guaranteed.\n");
+  print("RX overflow reporting: %s\n", stats.rxOverflowObservable ? "supported" : "unavailable");
+}
+
 void Cli::printTransferStats() {
   if (!_platform.transferStats) { result("xfer_stats", Status::Error(Err::UNSUPPORTED, "physical counters unavailable")); return; }
   const auto stats = _platform.transferStats(_platform.user);
@@ -163,47 +177,76 @@ void Cli::printTransferStats() {
         stats.attempts == UINT32_MAX ? "yes" : "no");
 }
 
-void Cli::printHelp() {
+void Cli::printHelp(const char* topic) {
+  if (topic && equals(topic, "quickstart")) {
+    print("Quickstart: color off -> version -> console -> bus -> detect -> cfg -> read\n");
+    print("For another strap: end -> addr 0x72 -> begin (writes and verifies all-off).\n");
+    print("One branch: select 3 -> verify 8 -> scan -> off -> verify 0\n");
+    print("On a safe fixture: hil parser -> selftest -> stress 100 -> stats\n");
+    print("ACK is not identity. Mask tests change routing; conflicting downstream addresses must remain isolated.\n");
+    return;
+  }
+  if (topic && equals(topic, "config")) topic = "configuration";
+  if (topic && equals(topic, "detection")) topic = "connection";
+  const bool all = topic == nullptr || equals(topic, "all");
+  if (!all && !equals(topic, "common") && !equals(topic, "connection") &&
+      !equals(topic, "configuration") && !equals(topic, "switch") && !equals(topic, "diagnostics")) {
+    invalid("help [common|connection|configuration|switch|diagnostics|quickstart|all]"); return;
+  }
   section("TCA9548A CLI Help");
-  print("\n%s[Common]%s\n", color(GREEN), color(RESET));
-  helpItem("help / ?", "Show this help");
-  helpItem("version / ver", "Library, MCU and firmware identity");
-  helpItem("color [on|off]", "Show/set ANSI colors (also 0|1)");
-  helpItem("verbose [0|1]", "Show/set each watch/stress readback");
-  helpItem("bus / diag", "Cached bus / version, config and health");
-  helpItem("begin / init", "Probe address, bind, then verify safe-off");
-  helpItem("end / unbind", "Bus-silent release; stop active work first");
-  helpItem("scan", "112 address probes in the observed topology");
-  helpItem("discover / detect", "Probe 0x70..0x77; ACK is not chip identity");
-  print("\n%s[Configuration]%s\n", color(GREEN), color(RESET));
-  helpItem("cfg / settings / snapshot", "Bound settings or staged settings while ended");
-  helpItem("addr [0x70..0x77]", "Show/set target while ended; no I2C");
-  helpItem("timeout [1..60000]", "Show/set transfer timeout while ended");
-  helpItem("resettimeout [1..60000]", "Show/set RESET timeout while ended");
-  helpItem("offline [1..255]", "Show/set passive threshold while ended");
-  print("\n%s[Switch]%s\n", color(GREEN), color(RESET));
-  helpItem("read / dump", "Read and verify the control byte");
-  helpItem("select <0-7>", "Select one channel, disable the rest");
-  helpItem("mask <0-255>", "Write any channel combination");
-  helpItem("enable / disable <0-7>", "Fresh read then enable/disable one channel");
-  helpItem("verify [0-255]", "Compare live mask to expected value or cache");
-  helpItem("off / recover", "One all-off write; recover never resets bus");
-  helpItem("reset / hardreset", "Optional RESET callback then verify zero");
-  helpItem("invalidate", "Mark cached mask unknown; no I2C");
-  print("\n%s[Diagnostics]%s\n", color(GREEN), color(RESET));
-  helpItem("health / drv / state / online", "Cached passive health and last full error");
-  helpItem("probe", "Raw read; no tracked health effects");
-  helpItem("selftest", "Live mask tests; restore entry mask");
-  helpItem("hil [dry|parser|run|run reset]", "No-I2C checks / live tests with optional RESET");
-  helpItem("sweep", "Verify all 256 masks; restore entry mask");
-  helpItem("stress / stress_mix [1-1000]", "Readback-verified rounds; finish all-off");
-  helpItem("watch [N [interval_ms]]", "1..1000 reads; defaults 20 at 1000 ms");
-  helpItem("soak <1..86400 seconds>", "Read once per second for a finite duration");
-  helpItem("stop / cancel", "Stop scheduling; verify mutating-test cleanup");
-  helpItem("stats / result [reset]", "Cached current/last run and cleanup evidence");
-  helpItem("xfer_stats / counters", "Physical adapter attempts, including probes");
-  helpItem("xfer_reset", "Reset physical counters while idle");
-  helpItem("xfer_assert N [ok fail]", "Assert exact unsaturated physical counts");
+  print("Topics: common connection configuration switch diagnostics quickstart all\n");
+  if (all || equals(topic, "common")) {
+    print("\n%s[Common]%s\n", color(GREEN), color(RESET));
+    helpItem("help / ? [topic]", "Show all commands or one topic");
+    helpItem("version / ver", "Library, MCU and firmware identity");
+    helpItem("color [on|off]", "Show/set ANSI colors (also 0|1)");
+    helpItem("verbose [0|1]", "Show/set each watch/stress readback");
+    helpItem("bus / diag", "Cached bus / version, config and health");
+    helpItem("console", "Cached USB connection, output loss and RX counters");
+  }
+  if (all || equals(topic, "connection")) {
+    print("\n%s[Connection and detection]%s\n", color(GREEN), color(RESET));
+    helpItem("begin / init", "Probe address, bind, then verify safe-off");
+    helpItem("end / unbind", "Bus-silent release; stop active work first");
+    helpItem("scan", "112 address probes in the observed topology");
+    helpItem("discover / detect", "Probe 0x70..0x77; ACK is not chip identity");
+    if (!all) print("Detection preserves routing and target. Inspect stats for retained candidates and target presence.\n");
+  }
+  if (all || equals(topic, "configuration")) {
+    print("\n%s[Configuration]%s\n", color(GREEN), color(RESET));
+    helpItem("cfg / settings / snapshot", "Bound settings or staged settings while ended");
+    helpItem("addr [0x70..0x77]", "Show/set target while ended; no I2C");
+    helpItem("timeout [1..60000]", "Show/set transfer timeout while ended");
+    helpItem("resettimeout [1..60000]", "Show/set RESET timeout while ended");
+    helpItem("offline [1..255]", "Show/set passive threshold while ended");
+  }
+  if (all || equals(topic, "switch")) {
+    print("\n%s[Switch]%s\n", color(GREEN), color(RESET));
+    helpItem("read / dump", "Read and verify the control byte");
+    helpItem("select <0-7>", "Select one channel, disable the rest");
+    helpItem("mask <0-255>", "Write any channel combination");
+    helpItem("enable / disable <0-7>", "Fresh read then enable/disable one channel");
+    helpItem("verify [0-255]", "Compare live mask to expected value or cache");
+    helpItem("off / recover", "One all-off write; recover never resets bus");
+    helpItem("reset / hardreset", "Optional RESET callback then verify zero");
+    helpItem("invalidate", "Mark cached mask unknown; no I2C");
+  }
+  if (all || equals(topic, "diagnostics")) {
+    print("\n%s[Diagnostics]%s\n", color(GREEN), color(RESET));
+    helpItem("health / drv / state / online", "Cached passive health and last full error");
+    helpItem("probe", "Raw read; no tracked health effects");
+    helpItem("selftest", "Live mask tests; restore entry mask");
+    helpItem("hil [dry|parser|run|run reset]", "No-I2C checks / live tests with optional RESET");
+    helpItem("sweep", "Verify all 256 masks; restore entry mask");
+    helpItem("stress / stress_mix [1-1000]", "Readback-verified rounds; finish all-off");
+    helpItem("watch [N [interval_ms]]", "1..1000 reads; defaults 20 at 1000 ms");
+    helpItem("soak <1..86400 seconds>", "Verify unchanged mask once/sec and at end");
+    helpItem("stop / cancel", "Stop scheduling; verify mutating-test cleanup");
+    helpItem("stats / result [reset]", "Cached current/last run and cleanup evidence");
+    helpItem("xfer_stats / counters", "Physical adapter attempts, including probes");
+    helpItem("xfer_reset", "Reset physical counters while idle");
+    helpItem("xfer_assert N [ok fail]", "Assert exact unsaturated physical counts");
+  }
   print("\nNumbers accept decimal, 0x hex and leading-zero octal.\n");
   print("Mask tests change routing. Do not combine branches with conflicting addresses.\n");
   print("Prompt appears after completion; stats and stop remain usable during a run.\n");
@@ -263,6 +306,10 @@ void Cli::feed(char value) {
   }
 }
 
+void Cli::discardInput() {
+  (void)_lineBuffer.push('\0', nullptr, 0);
+}
+
 void Cli::processCommand(const char* command) {
   char buffer[cli_shell::FixedLineBuffer::CAPACITY]{};
   const char* args[4]{};
@@ -289,12 +336,13 @@ void Cli::processCommand(const char* command) {
   uint32_t value = 0;
   _inCommand = true;
   do {
-    if (count == 1 && (equals(name, "help") || equals(name, "?"))) { printHelp(); break; }
+    if ((equals(name, "help") || equals(name, "?")) && count <= 2) { printHelp(count == 2 ? args[1] : nullptr); break; }
     if (count == 1 && (equals(name, "version") || equals(name, "ver"))) { printVersion(); break; }
     if (count == 1 && (equals(name, "cfg") || equals(name, "settings") || equals(name, "snapshot"))) { printConfig(); break; }
     if (count == 1 && (equals(name, "health") || equals(name, "drv") || equals(name, "state") || equals(name, "online"))) { printHealth(); break; }
     if (count == 1 && equals(name, "bus")) { printBus(); break; }
-    if (count == 1 && equals(name, "diag")) { printVersion(); printConfig(); printHealth(); printBus(); break; }
+    if (count == 1 && equals(name, "console")) { printConsole(); break; }
+    if (count == 1 && equals(name, "diag")) { printVersion(); printConfig(); printHealth(); printBus(); printConsole(); break; }
     if (equals(name, "color") || equals(name, "verbose")) {
       bool setting = equals(name, "color") ? _color : _verbose;
       if (count > 2 || (count == 2 && !boolean(args[1], setting))) { invalid("color|verbose [0|1|off|on]"); break; }
@@ -526,6 +574,7 @@ void Cli::start(Run kind, uint32_t count, uint32_t intervalMs) {
   _session.startedMs = now(); _session.nextMs = _session.startedMs;
   _session.successBefore = _device.totalSuccess(); _session.failureBefore = _device.totalFailures();
   _session.address = kind == Run::SCAN ? 0x08 : 0x70;
+  _session.targetAddress = _config.i2cAddress;
   if (kind == Run::SOAK) _session.durationMs = count * 1000U;
   print("%s started: requested=%lu; stop cancels\n", runName(), static_cast<unsigned long>(count));
   if (kind == Run::DISCOVER) print("Address ACK candidates only; TCA9548A has no identity register.\n");
@@ -586,6 +635,22 @@ void Cli::printRunStats() {
       (_session.kind == Run::SWEEP && _session.captured);
   print("Cleanup: %s\n", !needsCleanup ? "not needed" : active() ? "pending" : _session.cleanup.ok() ? "verified" : "failed");
   result("Cleanup result", _session.cleanup);
+  if (_session.kind == Run::SCAN || _session.kind == Run::DISCOVER) {
+    const uint8_t targetBit = TCA9548A::cmd::isValidAddress(_session.targetAddress) ?
+        static_cast<uint8_t>(1U << (_session.targetAddress - 0x70)) : 0;
+    const char* targetAck = !(_session.candidateTested & targetBit) ? "not-tested" :
+        (_session.candidateAcks & targetBit) ? "yes" : (_session.candidateErrors & targetBit) ? "error" : "no";
+    print("Detection: tested=%lu ack=%u absent=%lu errors=%u target=0x%02X target_ack=%s identity=unverified\n",
+          static_cast<unsigned long>(_session.completed), _session.found,
+          static_cast<unsigned long>(_session.completed - _session.found - _session.scanErrors),
+          _session.scanErrors, _session.targetAddress, targetAck);
+    print("Candidate addresses:");
+    if (_session.candidateAcks == 0) print(" none");
+    for (unsigned bit = 0; bit < 8; ++bit) {
+      if (_session.candidateAcks & (1U << bit)) print(" 0x%02X", 0x70 + bit);
+    }
+    print(" (ACK only; current routing at scan time)\n");
+  }
 }
 
 void Cli::tickCleanup() {
@@ -612,8 +677,14 @@ void Cli::tickScan() {
     _session.phase = 1; print("Scanning I2C bus (112 bounded probes)...\n"); return;
   }
   const auto value = _platform.probeAddress(static_cast<uint8_t>(_session.address), _config.i2cTimeoutMs, _platform.user);
-  if (value.ok()) { ++_session.found; print("  Found device at 0x%02X\n", _session.address); }
+  const uint8_t candidateBit = _session.address >= 0x70 ? static_cast<uint8_t>(1U << (_session.address - 0x70)) : 0;
+  _session.candidateTested |= candidateBit;
+  if (value.ok()) {
+    _session.candidateAcks |= candidateBit;
+    ++_session.found; print("  Found device at 0x%02X\n", _session.address);
+  }
   else if (!value.is(Err::I2C_NACK_ADDR)) {
+    _session.candidateErrors |= candidateBit;
     ++_session.scanErrors; print("  Scan error at 0x%02X: ", _session.address); status(value); print("\n");
     if (_session.primary.ok()) _session.primary = value;
     // Transport errors do not establish absence; stop this scan without retry.
@@ -665,17 +736,28 @@ void Cli::tick() {
   if (_session.kind == Run::SCAN || _session.kind == Run::DISCOVER) { tickScan(); return; }
   if (_session.kind == Run::STRESS || _session.kind == Run::MIX || _session.kind == Run::SWEEP) { tickMasks(); return; }
   const auto current = now();
-  if (_session.kind == Run::SOAK && current - _session.startedMs >= _session.durationMs) {
-    if (_session.completed == 0) _session.primary = Status::Error(Err::TIMEOUT, "soak expired before first sample");
+  const bool endingSoak = _session.kind == Run::SOAK &&
+      current - _session.startedMs >= _session.durationMs;
+  if (endingSoak && _session.completed == 0) {
+    _session.primary = Status::Error(Err::TIMEOUT, "soak expired before first sample");
     finish(); return;
   }
-  if (static_cast<int32_t>(current - _session.nextMs) < 0) return;
+  // Always verify once at the terminal deadline, even for a one-second soak.
+  if (!endingSoak && static_cast<int32_t>(current - _session.nextMs) < 0) return;
   ChannelMask observed;
   const auto read = recordTransfer(_device.readChannelMask(observed));
   if (!read.ok()) { fail(read); return; }
+  if (_session.kind == Run::SOAK) {
+    if (_session.completed == 0) _session.expected = observed;
+    else if (observed.raw() != _session.expected.raw()) {
+      fail(mismatch(_session.expected, observed));
+      return;
+    }
+  }
   ++_session.completed;
   if (_verbose || _session.kind == Run::WATCH) print("%s sample=%lu mask=0x%02X timestamp_ms=%lu\n", runName(), static_cast<unsigned long>(_session.completed), observed.raw(), static_cast<unsigned long>(current));
   _session.nextMs = current + _session.intervalMs;
+  if (endingSoak) { finish(); return; }
   if (_session.kind == Run::WATCH && _session.completed == _session.target) finish();
 }
 

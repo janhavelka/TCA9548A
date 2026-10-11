@@ -50,7 +50,8 @@ src/                     - Implementation (.cpp)
 examples/
   01_basic_bringup_cli/  - Arduino bring-up CLI
   common/                - Example-only BoardConfig.h, I2cTransport.h,
-                           CliLineBuffer.h, CliArguments.h, and the shared
+                           CliLineBuffer.h, CliArguments.h, ConsoleOutput.h,
+                           and the shared
                            framework-neutral Tca9548aCli.h/.cpp
   espidf_basic/          - Native ESP-IDF app_main CLI example
 test/                    - Separate driver and example CLI Unity suites,

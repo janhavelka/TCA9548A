@@ -1,11 +1,9 @@
 /// @file main.cpp
 /// @brief Native ESP-IDF transport and console adapter for the common CLI.
 
-#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <string.h>
 #include <unistd.h>
 
 #include <driver/gpio.h>
@@ -24,7 +22,11 @@
 #include <esp_private/usb_console.h>
 #elif CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 #include <driver/usb_serial_jtag.h>
+#include <driver/usb_serial_jtag_select.h>
 #include <driver/usb_serial_jtag_vfs.h>
+#include <hal/usb_serial_jtag_ll.h>
+#else
+#error "The native example requires CONFIG_ESP_CONSOLE_USB_CDC or CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG"
 #endif
 
 #include "examples/common/Tca9548aCli.h"
@@ -39,7 +41,6 @@ constexpr int RESET_GPIO = -1;
 constexpr uint32_t I2C_FREQ_HZ = 400000U;
 constexpr uint32_t I2C_TIMEOUT_MS = TCA9548A::Config{}.i2cTimeoutMs;
 constexpr uint32_t RESET_TIMEOUT_MS = 10U;
-constexpr uint32_t CONSOLE_WRITE_TIMEOUT_MS = 50U;
 constexpr unsigned CONSOLE_INPUT_BUDGET = 32U;
 
 struct NativeBus {
@@ -57,7 +58,11 @@ NativeBus gBus;
 TCA9548A::TCA9548A gDevice;
 TCA9548A::Config gConfig;
 tca9548a_cli::Cli gConsole(gDevice, gConfig);
-uint32_t gDroppedOutputPieces = 0;
+tca9548a_cli::ConsoleOutput<> gOutput;
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+bool gWasConnected = false;
+size_t gQueuedRxDiscard = 0U;
+#endif
 
 uint32_t nowMs(void*) {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000LL);
@@ -68,33 +73,31 @@ void pauseTask() {
   vTaskDelay(pdMS_TO_TICKS(1) > 0 ? pdMS_TO_TICKS(1) : 1);
 }
 
-void writeText(const char* text, void*) {
-  const size_t length = strlen(text);
-  const uint32_t startedMs = nowMs(nullptr);
-  size_t sent = 0;
-  while (sent < length && nowMs(nullptr) - startedMs < CONSOLE_WRITE_TIMEOUT_MS) {
+void writeText(const char* text, void*) { gOutput.append(text); }
+
+size_t writeConsole(const char* text, size_t length, void*) {
 #if CONFIG_ESP_CONSOLE_USB_CDC
-    const ssize_t written = esp_usb_console_write_buf(text + sent, length - sent);
+  // ROM FIFO fill has its own wait policy. Enter it only when the endpoint
+  // can accept data; one queue drain contains no more than one USB packet.
+  if (!esp_usb_console_write_available()) return 0U;
+  const ssize_t written = esp_usb_console_write_buf(text, length);
+  if (esp_usb_console_write_available()) (void)esp_usb_console_flush();
 #elif CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
-    const int written = usb_serial_jtag_write_bytes(text + sent, length - sent, 0);
-#else
-    // UART fallback; the maintained target defaults both use USB.
-    const ssize_t written = write(STDOUT_FILENO, text + sent, 1U);
+  const int written = usb_serial_jtag_write_bytes(text, length, 0);
 #endif
-    if (written > 0) {
-      sent += static_cast<size_t>(written);
-    } else if (written < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-      break;
-    } else {
-      pauseTask();
-    }
-  }
+  return written > 0 ? static_cast<size_t>(written) : 0U;
+}
+
+tca9548a_cli::ConsoleStats consoleStats(void*) {
+  auto result = gOutput.stats();
 #if CONFIG_ESP_CONSOLE_USB_CDC
-  // Submit partial lines (including the prompt). The loop retries pending
-  // buffered data if the host is temporarily unable to accept it.
-  (void)esp_usb_console_flush();
+  result.backend = "ROM-USB-CDC";
+  // Endpoint writability is not a persistent connection indication.
+#elif CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+  result.backend = "USB-Serial-JTAG";
+  result.connected = usb_serial_jtag_is_connected() ? 1 : 0;
 #endif
-  if (sent != length && gDroppedOutputPieces != UINT32_MAX) ++gDroppedOutputPieces;
+  return result;
 }
 
 void sdkError(const char* operation, esp_err_t error) {
@@ -114,7 +117,7 @@ void printVersion(void*) {
            "  Console dropped pieces: %lu\n",
            esp_get_idf_version(), static_cast<unsigned>(chip.cores),
            static_cast<unsigned>(chip.revision), TCA9548A::GIT_COMMIT,
-           TCA9548A::GIT_STATUS, static_cast<unsigned long>(gDroppedOutputPieces));
+           TCA9548A::GIT_STATUS, static_cast<unsigned long>(gOutput.stats().droppedMessages));
   writeText(text, nullptr);
 }
 
@@ -321,17 +324,23 @@ extern "C" void app_main(void) {
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
   usb_serial_jtag_driver_config_t usbConfig = {};
   usbConfig.tx_buffer_size = 1024;
-  usbConfig.rx_buffer_size = 256;
+  usbConfig.rx_buffer_size = 1024;
+  // Preserve pending FIFO/status bits while handing inherited interrupts to
+  // this driver after a CPU-only reset.
+  usb_serial_jtag_ll_disable_intr_mask(USB_SERIAL_JTAG_LL_INTR_MASK);
   const esp_err_t usbError = usb_serial_jtag_driver_install(&usbConfig);
   if (usbError != ESP_OK) {
     printf("USB console initialization failed: %s\n", esp_err_to_name(usbError));
     return;
   }
   usb_serial_jtag_vfs_use_driver();
+  // Keep raw-byte discard counts aligned with reads; the shared line buffer
+  // already accepts CR, LF, and CRLF without VFS look-ahead or translation.
+  usb_serial_jtag_vfs_set_rx_line_endings(ESP_LINE_ENDINGS_LF);
 #endif
   const int inputFlags = fcntl(STDIN_FILENO, F_GETFL, 0);
   if (inputFlags < 0 || fcntl(STDIN_FILENO, F_SETFL, inputFlags | O_NONBLOCK) < 0) {
-    writeText("Console nonblocking input setup failed\n", nullptr);
+    printf("Console nonblocking input setup failed\n");
     return;
   }
   initBus();
@@ -343,6 +352,7 @@ extern "C" void app_main(void) {
   platform.busInfo = busInfo;
   platform.transferStats = transferStats;
   platform.resetTransferStats = resetTransferStats;
+  platform.consoleStats = consoleStats;
   platform.prepareAddress = prepareAddress;
   platform.probeAddress = probeAddress;
   platform.user = &gBus;
@@ -354,14 +364,27 @@ extern "C" void app_main(void) {
   gConsole.printPrompt();
 
   while (true) {
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+    const bool connected = usb_serial_jtag_is_connected();
+    if (gWasConnected && !connected) {
+      gConsole.discardInput();
+      gQueuedRxDiscard = usb_serial_jtag_get_read_bytes_available();
+    }
+    gWasConnected = connected;
+#endif
     for (unsigned count = 0; count < CONSOLE_INPUT_BUDGET; ++count) {
       char value;
       if (read(STDIN_FILENO, &value, 1U) != 1) break;
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+      if (gQueuedRxDiscard != 0U) { --gQueuedRxDiscard; continue; }
+#endif
       gConsole.feed(value);
+      if (value == '\r' || value == '\n') break;
     }
     gConsole.tick();
+    gOutput.drain(writeConsole);
 #if CONFIG_ESP_CONSOLE_USB_CDC
-    (void)esp_usb_console_flush();
+    if (esp_usb_console_write_available()) (void)esp_usb_console_flush();
 #endif
     pauseTask();
   }

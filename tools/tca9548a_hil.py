@@ -27,13 +27,20 @@ UNKNOWN = "UNKNOWN"
 NOT_RUN = "NOT_RUN"
 ROOT = Path(__file__).resolve().parents[1]
 MAX_RESPONSE_BYTES = 65536
-MAX_SOAK_COMMANDS = 100000
+SOAK_BATCH_ROUNDS = 8
+MAX_SOAK_BATCHES = 86401
+SOAK_BATCH_INTERVAL_S = 1.0
 PROMPT_RE = re.compile(r"(?:^|[\r\n])> $")
 ANY_PROMPT_RE = re.compile(r"(?:^|[\r\n])> ")
 READ_MASK_RE = re.compile(r"^read: OK\b[^\r\n]* mask=0x([0-9A-Fa-f]{2})\b", re.M)
 SCAN_ADDRESS_RE = re.compile(r"^[ \t]*Found device at 0x([0-9A-Fa-f]{2})[ \t]*\r?$", re.M)
 
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+RESTART_RE = re.compile(
+    r"(?:^|[\r\n])[ \t]*(?:ESP-ROM:|rst:0x|boot:0x|Brownout|"
+    r"TCA9548A (?:Arduino|native ESP-IDF) bring-up CLI)"
+    r"|\b(?:Guru Meditation|PANIC|Rebooting)\b", re.I
+)
 COMMON_FAILURE_PATTERNS = (
     r"\[FAIL\]",
     r"\bfail=[1-9][0-9]*\b",
@@ -101,6 +108,8 @@ def short_observed(text: str, limit: int = 120) -> str:
 
 def first_failure(text: str, patterns: Iterable[str]) -> str | None:
     clean = strip_ansi(text)
+    if RESTART_RE.search(clean):
+        return "firmware restarted during command; captured state is no longer valid"
     for pattern in patterns:
         if re.search(pattern, clean):
             return pattern
@@ -148,6 +157,8 @@ def classify(text: str, step: Step, completion: str = "prompt") -> tuple[str, st
             return FAIL, "HIL summary disagrees with check records"
         labels = {label.split(" - ", 1)[0] for kind, label in checks if kind == PASS}
         required = {"typed ChannelMask is one byte", "address helper", "version"}
+        if command == "hil parser":
+            required.update(("numeric parser rejects invalid input", "line parser rejects controls and overflow"))
         if command.startswith("hil run"):
             required.update(("probe", "probe no-health-side-effects", "capture original mask readback",
                              "disableAll write", "disableAll readback", "all eight one-hot channels",
@@ -172,6 +183,22 @@ def classify(text: str, step: Step, completion: str = "prompt") -> tuple[str, st
         if not all(re.findall(rf"^\s*{field}: (\w+)\s*$", clean, re.M) == ["yes"]
                    for field in ("Bound", "Initialized", "State alias parity")):
             return FAIL, "driver binding/state aliases invalid"
+    elif command in ("discover", "detect"):
+        summaries = re.findall(
+            r"^Detection: tested=([0-9]{1,2}) ack=([0-9]{1,2}) absent=([0-9]{1,2}) errors=([0-9]{1,2}) "
+            r"target=0x([0-9A-Fa-f]{2}) target_ack=(yes|no|error|not-tested) identity=unverified[ \t]*\r?$", clean, re.M)
+        addresses = [int(value, 16) for value in SCAN_ADDRESS_RE.findall(clean)]
+        terminal = re.findall(r"^CLI result: command=discover outcome=PASS completed=8 requested=8[ \t]*\r?$", clean, re.M)
+        if len(summaries) != 1 or len(terminal) != 1:
+            return FAIL, "missing or ambiguous completed discovery evidence"
+        tested, ack, absent, errors, target, target_ack = summaries[0]
+        if (int(tested) != 8 or int(errors) != 0 or int(ack) != len(addresses)
+                or int(ack) + int(absent) != 8 or len(addresses) != len(set(addresses))
+                or any(not 0x70 <= address <= 0x77 for address in addresses)
+                or not 0x70 <= int(target, 16) <= 0x77
+                or target_ack != ("yes" if int(target, 16) in addresses else "no")
+                or re.findall(r"^Discover complete: devices=([0-9]{1,2}) errors=0[ \t]*\r?$", clean, re.M) != [ack]):
+            return FAIL, "discovery counts, candidates or target ACK disagree"
     elif command == "scan":
         summaries = re.findall(r"^Scan complete: devices=([0-9]{1,3}) errors=([0-9]{1,3})\s*$", clean, re.M)
         addresses = [int(value, 16) for value in SCAN_ADDRESS_RE.findall(clean)]
@@ -210,6 +237,16 @@ def classify(text: str, step: Step, completion: str = "prompt") -> tuple[str, st
             return UNKNOWN, "missing or ambiguous control-byte read"
         if step.expected_mask is not None and int(matches[0], 16) != step.expected_mask:
             return FAIL, f"mask readback mismatch; expected 0x{step.expected_mask:02X}"
+    elif command == "console":
+        try:
+            parse_console(clean)
+        except ValueError as exc:
+            return FAIL, str(exc)
+    elif command.startswith("verbose"):
+        values = re.findall(r"^verbose: (on|off)[ \t]*\r?$", clean, re.M)
+        requested = None if command == "verbose" else ("on" if command.split()[1] in ("1", "on") else "off")
+        if len(values) != 1 or (requested is not None and values[0] != requested):
+            return FAIL, "verbose setting missing, ambiguous or different from requested value"
     elif command in ("probe", "off", "recover") or command.startswith(("mask ", "select ")):
         prefix = {"recover": "recover (safe-off write)"}.get(command, command)
         if command.startswith("mask "):
@@ -288,6 +325,12 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
         ),
     ]
 
+    plan.insert(3, Step("TCA-HIL-015", "console", "console",
+                        "Capture complete unsaturated console loss counters before live diagnostics.", ("Console:",)))
+    plan.insert(5, Step("TCA-HIL-016", "detection", "discover",
+                        "All eight legal addresses tested; configured target ACKs without claiming silicon identity.",
+                        ("Detection:", "CLI result:"), status_patterns))
+
     if args.route:
         plan.append(Step("TCA-HIL-012", "routing", "<host routing isolation checks>",
                          "Declared downstream addresses appear only on their selected branches; entry mask restored.",
@@ -327,7 +370,7 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
                 "TCA-HIL-011",
                 "soak",
                 "<host bounded soak loop>",
-                "Host repeats safe commands until the bounded duration expires.",
+                "Complete eight-round mixed batches with live readback, health and console checks for the bounded duration.",
                 ("soak complete",),
                 status_patterns,
             )
@@ -336,6 +379,8 @@ def build_plan(args: argparse.Namespace) -> list[Step]:
     plan.append(Step("TCA-HIL-014", "health", "health",
                      "Final driver state is READY with no consecutive failures.",
                      ("=== Driver Health ===", "State:")))
+    plan.append(Step("TCA-HIL-017", "console", "console",
+                     "No console output loss or observable input overflow since the initial snapshot.", ("Console:",)))
     return plan
 
 
@@ -570,9 +615,9 @@ def write_report(
         f"- Expected mux address: `0x{args.address:02X}`",
         f"- Routing fixtures (channel, address): `{args.route}`",
         f"- Exhaustive mask sweep requested: `{args.sweep_masks}`",
-        "- Host soak duration is bounded by the requested interval plus three "
-        "command timeouts and one command delay (including verified all-off cleanup); "
-        "command count is capped at 100000.",
+        "- Host soak may exceed its scheduling interval by the in-flight mixed "
+        "batch and bounded all-off/presentation cleanup. Each command has a finite deadline; "
+        f"at most {MAX_SOAK_BATCHES} batches start, no faster than one per second.",
         f"- Device identity/address: {device_note}.",
         "",
         "## Hardware Setup",
@@ -767,6 +812,9 @@ class SerialRunner:
                 completion = "response exceeded bounded receive buffer"
                 break
             clean = strip_ansi(received.decode("utf-8", errors="replace"))
+            if RESTART_RE.search(clean):
+                completion = "firmware restarted; reconnect before further I/O"
+                break
             if PROMPT_RE.search(clean):
                 if len(ANY_PROMPT_RE.findall(clean)) != 1:
                     completion = "multiple CLI responses; command attribution lost"
@@ -779,9 +827,14 @@ class SerialRunner:
 
 def operation_step(command: str, expected_mask: int | None = None) -> Step:
     expected = ("=== Driver Health ===", "State:") if command == "health" else (
-        ("Scan topology:", "Scan complete:") if command == "scan" else (command.split()[0],))
+        ("Scan topology:", "Scan complete:") if command == "scan" else (
+            ("Console:",) if command == "console" else (command.split()[0],)))
     if command.startswith("stress"):
         expected = ("Stress results:",)
+    elif command in ("discover", "detect"):
+        expected = ("Detection:", "CLI result:")
+    elif command.startswith("hil "):
+        expected = ("HIL result:",)
     patterns = COMMON_FAILURE_PATTERNS
     if command != "health":
         patterns += STATUS_FAILURE_PATTERNS
@@ -792,6 +845,8 @@ def operation_step(command: str, expected_mask: int | None = None) -> Step:
 def checked_command(runner: SerialRunner, command: str, record: Callable[[str], None],
                     expected_mask: int | None = None) -> str:
     response = runner.command(command)
+    if RESTART_RE.search(strip_ansi(response.text)):
+        runner.synchronized = False
     record(f"\n$ {command}\n{response.text}")
     status, notes = classify(response.text, operation_step(command, expected_mask), response.completion)
     if status != PASS:
@@ -871,53 +926,127 @@ def scan_addresses(text: str, expected_mask: int) -> set[int]:
     return {int(value, 16) for value in SCAN_ADDRESS_RE.findall(clean)}
 
 
+def parse_console(text: str) -> dict[str, int | str]:
+    rows = re.findall(r"^Console: ([^\r\n]*)", strip_ansi(text), re.M)
+    names = ("queued_bytes", "accepted_bytes", "dropped_bytes", "dropped_messages", "rx_overflows")
+    pattern = r"backend=([^\s=]+) connected=(yes|no|unknown)" + "".join(
+        rf" {name}=([0-9]{{1,10}})" for name in names)
+    match = re.fullmatch(pattern, rows[0]) if len(rows) == 1 else None
+    if match is None:
+        raise ValueError("console counters missing, ambiguous or malformed")
+    result = dict(zip(names, map(int, match.groups()[2:])))
+    if any(value > 0xFFFFFFFF for value in result.values()):
+        raise ValueError("console counters exceed uint32 bounds")
+    if match[2] == "no":
+        raise ValueError("console reports a disconnected host")
+    if any(result[name] == 0xFFFFFFFF for name in names[2:]):
+        raise ValueError("saturated console loss counters cannot prove complete evidence")
+    result.update(backend=match[1], connected=match[2])
+    return result
+
+
+def compare_console(text: str, baseline: dict[str, int | str] | None) -> dict[str, int | str]:
+    current = parse_console(text)
+    if baseline is not None:
+        if current["backend"] != baseline["backend"]:
+            raise ValueError("console backend changed during session")
+        for name in ("dropped_bytes", "dropped_messages", "rx_overflows"):
+            if current[name] != baseline[name]:
+                raise ValueError(f"console {name} changed during session")
+        if current["accepted_bytes"] < baseline["accepted_bytes"]:
+            raise ValueError("console accepted counter moved backwards; possible restart")
+    return current
+
+
 def run_soak(runner: SerialRunner, args: argparse.Namespace,
              record: Callable[[str], None]) -> tuple[str, float]:
-    commands = ("read", "health", "probe", "recover")
-    deadline = time.monotonic() + args.soak_duration_s
-    counts = {command: 0 for command in commands}
-    failures = 0
+    """Finish verified mixed batches; retain only bounded aggregate evidence."""
     started = time.monotonic()
+    batches = 0
+    attempts = 0
+    commands = 0
     worst = 0.0
-    failure_note = ""
-    index = 0
+    errors: list[str] = []
     command = "<between commands>"
+    baseline = None
+    final_console_verified = False
+    previous_verbose = None
+    deadline = started
+
+    def run(text: str, expected_mask: int | None = None) -> str:
+        nonlocal command, commands, worst
+        command = text
+        response = runner.command(text)
+        if RESTART_RE.search(strip_ansi(response.text)):
+            runner.synchronized = False
+        commands += 1
+        worst = max(worst, response.elapsed_s)
+        record(f"\n$ {text}\n{response.text}")
+        status, notes = classify(response.text, operation_step(text, expected_mask), response.completion)
+        if status != PASS:
+            if response.completion != "prompt":
+                raise SessionLost(f"{text}: {notes}")
+            raise ValueError(f"{text}: {status}: {notes}")
+        return response.text
+
+    def check_console() -> None:
+        nonlocal baseline
+        baseline = compare_console(run("console"), baseline)
 
     try:
-        while time.monotonic() < deadline and index < MAX_SOAK_COMMANDS:
-            command = commands[index % len(commands)]
-            index += 1
-            response = runner.command(command)
-            record(f"\n$ {command}\n{response.text}")
-            counts[command] += 1
-            worst = max(worst, response.elapsed_s)
-            expected_mask = 0 if command == "read" and counts["recover"] else None
-            status, notes = classify(response.text, operation_step(command, expected_mask), response.completion)
-            if status != PASS:
-                failures += 1
-                failure_note = f" first_anomaly={command}: {notes}"
+        baseline = parse_console(run("console"))
+        previous_verbose = re.search(r"^verbose: (on|off)", strip_ansi(run("verbose")), re.M)[1]
+        if previous_verbose == "on":
+            run("verbose off")
+        deadline = time.monotonic() + args.soak_duration_s
+        while time.monotonic() < deadline and attempts < MAX_SOAK_BATCHES:
+            batch_started = time.monotonic()
+            attempts += 1
+            batch = run(f"stress_mix {SOAK_BATCH_ROUNDS}")
+            if not re.search(rf"^Session transfers: success={7 * SOAK_BATCH_ROUNDS + 2} failure=0[ \t]*\r?$", strip_ansi(batch), re.M):
+                raise ValueError("soak requires current firmware with complete per-session transfer evidence")
+            run("read", 0)
+            run("health")
+            check_console()
+            batches += 1
+            # One new batch per second bounds even a very fast 24-hour run.
+            pause = min(deadline - time.monotonic(),
+                        max(args.command_delay_s, batch_started + SOAK_BATCH_INTERVAL_S - time.monotonic()))
+            while pause > 0:
+                time.sleep(min(pause, 1.0))
+                pause = min(deadline, batch_started + max(SOAK_BATCH_INTERVAL_S, args.command_delay_s)) - time.monotonic()
+        if batches == 0:
+            raise ValueError("soak duration expired without a complete verified batch")
+        if time.monotonic() < deadline:
+            raise ValueError("batch cap reached before requested soak duration")
+    except (ValueError, OSError, RuntimeError, KeyboardInterrupt) as exc:
+        errors.append(f"first_anomaly={command}: {str(exc) or 'operator interrupted the run'}")
+    finally:
+        cleanup = [("off", None), ("read", 0)] if attempts else []
+        if previous_verbose == "on":
+            cleanup.append(("verbose on", None))
+        for text, mask in cleanup:
+            if not runner.synchronized:
+                errors.append("all-off/presentation cleanup NOT_RUN: serial command boundary lost")
                 break
-            time.sleep(args.command_delay_s)
-    except (OSError, RuntimeError, KeyboardInterrupt) as exc:
-        failures += 1
-        failure_note = f" first_anomaly={command}: {str(exc) or 'operator interrupted the run'}"
-    if index == MAX_SOAK_COMMANDS and time.monotonic() < deadline:
-        failures += 1
-        failure_note = " command cap reached before requested soak duration"
-    if runner.synchronized:
-        try:
-            checked_command(runner, "off", record)
-            read_mask(runner, record, 0)
-        except (ValueError, OSError, RuntimeError) as exc:
-            failures += 1
-            failure_note += f" all-off cleanup unverified: {exc}"
-    else:
-        failures += 1
-        failure_note += " all-off cleanup NOT_RUN: serial command boundary lost"
+            try:
+                run(text, mask)
+            except (ValueError, OSError, RuntimeError, KeyboardInterrupt) as exc:
+                errors.append(f"cleanup {text} unverified: {str(exc) or 'operator interrupted'}")
+        if baseline is not None and runner.synchronized:
+            try:
+                check_console()
+                final_console_verified = True
+            except (ValueError, OSError, RuntimeError, KeyboardInterrupt) as exc:
+                errors.append(f"final console evidence unverified: {str(exc) or 'operator interrupted'}")
     summary = (
-        f"soak complete counts={counts} failures={failures} "
-        f"worst_latency_s={worst:.3f}{failure_note}"
+        f"soak complete batches={batches} cycles={batches * SOAK_BATCH_ROUNDS} failures={len(errors)} "
+        f"commands={commands} worst_latency_s={worst:.3f} "
+        f"console_loss_checked={'yes' if final_console_verified else 'no'} "
+        "SDK_RX_loss_observability=backend-dependent"
     )
+    if errors:
+        summary += "\n[FAIL] " + "\n[FAIL] ".join(errors)
     return summary, time.monotonic() - started
 
 
@@ -940,6 +1069,7 @@ def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
     transcript_path = Path(args.transcript) if args.transcript else None
     results: list[Result] = []
     plan = build_plan(args)
+    console_baseline = None
     with contextlib.ExitStack() as stack:
         transcript = None
         transcript_error = ""
@@ -1006,6 +1136,18 @@ def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
                         addresses = {int(value, 16) for value in SCAN_ADDRESS_RE.findall(strip_ansi(text))}
                         if args.address not in addresses:
                             status, notes = FAIL, "configured mux address missing from scan"
+                    if status == PASS and step.command in ("discover", "detect"):
+                        addresses = {int(value, 16) for value in SCAN_ADDRESS_RE.findall(strip_ansi(text))}
+                        targets = re.findall(r" target=0x([0-9A-Fa-f]{2}) target_ack=yes\b", strip_ansi(text))
+                        if args.address not in addresses or [int(value, 16) for value in targets] != [args.address]:
+                            status, notes = FAIL, "configured mux address missing or different in discovery"
+                    if status == PASS and step.command == "console":
+                        try:
+                            current = compare_console(text, console_baseline)
+                            console_baseline = current
+                            notes = "console counters intact; accepted bytes do not prove terminal delivery or unobservable SDK RX loss"
+                        except ValueError as exc:
+                            status, notes = FAIL, str(exc)
                     if status == PASS and step.command == "version":
                         clean = strip_ansi(text)
                         if args.expect_commit:

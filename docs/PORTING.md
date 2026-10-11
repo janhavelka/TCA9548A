@@ -309,10 +309,14 @@ documentation build.
 
 `examples/common/Tca9548aCli.h/.cpp` is framework-neutral example glue, shared
 by the Arduino and native IDF front ends and tested with the real core. Its
-platform callbacks provide bounded console writes, time, bus metadata,
+platform callbacks provide console queueing and loss statistics, time, bus metadata,
 address-only probes and retargeting, and physical transfer counters. They
 belong to one serialized application task. The CLI owns diagnostic scheduling;
 the chip driver remains managed synchronous with a no-op `tick()`.
+`ConsoleOutput.h` supplies the examples' fixed 8 KiB output queue. Each adapter
+drains at most 64 bytes per loop with a nonblocking backend; partial writes stay
+queued, overflow is explicit, and counters saturate. This queue and its USB
+adapters are example glue, not a required product dependency.
 
 For FieldCore-style integration, retain the project's existing bus owner,
 scheduler, and console. Reuse the command behavior and test procedures where

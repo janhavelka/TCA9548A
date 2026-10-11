@@ -4,10 +4,23 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <cstdio>
-#include <cstring>
+#include <atomic>
 
-#if ARDUINO_USB_CDC_ON_BOOT && !ARDUINO_USB_MODE
+#if CONFIG_IDF_TARGET_ESP32S3
+#include <driver/usb_serial_jtag.h>
+#include <driver/usb_serial_jtag_select.h>
+#include <esp_err.h>
+#include <hal/usb_serial_jtag_ll.h>
+#if ARDUINO_USB_CDC_ON_BOOT
+#error "The S3 example owns the USB driver; disable ARDUINO_USB_CDC_ON_BOOT"
+#endif
+#elif CONFIG_IDF_TARGET_ESP32S2
+#if !ARDUINO_USB_CDC_ON_BOOT || ARDUINO_USB_MODE
+#error "The S2 example requires TinyUSB CDC on boot"
+#endif
 #include <tusb.h>
+#else
+#error "The Arduino example supports ESP32-S2 and ESP32-S3 only"
 #endif
 
 #include "examples/common/BoardConfig.h"
@@ -17,7 +30,6 @@
 
 namespace {
 
-constexpr uint32_t CONSOLE_WRITE_TIMEOUT_MS = 50U;
 constexpr unsigned CONSOLE_INPUT_BUDGET = 32U;
 
 struct ArduinoBus {
@@ -32,39 +44,69 @@ ArduinoBus bus;
 TCA9548A::TCA9548A device;
 TCA9548A::Config config;
 tca9548a_cli::Cli console(device, config);
-uint32_t droppedOutputPieces = 0;
+tca9548a_cli::ConsoleOutput<> output;
+bool consoleReady = false;
+bool wasConnected = false;
+unsigned queuedRxDiscard = 0U;
+#if !CONFIG_IDF_TARGET_ESP32S3
+std::atomic<bool> rxOverflow{false};
+void consoleEvent(void*, esp_event_base_t, int32_t event, void*) {
+  if (event == ARDUINO_USB_CDC_RX_OVERFLOW_EVENT) rxOverflow.store(true);
+}
+#endif
 
 uint32_t nowMs(void*) { return millis(); }
 
 bool consoleConnected() {
-#if ARDUINO_USB_CDC_ON_BOOT && !ARDUINO_USB_MODE
+#if CONFIG_IDF_TARGET_ESP32S3
+  return consoleReady && usb_serial_jtag_is_connected();
+#else
   // USBCDC::operator bool additionally requires RTS. The actual TinyUSB
   // transmit path requires DTR only, matching a monitor with RTS deasserted.
   return tud_cdc_connected();
-#elif ARDUINO_USB_CDC_ON_BOOT
-  return static_cast<bool>(Serial);
-#else
-  return true;
 #endif
 }
 
-void writeText(const char* text, void*) {
-  const size_t length = std::strlen(text);
-  const uint32_t startedMs = millis();
-  size_t sent = 0;
-  while (sent < length && consoleConnected() &&
-         millis() - startedMs < CONSOLE_WRITE_TIMEOUT_MS) {
-    const int available = Serial.availableForWrite();
-    if (available > 0) {
-      size_t amount = length - sent;
-      if (amount > static_cast<size_t>(available)) amount = static_cast<size_t>(available);
-      // Small writes fit the SDK queue; its own lock/queue wait is disabled.
-      if (amount > 64U) amount = 64U;
-      sent += Serial.write(reinterpret_cast<const uint8_t*>(text + sent), amount);
-    }
-    if (sent < length) delay(1);
-  }
-  if (sent != length && droppedOutputPieces != UINT32_MAX) ++droppedOutputPieces;
+void writeText(const char* text, void*) { output.append(text); }
+
+size_t writeConsole(const char* data, size_t length, void*) {
+  if (!consoleReady) return 0U;
+#if CONFIG_IDF_TARGET_ESP32S3
+  const int sent = usb_serial_jtag_write_bytes(data, length, 0);
+  return sent > 0 ? static_cast<size_t>(sent) : 0U;
+#else
+  return Serial.write(reinterpret_cast<const uint8_t*>(data), length);
+#endif
+}
+
+int readConsole() {
+#if CONFIG_IDF_TARGET_ESP32S3
+  uint8_t value = 0;
+  return consoleReady && usb_serial_jtag_read_bytes(&value, 1U, 0) == 1 ? value : -1;
+#else
+  return Serial.read();
+#endif
+}
+
+unsigned pendingInput() {
+#if CONFIG_IDF_TARGET_ESP32S3
+  return consoleReady ? static_cast<unsigned>(usb_serial_jtag_get_read_bytes_available()) : 0U;
+#else
+  const int available = Serial.available();
+  return available > 0 ? static_cast<unsigned>(available) : 0U;
+#endif
+}
+
+tca9548a_cli::ConsoleStats consoleStats(void*) {
+  auto result = output.stats();
+#if CONFIG_IDF_TARGET_ESP32S3
+  result.backend = "USB-Serial-JTAG";
+#else
+  result.backend = "TinyUSB-CDC";
+  result.rxOverflowObservable = true;
+#endif
+  result.connected = consoleConnected() ? 1 : 0;
+  return result;
 }
 
 void printVersion(void*) {
@@ -76,7 +118,7 @@ void printVersion(void*) {
                 ESP.getCoreVersion(), ESP.getSdkVersion(), ESP.getChipModel(),
                 static_cast<unsigned>(ESP.getChipRevision()),
                 TCA9548A::GIT_COMMIT, TCA9548A::GIT_STATUS,
-                static_cast<unsigned long>(droppedOutputPieces));
+                static_cast<unsigned long>(output.stats().droppedMessages));
   writeText(text, nullptr);
 }
 
@@ -189,9 +231,30 @@ void configureDriver() {
 }  // namespace
 
 void setup() {
+#if CONFIG_IDF_TARGET_ESP32S3
+  usb_serial_jtag_driver_config_t usbConfig = {};
+  usbConfig.tx_buffer_size = 1024U;
+  usbConfig.rx_buffer_size = 1024U;
+  // CPU-only resets may leave interrupts enabled by the preceding USB owner.
+  // Keep FIFO/status bits pending so the new driver can service them.
+  usb_serial_jtag_ll_disable_intr_mask(USB_SERIAL_JTAG_LL_INTR_MASK);
+  const esp_err_t usbError = usb_serial_jtag_driver_install(&usbConfig);
+  consoleReady = usbError == ESP_OK;
+  if (!consoleReady) {
+    // The native USB ROM path remains available for this startup failure.
+    printf("USB console initialization failed: %s\n", esp_err_to_name(usbError));
+    return;
+  }
+#else
+  Serial.enableReboot(false);
+  Serial.onEvent(ARDUINO_USB_CDC_RX_OVERFLOW_EVENT, consoleEvent);
+  consoleReady = Serial.setRxBufferSize(1024U) == 1024U;
   Serial.begin(115200);
-#if ARDUINO_USB_CDC_ON_BOOT
   Serial.setTxTimeoutMs(0U);
+  if (!consoleReady) {
+    Serial.print("USB console RX allocation failed\n");
+    return;
+  }
 #endif
   // USB may enumerate later. No wait for a monitor or reconnect is required.
   bus.ready = board::initI2c();
@@ -203,6 +266,7 @@ void setup() {
   platform.busInfo = busInfo;
   platform.transferStats = transferStats;
   platform.resetTransferStats = resetTransferStats;
+  platform.consoleStats = consoleStats;
   platform.prepareAddress = prepareAddress;
   platform.probeAddress = probeAddress;
   platform.user = &bus;
@@ -215,11 +279,29 @@ void setup() {
 }
 
 void loop() {
-  for (unsigned count = 0; count < CONSOLE_INPUT_BUDGET && Serial.available() > 0; ++count) {
-    const int value = Serial.read();
+  const bool connected = consoleConnected();
+  if (wasConnected && !connected) {
+    console.discardInput();
+    queuedRxDiscard = pendingInput();
+  }
+  wasConnected = connected;
+  for (unsigned count = 0; consoleReady && count < CONSOLE_INPUT_BUDGET; ++count) {
+#if !CONFIG_IDF_TARGET_ESP32S3
+    if (rxOverflow.exchange(false)) {
+      output.countRxOverflow();
+      console.discardInput();
+      // Overflow happened at the queue tail: discard every older queued byte
+      // before accepting a future delimiter as the resynchronization point.
+      queuedRxDiscard = pendingInput();
+    }
+#endif
+    const int value = readConsole();
     if (value < 0) break;
+    if (queuedRxDiscard != 0U) { --queuedRxDiscard; continue; }
     console.feed(static_cast<char>(value));
+    if (value == '\r' || value == '\n') break;
   }
   console.tick();
+  output.drain(writeConsole);
   delay(1);
 }

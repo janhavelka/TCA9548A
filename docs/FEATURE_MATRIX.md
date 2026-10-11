@@ -11,7 +11,7 @@ integration pattern is in [PORTING.md](PORTING.md).
 
 | Datasheet behavior | Core API | CLI command | Verification |
 | --- | --- | --- | --- |
-| Strap address `0x70` through `0x77` | `Config::i2cAddress`, `cmd::isValidAddress()`, `cmd::addressFromPins()` | `cfg`, staged `addr`; `detect` lists ACK candidates | every valid address and both invalid boundaries |
+| Strap address `0x70` through `0x77` | `Config::i2cAddress`, `cmd::isValidAddress()`, `cmd::addressFromPins()` | `cfg`, staged `addr`; `detect` lists ACK candidates; `stats` retains target and counts | every valid address, both invalid boundaries, cancelled/failed/absent detection |
 | One control-byte read, no register-address phase | `begin()`, `readChannelMask()`, raw `probe()` | `begin`, `read`/`dump`, `probe` | null transmit pointer, zero transmit length, one receive byte |
 | One-byte control write; bit N controls channel N | `selectChannel()`, `writeChannelMask()`, `disableAll()` | `select`, `mask`, `off` | all 8 one-hot values and all 256 masks as exactly one-byte writes |
 | Any channel combination may be active | `ChannelMask::fromRaw()`, `all()`, `withEnabled()`, `withDisabled()` | `mask <0-255>`, `enable`, `disable`, `verify`, `sweep` | all 256 control bytes plus typed-mask helpers |
@@ -26,7 +26,7 @@ integration pattern is in [PORTING.md](PORTING.md).
 | Downstream visibility follows the mask | owner composes mask selection and downstream transfers | `scan` prints the active mask, then 112 non-reserved probes; reports bus errors | optional host `--route CH:ADDR` verifies all-off isolation and all eight branches |
 | Mask truth after success, failure, or external action | `ChannelMaskObservation` with `UNKNOWN`, `WRITE_COMPLETED`, `READBACK_OBSERVED` | `health`, `probe`, `read`, `invalidate`, `cfg` | successful, ambiguous, probe, RESET, and explicit-invalidation paths |
 | Passive transport health | `DriverState`, timestamps, last error, saturating counters | `health`/`drv`/`state` | READY/DEGRADED/OFFLINE recovery, failed begin, consecutive-counter saturation, lifetime-counter retention, timestamp wrap; lifetime-counter saturation is code-reviewed |
-| Bounded diagnostics | core primitives stay one callback each; the examples own their loops | `selftest`, cooperative `stress`/`stress_mix`, `sweep`, `watch`, `soak`, `stop`, retained `stats` | executed CLI-command tests: deadlines, cancellation, every mask/channel, primary and cleanup failures |
+| Bounded diagnostics | core primitives stay one callback each; the examples own their loops | `selftest`, cooperative `stress`/`stress_mix`, `sweep`, `watch`, `soak`, `stop`, retained `stats` | executed CLI-command tests: deadlines, cancellation, every mask/channel, soak drift/final read, primary and cleanup failures |
 | Application-owned transfer budget (not a chip register) | `Config::i2cTimeoutMs` defaults to 20 ms; callbacks may shorten it | `cfg`, staged `timeout`/`resettimeout`/`offline`; HIL checks the bound snapshot | all I2C primitives, owner cap/64-bit deadline clipping, expiry and late completion, separate cleanup budget |
 
 Primary source: [TI TCA9548A datasheet SCPS207H](https://www.ti.com/lit/ds/symlink/tca9548a.pdf).
@@ -38,5 +38,7 @@ optional `--sweep-masks` checks live readback of all 256 masks; the RESET test
 starts from verified nonzero state. These are runner capabilities, not completed
 hardware results. See [validation and fixture requirements](VALIDATION_STATUS.md).
 
-See [CLI and endurance procedures](CLI.md) for grouped help, runtime settings,
-physical counters, strict host evidence, and USB disconnect tests.
+See [CLI and endurance procedures](CLI.md) for topic help, runtime settings,
+physical counters, queued console output/loss reporting, strict host evidence,
+and USB disconnect tests. Console behavior belongs to the examples; it adds no
+dependency or feature to the portable chip driver.

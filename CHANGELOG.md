@@ -12,7 +12,11 @@ Entries describe changes relative to the previous release.
 
 - Shared example CLI with grouped help, runtime colors and staged settings,
   address detection, physical transfer assertions, cancellable scan/stress/
-  sweep/watch/soak sessions, retained results, and 32 executed command tests.
+  sweep/watch/soak sessions, retained results, and 39 executed command tests.
+- Topic help, retained discovery candidates and target ACK evidence, and a
+  `console` command exposing USB backlog, loss counters and RX observability.
+- Fixed 8 KiB example output queue with partial-write retention, visible loss
+  markers and six host tests; console writes no longer wait for the terminal.
 - Firmware Git identity and optional host `--expect-commit`/`--require-clean`
   checks; documented CLI and USB endurance procedures.
 - Live route-isolation checks (`--route CH:ADDR`), optional 256-mask readback
@@ -39,9 +43,15 @@ Entries describe changes relative to the previous release.
 - Both frameworks compile the same example-only command engine. Removed the
   superseded logging, terminal style/shell, and synchronous scanner helpers;
   reused the numeric parser. Core APIs and transport ownership are unchanged.
-- USB consoles start without a terminal, bound output attempts, count dropped
-  pieces, and yield regularly. Native defaults select each chip's USB console;
-  monitor and runner use DTR on, RTS off, configured before opening the port.
+- USB consoles start without a terminal and drain at most 64 bytes per loop.
+  S3 uses one SDK USB driver owner with fixed queues; Arduino S2 disables
+  CDC-triggered reboot. Observable disconnects and RX overflow discard partial
+  input. Native defaults select USB and a 1 kHz scheduler; monitor and runner
+  use DTR on, RTS off, configured before opening the port.
+- Firmware soak detects control-byte drift and verifies at its deadline. Host
+  soak runs complete eight-round mixed batches with exact transfer evidence,
+  all-off readback, health and console checks, and bounded cleanup. The runner
+  checks discovery, rejects console loss and retires the session after resets.
 - Stress counts verified rounds; mixed stress performs seven calls per round.
   Host stress deadline defaults to 240 s to cover the native scheduler cadence.
 - Simplified example HIL cleanup to one mask-restoration exit, reused existing

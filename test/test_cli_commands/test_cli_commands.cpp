@@ -478,6 +478,45 @@ void test_soak_has_finite_deadline_and_preserves_selected_route() {
   TEST_ASSERT_FALSE(fixture.contains("[FAIL]"));
 }
 
+void test_soak_detects_mask_drift_including_its_terminal_read() {
+  for (uint32_t changedAtMs : {1000U, 2000U}) {
+    CliFixture fixture;
+    bind(fixture);
+    fixture.hardwareMask = 0x40;
+    fixture.command("soak 2");
+    tick(fixture, 0);
+    TEST_ASSERT_TRUE(fixture.cli.active());
+    fixture.hardwareMask = 0;
+    tick(fixture, changedAtMs);
+    TEST_ASSERT_FALSE(fixture.cli.active());
+    TEST_ASSERT_TRUE(fixture.contains("control-byte readback mismatch"));
+    TEST_ASSERT_TRUE(fixture.contains("outcome=FAIL"));
+    TEST_ASSERT_EQUAL_UINT32(2, fixture.count(Kind::READ));
+    TEST_ASSERT_EQUAL_UINT32(0, fixture.count(Kind::WRITE));
+    TEST_ASSERT_EQUAL_HEX8(0, fixture.hardwareMask);
+  }
+}
+
+void test_soak_requires_an_initial_sample_and_verifies_again_at_deadline() {
+  CliFixture fixture;
+  bind(fixture);
+  fixture.command("soak 1");
+  tick(fixture, 1000);
+  TEST_ASSERT_FALSE(fixture.cli.active());
+  TEST_ASSERT_TRUE(fixture.contains("soak expired before first sample"));
+  TEST_ASSERT_EQUAL_UINT32(0, fixture.transfers.size());
+
+  fixture.clearHistory();
+  fixture.command("soak 1");
+  tick(fixture, 0);
+  TEST_ASSERT_TRUE(fixture.cli.active());
+  tick(fixture, 1000);
+  TEST_ASSERT_FALSE(fixture.cli.active());
+  TEST_ASSERT_TRUE(fixture.contains("outcome=PASS"));
+  TEST_ASSERT_EQUAL_UINT32(2, fixture.count(Kind::READ));
+  TEST_ASSERT_EQUAL_UINT32(0, fixture.count(Kind::WRITE));
+}
+
 void test_receive_fault_retirement_is_not_reset_by_rebind_or_reset() {
   CliFixture fixture;
   bind(fixture);
@@ -729,6 +768,126 @@ void test_cancel_before_sweep_capture_is_bus_silent_and_terminal_prompt_unique()
   TEST_ASSERT_EQUAL(std::string::npos, fixture.output.find("> ", prompt + 2));
 }
 
+void test_topic_help_filters_commands_and_remains_usable_during_runs() {
+  CliFixture fixture;
+  bind(fixture);
+  fixture.command("watch 2 1000");
+  fixture.output.clear();
+  fixture.command("help detection");
+  TEST_ASSERT_TRUE(fixture.contains("[Connection and detection]"));
+  TEST_ASSERT_TRUE(fixture.contains("discover / detect"));
+  TEST_ASSERT_FALSE(fixture.contains("[Diagnostics]"));
+  TEST_ASSERT_FALSE(fixture.contains("[Switch]"));
+  fixture.output.clear();
+  fixture.command("? config");
+  TEST_ASSERT_TRUE(fixture.contains("[Configuration]"));
+  TEST_ASSERT_TRUE(fixture.contains("addr [0x70..0x77]"));
+  TEST_ASSERT_FALSE(fixture.contains("[Connection and detection]"));
+  fixture.output.clear();
+  fixture.command("help quickstart");
+  TEST_ASSERT_TRUE(fixture.contains("end -> addr 0x72 -> begin"));
+  TEST_ASSERT_TRUE(fixture.contains("writes and verifies all-off"));
+  fixture.output.clear();
+  fixture.command("help nonexistent");
+  TEST_ASSERT_TRUE(fixture.contains("Unknown or invalid"));
+  TEST_ASSERT_FALSE(fixture.contains("TCA9548A CLI Help"));
+  fixture.output.clear();
+  fixture.command("help all");
+  for (const char* section : {"[Common]", "[Connection and detection]",
+      "[Configuration]", "[Switch]", "[Diagnostics]"}) {
+    TEST_ASSERT_TRUE(fixture.contains(section));
+  }
+  TEST_ASSERT_EQUAL_UINT32(0, fixture.transfers.size());
+  TEST_ASSERT_TRUE(fixture.cli.active());
+}
+
+void test_discovery_retains_candidate_and_original_target_after_setting_changes() {
+  CliFixture fixture;
+  fixture.strapAddress = 0x73;
+  fixture.command("color off");
+  fixture.command("detect");
+  finish(fixture);
+  TEST_ASSERT_EQUAL_UINT32(8, fixture.transfers.size());
+  TEST_ASSERT_TRUE(fixture.contains("tested=8 ack=1 absent=7 errors=0 target=0x70 target_ack=no"));
+  TEST_ASSERT_TRUE(fixture.contains("Candidate addresses: 0x73"));
+  fixture.command("addr 0x73");
+  fixture.clearHistory();
+  fixture.command("stats");
+  TEST_ASSERT_TRUE(fixture.contains("target=0x70 target_ack=no identity=unverified"));
+  TEST_ASSERT_TRUE(fixture.contains("Candidate addresses: 0x73"));
+  TEST_ASSERT_EQUAL_UINT32(0, fixture.transfers.size());
+  TEST_ASSERT_EQUAL_HEX8(0x73, fixture.config.i2cAddress);
+  TEST_ASSERT_FALSE(fixture.device.isBound());
+}
+
+void test_discovery_retains_unvisited_absent_and_error_as_different_evidence() {
+  CliFixture fixture;
+  fixture.command("color off");
+  fixture.command("addr 0x73");
+  fixture.command("detect");
+  tick(fixture);
+  fixture.command("stop");
+  fixture.output.clear();
+  fixture.command("stats");
+  TEST_ASSERT_TRUE(fixture.contains("tested=1 ack=1 absent=0 errors=0 target=0x73 target_ack=not-tested"));
+  TEST_ASSERT_TRUE(fixture.contains("Candidate addresses: 0x70"));
+  fixture.clearHistory();
+  fixture.command("detect");
+  fixture.failAt = 4;
+  finish(fixture);
+  fixture.output.clear();
+  fixture.command("stats");
+  TEST_ASSERT_TRUE(fixture.contains("tested=4 ack=1 absent=2 errors=1 target=0x73 target_ack=error"));
+  TEST_ASSERT_TRUE(fixture.contains("Primary result: I2C_TIMEOUT"));
+  fixture.clearHistory();
+  fixture.command("detect");
+  finish(fixture);
+  TEST_ASSERT_TRUE(fixture.contains("tested=8 ack=1 absent=7 errors=0 target=0x73 target_ack=no"));
+}
+
+void test_console_discard_rejects_fragment_until_newline_and_preserves_active_run() {
+  CliFixture fixture;
+  bind(fixture);
+  for (const char value : std::string("mask 1")) fixture.cli.feed(value);
+  fixture.cli.discardInput();
+  fixture.line("28");
+  TEST_ASSERT_EQUAL_UINT32(0, fixture.transfers.size());
+  TEST_ASSERT_TRUE(fixture.contains("Command discarded: invalid input"));
+  fixture.line("select 2");
+  TEST_ASSERT_EQUAL_HEX8(4, fixture.hardwareMask);
+  fixture.clearHistory();
+  fixture.command("watch 2 1000");
+  fixture.cli.discardInput();
+  fixture.line("stop");
+  TEST_ASSERT_TRUE(fixture.cli.active());
+  fixture.line("stop");
+  TEST_ASSERT_FALSE(fixture.cli.active());
+  TEST_ASSERT_EQUAL_UINT32(0, fixture.transfers.size());
+}
+
+void test_console_telemetry_is_cached_and_reports_unknown_backend_connection() {
+  CliFixture fixture;
+  tca9548a_cli::Platform platform;
+  platform.writeText = CliFixture::print;
+  platform.nowMs = CliFixture::now;
+  platform.consoleStats = [](void*) {
+    tca9548a_cli::ConsoleStats stats;
+    stats.backend = "fixture-usb";
+    stats.connected = -1;
+    stats.queuedBytes = 12;
+    stats.acceptedBytes = 123;
+    stats.droppedBytes = 45;
+    stats.droppedMessages = 2;
+    stats.rxOverflows = 3;
+    return stats;
+  };
+  platform.user = &fixture;
+  fixture.cli.setup(platform);
+  fixture.command("console");
+  TEST_ASSERT_TRUE(fixture.contains("backend=fixture-usb connected=unknown queued_bytes=12 accepted_bytes=123 dropped_bytes=45 dropped_messages=2 rx_overflows=3"));
+  TEST_ASSERT_EQUAL_UINT32(0, fixture.transfers.size());
+}
+
 }  // namespace
 
 void setUp() {}
@@ -756,6 +915,8 @@ int main(int, char**) {
   RUN_TEST(test_scan_and_discover_have_bounded_probes_and_no_register_writes);
   RUN_TEST(test_watch_honors_count_interval_wrap_and_bus_silent_stop);
   RUN_TEST(test_soak_has_finite_deadline_and_preserves_selected_route);
+  RUN_TEST(test_soak_detects_mask_drift_including_its_terminal_read);
+  RUN_TEST(test_soak_requires_an_initial_sample_and_verifies_again_at_deadline);
   RUN_TEST(test_receive_fault_retirement_is_not_reset_by_rebind_or_reset);
   RUN_TEST(test_prepare_failure_and_unavailable_owner_do_not_start_transactions);
   RUN_TEST(test_settings_boundary_values_and_unbound_snapshot_use_staged_values);
@@ -768,5 +929,10 @@ int main(int, char**) {
   RUN_TEST(test_scan_transport_error_is_not_counted_as_absence_or_retried);
   RUN_TEST(test_failed_cleanup_is_retained_even_when_final_read_happens_to_match);
   RUN_TEST(test_cancel_before_sweep_capture_is_bus_silent_and_terminal_prompt_unique);
+  RUN_TEST(test_topic_help_filters_commands_and_remains_usable_during_runs);
+  RUN_TEST(test_discovery_retains_candidate_and_original_target_after_setting_changes);
+  RUN_TEST(test_discovery_retains_unvisited_absent_and_error_as_different_evidence);
+  RUN_TEST(test_console_discard_rejects_fragment_until_newline_and_preserves_active_run);
+  RUN_TEST(test_console_telemetry_is_cached_and_reports_unknown_backend_connection);
   return UNITY_END();
 }

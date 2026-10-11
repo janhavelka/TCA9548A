@@ -14,7 +14,7 @@ ADAPTERS = (
     ROOT / "examples/espidf_basic/main/main.cpp",
 )
 COMMANDS = (
-    "help", "?", "version", "ver", "color", "verbose", "bus", "diag",
+    "help", "?", "version", "ver", "color", "verbose", "bus", "console", "diag",
     "cfg", "settings", "snapshot", "addr", "timeout", "resettimeout", "offline",
     "begin", "init", "end", "unbind", "scan", "discover", "detect",
     "read", "dump", "select", "mask", "enable", "disable", "verify", "off",
@@ -53,7 +53,7 @@ def main() -> int:
     errors: list[str] = []
     text = CLI.read_text(encoding="utf-8")
     dispatch = function_body(text, "void Cli::processCommand(", errors)
-    help_body = function_body(text, "void Cli::printHelp()", errors)
+    help_body = function_body(text, "void Cli::printHelp(", errors)
     for command in COMMANDS:
         if f'"{command}"' not in dispatch:
             errors.append(f"shared dispatch missing command: {command}")
@@ -68,7 +68,7 @@ def main() -> int:
                   "line parser rejects controls and overflow"):
         if token not in text:
             errors.append(f"shared CLI missing diagnostic contract: {token}")
-    for relative in ("examples/common/Tca9548aCli.h", "examples/common/Tca9548aCli.cpp"):
+    for relative in ("examples/common/Tca9548aCli.h", "examples/common/Tca9548aCli.cpp", "examples/common/ConsoleOutput.h"):
         source = (ROOT / relative).read_text(encoding="utf-8")
         if re.search(r'#\s*include\s*[<"](?:Arduino|Wire|driver/|esp_|freertos/)', source):
             errors.append(f"{relative} must remain framework-neutral")
@@ -80,6 +80,11 @@ def main() -> int:
         if re.search(r"\bvoid\s+processCommand\s*\(", source):
             errors.append(f"{path.relative_to(ROOT)} duplicates the shared dispatcher")
     ini = (ROOT / "platformio.ini").read_text(encoding="utf-8")
+    arduino = ADAPTERS[0].read_text(encoding="utf-8")
+    for token in ('#error "The Arduino example supports ESP32-S2 and ESP32-S3 only"',
+                  '#error "The S2 example requires TinyUSB CDC on boot"'):
+        if token not in arduino:
+            errors.append(f"Arduino adapter lacks explicit USB target guard: {token}")
     cmake = (ROOT / "examples/espidf_basic/main/CMakeLists.txt").read_text(encoding="utf-8")
     if "examples/common/Tca9548aCli.cpp" not in ini or "../../common/Tca9548aCli.cpp" not in cmake:
         errors.append("both firmware builds must compile the shared CLI")
@@ -88,6 +93,8 @@ def main() -> int:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     if "-e native_cli_commands" not in workflow:
         errors.append("CI does not execute the shared CLI command tests")
+    if "[env:native_console]" not in ini or "-e native_console" not in workflow:
+        errors.append("CI does not execute bounded console tests")
     if errors:
         print("CLI contract FAILED:\n" + "\n".join(f"- {error}" for error in errors))
         return 1

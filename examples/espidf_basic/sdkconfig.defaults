@@ -1,2 +1,4 @@
 # Use the target-specific native USB defaults in sdkconfig.defaults.<target>.
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# Match the Arduino example's one-millisecond cooperative diagnostic cadence.
+CONFIG_FREERTOS_HZ=1000

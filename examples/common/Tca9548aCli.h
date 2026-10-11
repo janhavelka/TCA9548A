@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "CliLineBuffer.h"
+#include "ConsoleOutput.h"
 #include "TCA9548A/TCA9548A.h"
 
 namespace tca9548a_cli {
@@ -39,6 +40,7 @@ struct Platform {
   void (*printVersion)(void* user) = nullptr;
   BusInfo (*busInfo)(void* user) = nullptr;
   TransferStats (*transferStats)(void* user) = nullptr;
+  ConsoleStats (*consoleStats)(void* user) = nullptr;
   void (*resetTransferStats)(void* user) = nullptr;
   // Explicit owner retargeting before begin; must retain any receive-fault latch.
   TCA9548A::Status (*prepareAddress)(uint8_t address, void* user) = nullptr;
@@ -55,10 +57,13 @@ class Cli {
   // Bus-silent. The platform and configuration outlive the CLI.
   void setup(const Platform& platform);
   void feed(char value);
+  // Discard any partial line and all following bytes through its next CR/LF.
+  // Call after observable RX loss or disconnect before accepting more input.
+  void discardInput();
   void processCommand(const char* command);
   // At most one scheduled I2C primitive per tick; immediate commands are bounded.
   void tick();
-  void printHelp();
+  void printHelp(const char* topic = nullptr);
   void printPrompt();
   void beginDriver();
   bool active() const;
@@ -76,6 +81,10 @@ class Cli {
     uint16_t address = 0;
     uint16_t found = 0;
     uint16_t scanErrors = 0;
+    uint8_t targetAddress = 0;
+    uint8_t candidateTested = 0;
+    uint8_t candidateAcks = 0;
+    uint8_t candidateErrors = 0;
     uint32_t target = 0;
     uint32_t completed = 0;
     uint32_t intervalMs = 0;
@@ -108,6 +117,7 @@ class Cli {
   void printHealth();
   void printConfig();
   void printBus();
+  void printConsole();
   void printTransferStats();
   void printRunStats();
   void invalid(const char* usage);
