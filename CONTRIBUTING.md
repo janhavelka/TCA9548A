@@ -68,6 +68,7 @@ python tools/check_idf_example_contract.py
 python tools/check_repository_hygiene.py
 .\scripts\pio.cmd test -e native
 .\scripts\pio.cmd test -e native_cli
+.\scripts\pio.cmd test -e native_cli_commands
 .\scripts\pio.cmd test -e native_transport
 .\scripts\pio.cmd run -e native_core_no_arduino
 cmake -S test/core_no_arduino -B .pio/cmake-core -G Ninja

@@ -380,8 +380,8 @@ Maintainer checks require a full Git checkout; the complete command list is in
 pioarduino `platform-espressif32` `55.03.311` (Arduino-ESP32 `3.3.11`, ESP-IDF
 `5.5.5`, GCC `14.2.0`); consuming applications own their own platform version.
 The `version` command reports the runtime framework and MCU identity, so
-hardware evidence names the actual stack. The Arduino CLI additionally reports
-flash and PSRAM.
+hardware evidence names the actual stack. Both examples also report the full
+Git commit, clean/dirty source state, and dropped console output.
 
 The host runner requires Python 3.10 or later. Live serial runs also require
 `pyserial` (`python -m pip install pyserial`). Parser self-tests and dry runs
@@ -413,37 +413,36 @@ transport and board pins live under `examples/common/`; the IDF adapter lives
 entirely under its example. Neither is part of the public driver core. Both
 CLIs expose every public hardware primitive, typed mask operations, cache
 invalidation, passive health, safe-off recovery, and the HIL contract.
-`tools/check_cli_contract.py` separately verifies help and dispatch routing so
-their command/API surfaces cannot pass on token presence alone.
+They compile one framework-neutral example CLI and execute those same handlers
+in native tests. Platform adapters own USB, GPIO and I2C; the core API is unchanged.
+See the [CLI and endurance guide](docs/CLI.md) for every command, bounds,
+configuration, transfer assertions, cancellation, and fixture procedures.
 
-The Arduino CLI uses `LOG_SERIAL` for console input and output, including
-prompts and scan results. It defaults to `Serial`; define it for the example
-build to select another compatible Arduino serial object.
+```text
+help
+color off
+detect
+cfg
+hil parser
+stress 1000
+stats
+```
 
-The example-only `CliLineBuffer` accepts commands only after CR or LF, trims
-outer spaces/tabs, accepts at most 127 command bytes, and discards every byte
-of an overlong or control-byte-contaminated line through its terminator.
-Numeric arguments reject signed input, overflow, and trailing data. The native CLI polls this
-accumulator in bounded chunks because the default ESP-IDF UART VFS may be
-nonblocking; it does not use `fgets()` to dispatch whatever partial bytes happen
-to be ready.
+Detection probes the eight possible addresses without claiming chip identity.
+To change the target, use `end`, `addr 0x72` (matching the straps), and `begin`.
+Timeouts and the passive offline threshold can also be staged while ended.
+`begin` probes before receiving a control byte, then verifies all-off.
 
-`scan`, `stress`, and `stress_mix` are explicit maintenance diagnostics: they
-are finite, block command processing until complete, and require a final
-all-off write/readback for stress success. Scan first reports the observed active mask, then makes
-exactly 112 probes; use `select N` before `scan` to isolate one downstream
-branch. Scans exclude reserved addresses, stop if topology cannot be read,
-and report controller errors separately from address NACKs. Live self-test captures its entry mask, checks all eight one-hot
-selections, and attempts to restore that mask with readback on every terminal
-path after capture. Failed cleanup is reported; controller faults can prevent
-it and leave channels connected until external RESET or power handling.
-Stress makes at most the requested 1,000 operations plus one safe-off
-write and one verification read; with the default 20 ms timeout the sum of
-configured transfer budgets is 20.04 seconds, plus SDK scheduling and console
-overhead. The Arduino example yields after each stress
-transaction; the native one relies on each transaction blocking in the I2C
-driver and additionally sleeps one scheduler tick every 64 operations to
-provide regular scheduler opportunities.
+`scan`, `sweep`, `stress`, `stress_mix`, `watch`, and `soak` run cooperatively.
+`stop` cancels remaining work and performs bounded cleanup; `stats` retains the
+original error separately from cleanup. Stress counts verified rounds, finishes
+all-off, and caps at 1,000 rounds. Self-test and sweep restore their entry mask.
+Use mask tests only on fixtures safe for the enabled channel combinations.
+
+The consoles use fixed input buffers, bounded output attempts, and no wait for
+a connected host at startup. PlatformIO and the host runner set DTR on and RTS
+off for native USB. USB disconnect testing and long-run evidence are described
+in the [guide](docs/CLI.md#fixture-and-usb-endurance-procedure).
 
 Both example owners stop controller access after a receive failure on the
 pinned SDK and show `Controller restart required: yes` in `cfg`; restart the

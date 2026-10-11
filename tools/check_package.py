@@ -33,6 +33,7 @@ REQUIRED_FILES = (
     "README.md",
     "SECURITY.md",
     "docs/FEATURE_MATRIX.md",
+    "docs/CLI.md",
     "docs/HARDWARE_NOTES.md",
     "docs/PORTING.md",
     "docs/VALIDATION_STATUS.md",
@@ -52,6 +53,8 @@ REQUIRED_GLOBS = (
     "include/TCA9548A/*.h",
     "src/*.cpp",
     "examples/common/*.h",
+    "examples/common/*.cpp",
+    "examples/espidf_basic/sdkconfig.defaults*",
 )
 
 

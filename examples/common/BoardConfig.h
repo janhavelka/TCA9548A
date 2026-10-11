@@ -35,6 +35,9 @@ static constexpr uint32_t I2C_FREQ_HZ = 400000;
 /// @brief I2C timeout in milliseconds for example transactions.
 static constexpr uint32_t I2C_TIMEOUT_MS = TCA9548A::Config{}.i2cTimeoutMs;
 
+/// @brief Initial mux address; the unbound CLI can select another strap address.
+static constexpr uint8_t TCA_ADDRESS = TCA9548A::cmd::DEFAULT_ADDRESS;
+
 /// @brief Optional active-low TCA9548A RESET pin. Set to -1 when unwired.
 static constexpr int TCA_RESET = -1;
 

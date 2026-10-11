@@ -264,7 +264,7 @@ it to `OTHER` with detail `2`; code `3`, if exposed, maps to `NACK_DATA`.
 Both example adapters accept only the exact one-byte TCA transaction shapes.
 The Wire adapter rejects out-of-range timeouts before converting to its
 16-bit setting, and does not turn a combined request into two separately
-timed transfers. The native adapter registers its device during owner setup,
+timed transfers. The native adapter registers its device during explicit CLI begin/retargeting,
 outside timed callbacks.
 
 ## Backend Fault And Timing Limits
@@ -304,3 +304,19 @@ observation invalidation, and that no framework include enters `src/` or the
 public headers. Run `doxygen Doxyfile` after changing a public declaration;
 undocumented public API and incomplete parameter/return documentation fail the
 documentation build.
+
+## Example CLI integration
+
+`examples/common/Tca9548aCli.h/.cpp` is framework-neutral example glue, shared
+by the Arduino and native IDF front ends and tested with the real core. Its
+platform callbacks provide bounded console writes, time, bus metadata,
+address-only probes and retargeting, and physical transfer counters. They
+belong to one serialized application task. The CLI owns diagnostic scheduling;
+the chip driver remains managed synchronous with a no-op `tick()`.
+
+For FieldCore-style integration, retain the project's existing bus owner,
+scheduler, and console. Reuse the command behavior and test procedures where
+useful; do not create a second controller owner by copying either standalone
+example's bus initialization. Product code should link only the portable core.
+The [CLI guide](CLI.md) documents the example callbacks' observable behavior,
+USB limits, and the distinction between physical counters and passive health.

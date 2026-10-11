@@ -10,6 +10,11 @@ Entries describe changes relative to the previous release.
 
 ### Added
 
+- Shared example CLI with grouped help, runtime colors and staged settings,
+  address detection, physical transfer assertions, cancellable scan/stress/
+  sweep/watch/soak sessions, retained results, and 32 executed command tests.
+- Firmware Git identity and optional host `--expect-commit`/`--require-clean`
+  checks; documented CLI and USB endurance procedures.
 - Live route-isolation checks (`--route CH:ADDR`), optional 256-mask readback
   sweep, bounded stress/soak runs, and host HIL regressions. Both firmware
   frameworks use the same runner; hardware execution is still pending.
@@ -31,6 +36,14 @@ Entries describe changes relative to the previous release.
 
 ### Changed
 
+- Both frameworks compile the same example-only command engine. Removed the
+  superseded logging, terminal style/shell, and synchronous scanner helpers;
+  reused the numeric parser. Core APIs and transport ownership are unchanged.
+- USB consoles start without a terminal, bound output attempts, count dropped
+  pieces, and yield regularly. Native defaults select each chip's USB console;
+  monitor and runner use DTR on, RTS off, configured before opening the port.
+- Stress counts verified rounds; mixed stress performs seven calls per round.
+  Host stress deadline defaults to 240 s to cover the native scheduler cadence.
 - Simplified example HIL cleanup to one mask-restoration exit, reused existing
   channel validation, and removed unused test support and host-runner metadata.
   Shared Arduino source filters replace duplicate PlatformIO configuration.
@@ -48,6 +61,13 @@ Entries describe changes relative to the previous release.
 
 ### Fixed
 
+- Mixed stress now visits all eight channels instead of only channels 0 and 4.
+  Cancellation and failures preserve both primary and verified cleanup results.
+- Address-only begin preflight avoids a failed receive on an absent default
+  address. Retargeting never clears the SDK receive-fault latch.
+- HIL rejects unbound/faulted configuration, missing mux scan results, and
+  stress with no successful transfer evidence. Independent session counts
+  remain valid when lifetime health counters saturate.
 - CLI contract checks now skip forward declarations when locating function
   bodies, so a declaration cannot hide a missing implementation.
 - RESET HIL now verifies a nonzero seed before the pulse, preventing an

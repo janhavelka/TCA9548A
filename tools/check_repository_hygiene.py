@@ -49,8 +49,7 @@ TEXT_SUFFIXES = {
 }
 CORE_PREFIXES = ("include/", "src/")
 EXAMPLE_CLIS = (
-    "examples/01_basic_bringup_cli/main.cpp",
-    "examples/espidf_basic/main/main.cpp",
+    "examples/common/Tca9548aCli.cpp",
 )
 CORE_NAME_HELPERS = ("errorName(", "driverStateName(", "maskProvenanceName(")
 # A CLI that defines its own enum-to-string function drifts from the core table.

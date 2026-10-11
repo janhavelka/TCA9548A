@@ -10,6 +10,10 @@ Standalone commands:
       Regenerate outputs only if source metadata changed.
   check
       Exit with code 1 when generated outputs are out of date.
+  identity
+      Print the example source commit and tree state, separated by a semicolon.
+  identity-header PATH
+      Refresh an example-only build header when Git identity changes.
   bump patch|minor|major
       Update library.json, then regenerate generated outputs.
   set X.Y.Z
@@ -20,6 +24,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -99,6 +104,24 @@ def _bump_semver(version: str, part: str) -> str:
 
 def _macro_prefix(namespace: str) -> str:
     return "".join(ch if ch.isalnum() else "_" for ch in namespace).upper()
+
+
+def _git_identity(project_root: Path) -> Tuple[str, str]:
+    """Do not attribute an unpacked archive to a containing application's Git."""
+    try:
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", *args], cwd=project_root, capture_output=True,
+                text=True, check=True, timeout=5,
+            ).stdout.strip()
+
+        if Path(git("rev-parse", "--show-toplevel")).resolve() != project_root.resolve():
+            return "unknown", "unknown"
+        commit = git("rev-parse", "HEAD")
+        changes = git("status", "--porcelain", "--untracked-files=normal")
+        return commit, "dirty" if changes else "clean"
+    except (OSError, subprocess.SubprocessError):
+        return "unknown", "unknown"
 
 
 def _render_version_header(namespace: str, version: str) -> str:
@@ -262,6 +285,8 @@ def _usage() -> str:
         "Usage:\n"
         "  scripts/generate_version.py sync\n"
         "  scripts/generate_version.py check\n"
+        "  scripts/generate_version.py identity\n"
+        "  scripts/generate_version.py identity-header PATH\n"
         "  scripts/generate_version.py bump patch|minor|major\n"
         "  scripts/generate_version.py set X.Y.Z"
     )
@@ -272,9 +297,27 @@ def main(args: List[str]) -> int:
 
     if not args:
         _sync_outputs(project_root, check_only=False, quiet=True)
+        if ENV is not None:
+            commit, state = _git_identity(project_root)
+            ENV.Append(CPPDEFINES=[
+                ("TCA9548A_GIT_COMMIT", '\\"' + commit + '\\"'),
+                ("TCA9548A_GIT_STATUS", '\\"' + state + '\\"'),
+            ])
         return 0
 
     command = args[0]
+    if command == "identity" and len(args) == 1:
+        print(";".join(_git_identity(project_root)))
+        return 0
+    if command == "identity-header" and len(args) == 2:
+        commit, state = _git_identity(project_root)
+        content = ("// Generated example build identity.\n#pragma once\n"
+                   f'#define TCA9548A_GIT_COMMIT "{commit}"\n'
+                   f'#define TCA9548A_GIT_STATUS "{state}"\n')
+        destination = Path(args[1])
+        if not destination.is_file() or _read_text(destination) != content:
+            _write_text(destination, content)
+        return 0
     if command == "sync":
         _sync_outputs(project_root, check_only=False, quiet=False)
         return 0

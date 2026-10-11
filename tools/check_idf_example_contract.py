@@ -19,6 +19,9 @@ REQUIRED_FILES = (
     EXAMPLE / "main" / "CMakeLists.txt",
     EXAMPLE / "main" / "main.cpp",
     EXAMPLE / "README.md",
+    EXAMPLE / "sdkconfig.defaults",
+    EXAMPLE / "sdkconfig.defaults.esp32s2",
+    EXAMPLE / "sdkconfig.defaults.esp32s3",
 )
 
 # Word-anchored so prose may mention "USB-Serial-JTAG" without failing CI.
@@ -44,10 +47,11 @@ REQUIRED_NATIVE_TOKENS = (
     "i2c_master_receive(",
     "esp_timer_get_time",
     "vTaskDelay",
-    "getchar",
-    "clearerr(stdin)",
-    "pollConsoleLine",
-    "FixedLineBuffer",
+    "read(STDIN_FILENO",
+    "O_NONBLOCK",
+    "Tca9548aCli.h",
+    ".feed(",
+    ".tick(",
 )
 
 
@@ -77,6 +81,7 @@ def main() -> int:
         "TCA9548A",
         "esp_driver_gpio",
         "esp_driver_i2c",
+        "esp_driver_usb_serial_jtag",
         "esp_rom",
         "esp_system",
         "esp_timer",
@@ -106,6 +111,12 @@ def main() -> int:
     for token in ("idf.py", "not hardware validation", "Arduino", "Wire"):
         if token not in readme:
             errors.append(f"ESP-IDF README missing integration caveat: {token}")
+
+    for target, console in (("esp32s2", "USB_CDC"), ("esp32s3", "USB_SERIAL_JTAG")):
+        defaults = (EXAMPLE / f"sdkconfig.defaults.{target}").read_text(encoding="utf-8")
+        for setting in (f"CONFIG_ESP_CONSOLE_{console}=y", "CONFIG_ESP_CONSOLE_SECONDARY_NONE=y"):
+            if setting not in defaults.splitlines():
+                errors.append(f"{target} native console default missing: {setting}")
 
     return report(errors) if errors else success()
 

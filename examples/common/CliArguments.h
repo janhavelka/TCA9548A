@@ -6,35 +6,27 @@
 #pragma once
 
 #include <cerrno>
+#include <cstdint>
 #include <cstdlib>
-#include <cstring>
 
 namespace cli_shell {
 
 /// Parse one unsigned decimal, octal, or hexadecimal command argument.
 /// Reject signs (strtoul otherwise accepts and wraps negative values),
-/// overflow, trailing input, and values above maximum. Preserve output on error.
-inline bool parseUnsignedArgument(const char* command, const char* prefix,
-                                  unsigned long maximum, unsigned long& output) {
-  const size_t prefixLength = std::strlen(prefix);
-  if (std::strncmp(command, prefix, prefixLength) != 0 ||
-      command[prefixLength] != ' ') {
-    return false;
-  }
-  const char* text = command + prefixLength + 1U;
-  while (*text == ' ' || *text == '\t') {
-    ++text;
-  }
-  if (*text < '0' || *text > '9') {
+/// overflow, trailing input, and values outside the range. Preserve output on error.
+inline bool parseUnsigned(const char* text, uint32_t minimum,
+                           uint32_t maximum, uint32_t& output) {
+  if (text == nullptr || *text < '0' || *text > '9') {
     return false;
   }
   errno = 0;
   char* end = nullptr;
   const unsigned long value = std::strtoul(text, &end, 0);
-  if (errno == ERANGE || end == text || *end != '\0' || value > maximum) {
+  if (errno == ERANGE || end == text || *end != '\0' ||
+      value < minimum || value > maximum) {
     return false;
   }
-  output = value;
+  output = static_cast<uint32_t>(value);
   return true;
 }
 

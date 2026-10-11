@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import contextlib
 import io
+import types
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import tca9548a_hil as hil
 
@@ -23,6 +24,14 @@ LIVE_CASES = ("probe", "probe no-health-side-effects", "capture original mask re
               "recover readback 0x00", "final verified mask restore")
 RESET_CASES = ("hardReset seed write", "hardReset seed readback",
                "hardReset exact-zero verification", "hardReset leaves verified all-off")
+
+CFG_FIELDS = ("Bound: yes\nInitialized: yes\nController restart required: no\n"
+              "Config reference parity: yes\nSnapshot: OK\n")
+
+
+def cfg_text(address: int = 0x70, timeout_ms: int = 20) -> str:
+    return (f"=== Configuration ===\nI2C address: 0x{address:02X}\n" + CFG_FIELDS
+            + f"I2C timeout: {timeout_ms} ms\n> ")
 
 
 def hil_text(*, reset: bool = True, dry: bool = False) -> str:
@@ -167,25 +176,36 @@ class EvidenceTests(unittest.TestCase):
 
     def test_cfg_reports_valid_owner_timeout_without_hard_coding_default(self):
         for timeout_ms in (1, 20, 50, 60000):
-            text = ("=== Configuration ===\nI2C address: 0x70\n"
-                    f"  I2C timeout: {timeout_ms} ms\n> ")
+            text = cfg_text(timeout_ms=timeout_ms)
             status, notes = hil.classify(text, self.plan["TCA-HIL-003"])
             self.assertEqual(status, hil.PASS)
             self.assertIn(f"firmware I2C timeout={timeout_ms} ms (reported setting)", notes)
 
     def test_cfg_rejects_missing_and_duplicate_timeout_fields(self):
-        base = "=== Configuration ===\nI2C address: 0x70\n"
+        base = "=== Configuration ===\nI2C address: 0x70\n" + CFG_FIELDS
         for fields in ("", "I2C timeout: 20 ms\nI2C timeout: 20 ms\n",
                        "I2C timeout: 20 ms\nI2C timeout: invalid\n"):
             with self.subTest(fields=fields):
                 self.classify("cfg", base + fields + "> ", hil.FAIL)
 
     def test_cfg_rejects_malformed_zero_and_excessive_timeouts(self):
-        base = "=== Configuration ===\nI2C address: 0x70\n"
+        base = "=== Configuration ===\nI2C address: 0x70\n" + CFG_FIELDS
         for value in ("0 ms", "60001 ms", "-1 ms", "nan ms", "inf ms", "20.0 ms",
                       "20 us", "20", "20 ms trailing", "9" * 5000 + " ms"):
             with self.subTest(value=value[:40]):
                 self.classify("cfg", base + "  I2C timeout: " + value + "\n> ", hil.FAIL)
+
+    def test_cfg_rejects_unbound_faulted_and_contradictory_snapshots(self):
+        for field in CFG_FIELDS.splitlines():
+            with self.subTest(field=field):
+                self.classify("cfg", cfg_text().replace(field + "\n", ""), hil.FAIL)
+                self.classify("cfg", cfg_text() + "\n" + field + "\n", hil.FAIL)
+        for before, after in (("Bound: yes", "Bound: no"),
+                              ("Initialized: yes", "Initialized: no"),
+                              ("Controller restart required: no", "Controller restart required: yes"),
+                              ("Config reference parity: yes", "Config reference parity: no"),
+                              ("Snapshot: OK", "Snapshot: INVALID_CONFIG")):
+            self.classify("cfg", cfg_text().replace(before, after), hil.FAIL)
 
     def test_health_ignores_sticky_error_but_requires_current_ready(self):
         self.classify("health", HEALTH)
@@ -260,6 +280,21 @@ class EvidenceTests(unittest.TestCase):
                        "Health delta: success=3 failure=0\nHealth delta: success=3 failure=0\n"):
             self.assertEqual(hil.classify(prefix + suffix, step)[0], hil.FAIL)
 
+    def test_stress_requires_transfer_evidence_even_when_lifetime_counter_saturates(self):
+        prefix = ("Stress results: completed=100 requested=100 status=OK safe_off=OK\n"
+                  "Health delta: success=0 failure=0\n")
+        self.classify("stress 100", prefix, hil.FAIL)
+        self.classify("stress 100", prefix + "Session transfers: success=202 failure=0\n")
+        self.classify("stress 100", prefix + "Session transfers: success=201 failure=0\n", hil.FAIL)
+        self.classify("stress 100", prefix + "Session transfers: success=202 failure=1\n", hil.FAIL)
+        for command, count in (("stress 100", 202), ("stress_mix 100", 702)):
+            self.classify(command, prefix + f"Session transfers: success={count} failure=0\n")
+            for evidence in ("success=broken failure=0", "success=9999999999 failure=0",
+                             f"success={count - 1} failure=0", f"success={count + 1} failure=0"):
+                # Even a plausible legacy health delta must not hide bad new evidence.
+                self.classify(command, prefix.replace("success=0", "success=1000") +
+                              f"Session transfers: {evidence}\n", hil.FAIL)
+
     def test_scan_requires_one_topology_and_extracts_only_device_records(self):
         text = scan_text(0, {0x70})
         self.classify("scan", text + "\nScan topology: OK active_mask=0x01\n", hil.FAIL)
@@ -269,6 +304,30 @@ class EvidenceTests(unittest.TestCase):
 
 
 class SerialTests(unittest.TestCase):
+    def test_control_lines_are_configured_before_open_and_closed_on_failure(self):
+        for flags, expected in (([], (True, False)), (["--dtr", "0", "--rts", "1"], (False, True))):
+            for fail in (False, True):
+                with self.subTest(flags=flags, fail=fail):
+                    port = Mock()
+                    def open_port():
+                        self.assertEqual((port.dtr, port.rts), expected)
+                        self.assertEqual(port.port, "COM8")
+                        if fail:
+                            raise OSError("open failed")
+                    port.open.side_effect = open_port
+                    factory = Mock(return_value=port)
+                    with patch.dict("sys.modules", {"serial": types.SimpleNamespace(Serial=factory)}), \
+                            patch.object(hil.time, "sleep"):
+                        runner = hil.SerialRunner(hil.parse_args(["--port", "COM8", *flags]))
+                        if fail:
+                            with self.assertRaises(OSError):
+                                runner.__enter__()
+                        else:
+                            with runner:
+                                pass
+                    self.assertIsNone(factory.call_args.kwargs["port"])
+                    port.close.assert_called_once()
+
     def exchange(self, chunks, *, timeout=2.0, short_write=False):
         clock = Clock()
         runner = hil.SerialRunner(hil.parse_args(["--timeout-s", str(timeout)]))
@@ -426,6 +485,36 @@ class FixtureTests(unittest.TestCase):
 
 
 class RunTests(unittest.TestCase):
+    def test_live_version_requires_exact_requested_identity(self):
+        commit = "a" * 40
+        base = "=== Version Info ===\nLibrary: test\n"
+        identity = f"Firmware commit: {commit}\nFirmware tree: clean\n"
+        variants = ((identity, hil.PASS), ("", hil.FAIL),
+                    (identity.replace(commit, "b" * 40), hil.FAIL),
+                    (identity.replace("clean", "dirty"), hil.FAIL),
+                    (identity + identity, hil.FAIL))
+        args = hil.parse_args(["--expect-commit", commit.upper(), "--require-clean", "--command-delay-s", "0"])
+        for fields, expected in variants:
+            runner = FixtureRunner()
+            runner.responses["version"] = base + fields + "> "
+            with self.subTest(fields=fields), patch.object(hil, "SerialRunner", return_value=runner):
+                results, _ = hil.run_live(args)
+            self.assertEqual(results[0].status, expected)
+            if expected == hil.FAIL:
+                self.assertEqual(runner.commands, ["version"])
+
+    def test_live_scan_requires_configured_mux_even_with_valid_summary(self):
+        runner = FixtureRunner()
+        runner.responses.update({"version": "=== Version Info ===\nLibrary: test\n> ",
+                                 "help": "=== TCA9548A CLI Help ===\nhil [dry|parser|run|run reset]\n> ",
+                                 "cfg": cfg_text(), "scan": scan_text(0, {0x50})})
+        with patch.object(hil, "SerialRunner", return_value=runner):
+            results, _ = hil.run_live(hil.parse_args(["--command-delay-s", "0"]))
+        scan = next(result for result in results if result.step.command == "scan")
+        self.assertEqual(scan.status, hil.FAIL)
+        self.assertIn("mux address missing", scan.notes)
+        self.assertEqual(runner.commands[-1], "scan")
+
     def test_parser_self_test_checks_configuration_timeout(self):
         original_classify = hil.classify
 
@@ -442,7 +531,7 @@ class RunTests(unittest.TestCase):
         runner = FixtureRunner(clock=clock)
         runner.responses.update({"version": "=== Version Info ===\nLibrary: test\n> ",
                                  "help": "=== TCA9548A CLI Help ===\nhil [dry|parser|run|run reset]\n> ",
-                                 "cfg": "=== Configuration ===\nI2C address: 0x70\nI2C timeout: 20 ms\n> ",
+                                 "cfg": cfg_text(),
                                  "hil dry": hil_text(dry=True), "hil run reset": hil_text(),
                                  "stress 16": "Stress results: completed=16 requested=16 status=OK safe_off=OK\nDuration: 3 ms\nHealth delta: success=18 failure=0\n> ",
                                  "stress_mix 16": "=== stress_mix summary ===\nStress results: completed=16 requested=16 status=OK safe_off=OK\nDuration: 3 ms\nHealth delta: success=18 failure=0\n> "})
@@ -465,7 +554,8 @@ class RunTests(unittest.TestCase):
                  ("--soak-duration-s", "86401"), ("--sample-count", "1001"),
                  ("--stress-count", "-1"), ("--baud", "0"), ("--address", "0x6f"),
                  ("--address", "junk"), ("--route", "8:0x48"), ("--route", "0:0x07"),
-                 ("--route", "0:0x78"), ("--route", "0:0x70"), ("--route", "bad")]
+                 ("--route", "0:0x78"), ("--route", "0:0x70"), ("--route", "bad"),
+                 ("--dtr", "2"), ("--rts", "-1"), ("--expect-commit", "abc123")]
         for case in cases:
             with self.subTest(case=case), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 hil.parse_args(list(case))
@@ -501,7 +591,7 @@ class RunTests(unittest.TestCase):
         runner = FixtureRunner()
         runner.responses.update({"version": "=== Version Info ===\nLibrary: test\n> ",
                                  "help": "=== TCA9548A CLI Help ===\nhil [dry|parser|run|run reset]\n> ",
-                                 "cfg": "=== Configuration ===\nI2C address: 0x70\nI2C timeout: 20 ms\n> ",
+                                 "cfg": cfg_text(),
                                  "scan": scan_text(0, {0x70}).replace("devices=1", "devices=" + "9" * 5000)})
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "report.md"
@@ -647,7 +737,7 @@ class RunTests(unittest.TestCase):
         runner = FixtureRunner()
         runner.responses.update({"version": "=== Version Info ===\nLibrary: test\n> ",
                                  "help": "=== TCA9548A CLI Help ===\nhil [dry|parser|run|run reset]\n> ",
-                                 "cfg": "=== Configuration ===\nI2C address: 0x71\nI2C timeout: 20 ms\n> "})
+                                 "cfg": cfg_text(address=0x71)})
         args = hil.parse_args(["--command-delay-s", "0"])
         with patch.object(hil, "SerialRunner", return_value=runner):
             results, _ = hil.run_live(args)
@@ -660,7 +750,7 @@ class RunTests(unittest.TestCase):
             runner = FixtureRunner()
             runner.responses.update({"version": "=== Version Info ===\nLibrary: test\n> ",
                                      "help": "=== TCA9548A CLI Help ===\nhil [dry|parser|run|run reset]\n> ",
-                                     "cfg": "=== Configuration ===\nI2C address: 0x70\n" + timeout_field + "> "})
+                                     "cfg": "=== Configuration ===\nI2C address: 0x70\n" + CFG_FIELDS + timeout_field + "> "})
             args = hil.parse_args(["--command-delay-s", "0"])
             with patch.object(hil, "SerialRunner", return_value=runner):
                 results, _ = hil.run_live(args)

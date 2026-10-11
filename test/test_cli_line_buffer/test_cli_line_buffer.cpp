@@ -15,26 +15,23 @@ namespace {
 
 void test_numeric_arguments_reject_sign_wrap_overflow_and_trailing_input() {
   const char* rejected[] = {
-      "mask -0", "mask -4294967295", "mask -18446744073709551615",
-      "mask +1", "mask 256", "mask 0x100", "mask 08", "mask 1x",
-      "mask 1 2", "mask ", "mask", "masking 1",
-      "mask 184467440737095516160", "mask 0x", "mask \t-1"};
-  for (const char* command : rejected) {
-    unsigned long result = 99UL;
-    TEST_ASSERT_FALSE(cli_shell::parseUnsignedArgument(command, "mask", 255UL,
-                                                       result));
+      "-0", "-4294967295", "-18446744073709551615", "+1", "256", "0x100",
+      "08", "1x", "1 2", "", "mask", "184467440737095516160", "0x", "\t-1"};
+  for (const char* argument : rejected) {
+    uint32_t result = 99;
+    TEST_ASSERT_FALSE(cli_shell::parseUnsigned(argument, 0, 255, result));
     TEST_ASSERT_EQUAL_UINT32(99U, result);
   }
-  const char* accepted[] = {"mask 255", "mask 0xFF", "mask 0377", "mask \t255"};
-  for (const char* command : accepted) {
-    unsigned long result = 0UL;
-    TEST_ASSERT_TRUE(cli_shell::parseUnsignedArgument(command, "mask", 255UL,
-                                                      result));
+  for (const char* argument : {"255", "0xFF", "0377"}) {
+    uint32_t result = 0;
+    TEST_ASSERT_TRUE(cli_shell::parseUnsigned(argument, 0, 255, result));
     TEST_ASSERT_EQUAL_UINT32(255U, result);
   }
-  unsigned long result = 99UL;
-  TEST_ASSERT_TRUE(cli_shell::parseUnsignedArgument("mask 0", "mask", 255UL,
-                                                    result));
+  uint32_t result = 99;
+  TEST_ASSERT_FALSE(cli_shell::parseUnsigned(nullptr, 0, 255, result));
+  TEST_ASSERT_FALSE(cli_shell::parseUnsigned("0", 1, 255, result));
+  TEST_ASSERT_EQUAL_UINT32(99U, result);
+  TEST_ASSERT_TRUE(cli_shell::parseUnsigned("0", 0, 255, result));
   TEST_ASSERT_EQUAL_UINT32(0U, result);
 }
 

@@ -40,6 +40,7 @@ COMMON_FAILURE_PATTERNS = (
     r"\bfailures?=[1-9][0-9]*\b",
     # Printed by both CLIs when the post-stress all-off could not be verified.
     r"\bsafe_off=FAILED\b",
+    r"\boutcome=(?:FAIL|CANCELLED)\b",
     r"\berrors=[1-9][0-9]*\b",
     r"\[E\]",
     r"\bCommand discarded:",
@@ -129,6 +130,13 @@ def classify(text: str, step: Step, completion: str = "prompt") -> tuple[str, st
         if timeout_match is None or not 1 <= int(timeout_match[1]) <= 60000:
             return FAIL, "firmware I2C timeout must be an integer within 1..60000 ms"
         timeout_ms = int(timeout_match[1])
+        for field, expected in (("Bound", "yes"), ("Initialized", "yes"),
+                                ("Controller restart required", "no"),
+                                ("Config reference parity", "yes"),
+                                ("Snapshot", "OK")):
+            values = re.findall(rf"^[ \t]*{re.escape(field)}:[ \t]*([^\r\n]*)", clean, re.M)
+            if len(values) != 1 or values[0].strip() != expected:
+                return FAIL, f"configuration requires {field}: {expected}"
         return PASS, f"complete configuration; firmware I2C timeout={timeout_ms} ms (reported setting)"
     if command.startswith("hil "):
         summaries = re.findall(r"^HIL result: pass=([0-9]{1,5}) fail=([0-9]{1,5}) skip=([0-9]{1,5})\s*$", clean, re.M)
@@ -186,6 +194,16 @@ def classify(text: str, step: Step, completion: str = "prompt") -> tuple[str, st
         deltas = re.findall(r"^Health delta: success=([0-9]{1,10}) failure=0\s*$", clean, re.M)
         if len(deltas) != 1 or int(deltas[0]) > 0xFFFFFFFF:
             return FAIL, "stress health failures or missing counters"
+        # A passing run needs real successful traffic, even when a lifetime
+        # health counter has saturated. New firmware also reports session I/O.
+        session_lines = re.findall(r"^Session transfers:([^\r\n]*)", clean, re.M)
+        if session_lines:
+            session = re.fullmatch(r" success=([0-9]{1,7}) failure=0", session_lines[0])
+            expected = (7 if command.startswith("stress_mix ") else 2) * count + 2
+            if len(session_lines) != 1 or session is None or int(session[1]) != expected:
+                return FAIL, "stress session did not verify every iteration and cleanup"
+        elif int(deltas[0]) < count + 2:
+            return FAIL, "stress success counter does not cover iterations and cleanup"
     elif command == "read":
         matches = READ_MASK_RE.findall(clean)
         if len(matches) != 1:
@@ -677,12 +695,18 @@ class SerialRunner:
             raise RuntimeError("pyserial is required for live HIL runs") from exc
 
         self.serial = serial.Serial(
-            self.args.port,
-            self.args.baud,
+            port=None,
+            baudrate=self.args.baud,
             timeout=0.05,
             write_timeout=self.args.timeout_s,
         )
         try:
+            # Match the monitor configuration: configure control lines before
+            # opening the port so a long-run connection does not request reset.
+            self.serial.dtr = bool(self.args.dtr)
+            self.serial.rts = bool(self.args.rts)
+            self.serial.port = self.args.port
+            self.serial.open()
             time.sleep(self.args.boot_settle_s)
         except BaseException:
             self.serial.close()
@@ -978,6 +1002,20 @@ def run_live(args: argparse.Namespace) -> tuple[list[Result], Path | None]:
                         addresses = re.findall(r"I2C address:\s+0x([0-9A-Fa-f]{2})\b", strip_ansi(text))
                         if len(addresses) != 1 or int(addresses[0], 16) != args.address:
                             status, notes = FAIL, "firmware address differs from --address"
+                    if status == PASS and step.command == "scan":
+                        addresses = {int(value, 16) for value in SCAN_ADDRESS_RE.findall(strip_ansi(text))}
+                        if args.address not in addresses:
+                            status, notes = FAIL, "configured mux address missing from scan"
+                    if status == PASS and step.command == "version":
+                        clean = strip_ansi(text)
+                        if args.expect_commit:
+                            commits = re.findall(r"^[ \t]*Firmware commit: ([0-9a-f]{40})[ \t]*$", clean, re.M)
+                            if commits != [args.expect_commit]:
+                                status, notes = FAIL, "firmware commit differs from --expect-commit"
+                        if args.require_clean:
+                            trees = re.findall(r"^[ \t]*Firmware tree: (\w+)[ \t]*$", clean, re.M)
+                            if trees != ["clean"]:
+                                status, notes = FAIL, "firmware was not built from a reported clean checkout"
                     record(f"\n$ {step.command}\n{text}")
                 except (OSError, RuntimeError, KeyboardInterrupt) as exc:
                     text, elapsed = str(exc), time.monotonic() - started
@@ -1011,7 +1049,9 @@ def parser_self_test(args: argparse.Namespace) -> int:
     scan_step = by_id["TCA-HIL-005"]
     selftest_step = by_id["TCA-HIL-008"]
     cfg_step = by_id["TCA-HIL-003"]
-    cfg_prefix = "=== Configuration ===\nI2C address: 0x70\n"
+    cfg_prefix = ("=== Configuration ===\nI2C address: 0x70\nBound: yes\n"
+                  "Initialized: yes\nController restart required: no\n"
+                  "Config reference parity: yes\nSnapshot: OK\n")
     cfg_status, cfg_notes = classify(cfg_prefix + "I2C timeout: 20 ms\n", cfg_step)
     invalid_cfg = (
         "", "I2C timeout: 0 ms\n", "I2C timeout: 60001 ms\n",
@@ -1155,12 +1195,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     parser.add_argument("--port", default="COM8")
     parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--dtr", type=int, choices=(0, 1), default=1,
+                        help="DTR state set before opening (1 enables ESP32-S2 native CDC output)")
+    parser.add_argument("--rts", type=int, choices=(0, 1), default=0,
+                        help="RTS state set before opening; default 0 avoids a reset request")
     parser.add_argument("--address", type=parse_address, default=0x70,
                         help="expected firmware mux address; this does not reconfigure firmware")
     parser.add_argument("--target-env", default="esp32s3dev")
+    parser.add_argument("--expect-commit", help="require this full source commit in firmware version output")
+    parser.add_argument("--require-clean", action="store_true", help="require firmware to report a clean source checkout")
     parser.add_argument("--timeout-s", type=float, default=5.0)
     parser.add_argument("--scan-timeout-s", type=float, default=30.0)
-    parser.add_argument("--stress-timeout-s", type=float, default=60.0)
+    parser.add_argument("--stress-timeout-s", type=float, default=240.0)
     parser.add_argument("--idle-timeout-s", type=float, default=0.4)
     parser.add_argument("--boot-settle-s", type=float, default=1.0)
     parser.add_argument("--command-delay-s", type=float, default=0.05)
@@ -1207,6 +1253,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--fix-note", action="append", default=[])
     parser.add_argument("--verification-result", action="append", default=[])
     args = parser.parse_args(argv)
+    if args.expect_commit is not None:
+        if re.fullmatch(r"[0-9a-fA-F]{40}", args.expect_commit) is None:
+            parser.error("--expect-commit must be a full 40-character hexadecimal commit")
+        args.expect_commit = args.expect_commit.lower()
     for name in ("timeout_s", "scan_timeout_s", "stress_timeout_s", "idle_timeout_s"):
         value = getattr(args, name)
         if not math.isfinite(value) or not 0 < value <= 600:

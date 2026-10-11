@@ -1,0 +1,2 @@
+# Use the target-specific native USB defaults in sdkconfig.defaults.<target>.
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

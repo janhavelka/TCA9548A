@@ -74,6 +74,14 @@ overlong lines, invalid destination buffers, and recovery on the next command.
 It additionally rejects embedded control bytes and signed/wrapping, overflowing,
 or trailing numeric arguments through the same helper used by both CLIs.
 
+The `native_cli_commands` suite executes the shared command handlers with the
+real core and a test-only controller fixture. Its 32 tests cover staged settings,
+address preflight, all channel operations, detection, physical counter assertions,
+parser rejection, cache/health reporting, exhaustive sweep, all eight mixed-stress
+channels, cancellation, failed restoration, receive-fault retirement, and
+watch/soak deadlines across clock wrap. This is software evidence, not a device
+simulator embedded in production code.
+
 The `native_transport` suite exercises the actual example Wire adapter against
 a test-only recording double: exact one-byte shapes, explicit STOP, independent
 bus context, clock/timeout bounds, ambiguous NACK mapping, short writes,
@@ -96,26 +104,20 @@ serial prompt/deadline handling, route isolation, mask sweep, cleanup, and
 argument rejection. It also covers oversized numeric fields, extracting masks
 and addresses only from validated records, transcript failures, and reporting
 route checks that never ran. Configuration checks require exactly one valid reported
-I2C timeout and record that setting in the result notes; this is not a timing
+I2C timeout, a bound initialized driver, matching snapshot, and a usable
+controller. Scan must contain the configured mux; stress must provide nonzero
+transfer evidence. Tests cover serial control-line setup before open, required
+firmware identity, and rejection of contradictory summaries. The timeout is
+recorded in the result notes; this is not a timing
 measurement. These use scripted responses and are not hardware evidence.
 
-Local validation on 2026-10-03 passed 47 driver, 3 CLI, and 7 Wire-adapter
-native tests, 49 Python HIL host regressions, parser checks, the framework-neutral
-strict-warning build, standalone CMake library and consumer builds (including
-CTest), both Arduino ESP32-S2/S3 builds, Doxygen, repository contracts, and
-package creation and the automated archive checker. A native PlatformIO consumer also built
-and ran from the packaged archive with strict dependency compatibility, without
-an Arduino or ESP-IDF framework. Thirteen focused package-checker cases passed,
-including source mismatches, missing files, unsafe paths, links, duplicate
-members, and an invalid work directory.
-
-[CI run 37146753916](https://github.com/janhavelka/TCA9548A/actions/runs/37146753916)
-passed host checks, both Arduino builds, and both native ESP-IDF 5.5.5 builds
-at commit `54965b51ef300f51c54ba5d8dfd99cf1f59eb5f6`. The expanded SDK matrix
-and package checker are covered by subsequent workflow runs; check the run for
-the exact commit being used. Native ESP-IDF builds were not run locally because
-`idf.py` is unavailable. No live fixture was accessed and no physical
-qualification result is implied.
+Local validation on 2026-10-11 passed 47 driver, 3 line/parser, 32 executed
+CLI-command, and 7 Wire-adapter tests (89 total), plus 54 Python HIL regressions.
+The framework-neutral build, standalone CMake consumer/CTest, both Arduino
+builds, Doxygen, repository contracts, and packed-archive consumer are checked
+for this change. Check the CI run attached to the exact commit for all four
+native ESP-IDF target/SDK builds; `idf.py` is unavailable locally. No live
+fixture was accessed and no physical qualification result is implied.
 
 For the Windows Arduino builds, the installed compiler's directory
 `%USERPROFILE%\.platformio\packages\toolchain-xtensa-esp-elf\bin` had to be
@@ -125,8 +127,7 @@ were used; no system-wide PATH change or new installation was made.
 ## Live HIL Procedure
 
 1. Set the firmware's SDA/SCL, strapped mux address, and wired RESET pin for the
-   actual fixture. Arduino uses `examples/common/BoardConfig.h` plus the address
-   in `configureDriver()`; native IDF uses the constants at the top of its
+   actual fixture. Arduino uses `examples/common/BoardConfig.h`; native IDF uses the constants at the top of its
    `main.cpp`. RESET defaults to disabled in both examples. Supply the mux and
    use reviewed external pull-ups; see [Hardware Notes](HARDWARE_NOTES.md).
 2. Build and flash the appropriate example, close other serial monitors, and
@@ -167,7 +168,7 @@ were used; no system-wide PATH change or new installation was made.
    stress checks its readbacks against the preceding mask write.
 
 The runner has separate finite command budgets: 5 s normally, 30 s for scan,
-and 60 s for firmware stress by default, configurable through `--timeout-s`,
+and 240 s for firmware stress by default, configurable through `--timeout-s`,
 `--scan-timeout-s`, and `--stress-timeout-s`. Receive storage is capped at
 64 KiB per response and optional transcripts stream to disk. Soak may extend
 past its scheduling deadline by the in-flight command and bounded cleanup.
@@ -175,8 +176,11 @@ These host budgets do not establish the firmware's physical timing bound.
 Incomplete responses, skipped required RESET checks, unknown results, scan
 faults, mismatched readbacks, and incomplete stress all fail the run.
 
-Reports record host checkout identity separately from runtime version output;
-they do not prove the flashed binary came from that checkout. Record its hash,
+Reports record host checkout identity separately from runtime version output.
+Both firmware builds refresh their full Git identity on each build. Add
+`--expect-commit <full-40-character-SHA> --require-clean` to reject missing,
+wrong, dirty, or unknown reported firmware identity. These checks compare
+firmware-reported metadata; they do not authenticate the flashed binary. Record its hash,
 board revision, wiring, voltage, pull-ups, target population, and measurements
 in fixture evidence. `--skip-reset` and `--allow-not-run` are diagnostic
 exceptions, not release qualification. `--dry-run` and `--parser-self-test`
@@ -189,6 +193,12 @@ stuck downstream branch. Run real target payloads at the intended clock and
 repeat on each supported board/framework. Power/reset fault injection and
 analog measurements remain operator-controlled; the runner does not simulate
 them or claim that mask readback proves the physical switches moved.
+
+The [CLI and endurance guide](CLI.md) adds interactive detection, staged
+configuration, physical transfer assertions, cooperative sessions, cancellation,
+and independently powered USB disconnect/reconnect procedures. Use DTR on and
+RTS off (runner defaults); `--dtr`/`--rts` overrides are available for a different
+console adapter. The host runner does not modify the host's USB power policy.
 
 ## Not validated
 

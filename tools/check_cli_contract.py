@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce the shared Arduino/native ESP-IDF TCA9548A CLI contract."""
+"""Check that firmware frameworks and native tests use the same example CLI."""
 
 from __future__ import annotations
 
@@ -7,312 +7,91 @@ import pathlib
 import re
 import sys
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-ARDUINO_MAIN = ROOT / "examples" / "01_basic_bringup_cli" / "main.cpp"
-IDF_MAIN = ROOT / "examples" / "espidf_basic" / "main" / "main.cpp"
-
-COMMAND_TOKENS = (
-    "help",
-    "?",
-    "version",
-    "ver",
-    "cfg",
-    "health",
-    "drv",
-    "state",
-    "read",
-    "dump",
-    "select",
-    "mask",
-    "off",
-    "probe",
-    "recover",
-    "reset",
-    "hardreset",
-    "invalidate",
-    "begin",
-    "end",
-    "scan",
-    "stress",
-    "stress_mix",
-    "selftest",
-    "hil",
+CLI = ROOT / "examples/common/Tca9548aCli.cpp"
+ADAPTERS = (
+    ROOT / "examples/01_basic_bringup_cli/main.cpp",
+    ROOT / "examples/espidf_basic/main/main.cpp",
 )
-
-ARGUMENT_COMMANDS = ("select", "mask", "stress", "stress_mix")
-
+COMMANDS = (
+    "help", "?", "version", "ver", "color", "verbose", "bus", "diag",
+    "cfg", "settings", "snapshot", "addr", "timeout", "resettimeout", "offline",
+    "begin", "init", "end", "unbind", "scan", "discover", "detect",
+    "read", "dump", "select", "mask", "enable", "disable", "verify", "off",
+    "recover", "reset", "hardreset", "invalidate", "health", "drv", "state",
+    "online", "probe", "selftest", "hil", "sweep", "stress", "stress_mix",
+    "watch", "soak", "stop", "cancel", "stats", "result", "xfer_stats",
+    "counters", "xfer_reset", "xfer_assert",
+)
 PUBLIC_SURFACE = (
-    ".begin(",
-    ".tick(",
-    ".end(",
-    ".probe(",
-    ".recover(",
-    ".hardReset(",
-    ".selectChannel(",
-    ".writeChannelMask(",
-    ".disableAll(",
-    ".readChannelMask(",
-    ".getSettings(",
-    ".state(",
-    ".driverState(",
-    ".isBound(",
-    ".isInitialized(",
-    ".isOnline(",
-    ".getConfig(",
-    ".lastOkMs(",
-    ".lastErrorMs(",
-    ".lastError(",
-    ".consecutiveFailures(",
-    ".totalFailures(",
-    ".totalSuccess(",
-    ".channelMaskObservation(",
-    ".invalidateChannelMask(",
-)
-
-PARITY_OUTPUTS = (
-    "Bound:",
-    "Initialized:",
-    "I2C address:",
-    "I2C frequency:",
-    "I2C timeout:",
-    "RESET timeout:",
-    "nowMs hook:",
-    "RESET callback:",
-    "Offline threshold:",
-    "Config reference parity:",
-    "State alias parity:",
-    "probe no-health-side-effects",
-    "capture original mask readback",
-    "disableAll write",
-    "disableAll readback",
-    "all eight one-hot channels",
-    "write mask 0xA5",
-    "read mask 0xA5",
-    "recover safe-off write",
-    "recover readback 0x00",
-    "hardReset seed write",
-    "hardReset seed readback",
-    "hardReset exact-zero verification",
-    "hardReset leaves verified all-off",
-    "final verified mask restore",
-    "final safe-off was not verified",
-    "Scan topology:",
-    "active_mask=",
-    "select a one-hot mask before scan to isolate a branch",
-    "Snapshot:",
-    "read: ",
-    " mask=",
-    "select %lu: ",
-    "mask 0x%02lX: ",
-    " (bound=%s)",
+    "begin", "tick", "end", "probe", "recover", "hardReset", "selectChannel",
+    "writeChannelMask", "disableAll", "readChannelMask", "getSettings", "state",
+    "driverState", "isBound", "isInitialized", "isOnline", "getConfig",
+    "lastOkMs", "lastErrorMs", "lastError", "consecutiveFailures", "totalFailures",
+    "totalSuccess", "channelMaskObservation", "invalidateChannelMask",
 )
 
 
-def fail(messages: list[str]) -> int:
-    print("CLI contract FAILED:")
-    for message in messages:
-        print(f"- {message}")
-    return 1
-
-
-def read(path: pathlib.Path, errors: list[str]) -> str:
-    if not path.is_file():
-        errors.append(f"missing CLI source: {path.relative_to(ROOT).as_posix()}")
-        return ""
-    return path.read_text(encoding="utf-8", errors="replace")
-
-
-def function_body(
-    text: str, signature: str, label: str, errors: list[str]
-) -> str:
-    # A forward declaration must not borrow the next function's body.
+def function_body(text: str, signature: str, errors: list[str]) -> str:
+    # Skip declarations instead of borrowing the following function's body.
     definition = re.search(re.escape(signature) + r"[^;{}]*\{", text)
-    if definition is None:
-        errors.append(f"{label} missing function definition: {signature}")
-        return ""
-    opening = definition.end() - 1
-    depth = 0
-    for index in range(opening, len(text)):
-        if text[index] == "{":
-            depth += 1
-        elif text[index] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[opening + 1 : index]
-    errors.append(f"{label} function has an unterminated body: {signature}")
+    if definition is not None:
+        opening = definition.end() - 1
+        depth = 0
+        for index in range(opening, len(text)):
+            if text[index] == "{":
+                depth += 1
+            elif text[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[opening + 1:index]
+    errors.append(f"missing function body: {signature}")
     return ""
-
-
-def require_commands(label: str, text: str, errors: list[str]) -> None:
-    help_body = function_body(text, "void printHelp()", label, errors)
-    dispatch_body = function_body(text, "void processCommand(", label, errors)
-    for token in COMMAND_TOKENS:
-        help_pattern = (
-            re.escape(token)
-            if token == "?"
-            else rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])"
-        )
-        if re.search(help_pattern, help_body) is None:
-            errors.append(f"{label} CLI help missing command: {token}")
-
-        if token in ARGUMENT_COMMANDS:
-            dispatch_pattern = (
-                rf'parseUnsignedArgument\(\s*command,\s*"{re.escape(token)}"'
-            )
-        else:
-            dispatch_pattern = (
-                rf'(?:std::)?strcmp\(\s*command,\s*"{re.escape(token)}"\s*\)'
-            )
-        if re.search(dispatch_pattern, dispatch_body) is None:
-            errors.append(f"{label} CLI dispatch missing command: {token}")
-
-
-def require_executable_public_surface(
-    label: str, text: str, entry_signature: str, errors: list[str]
-) -> None:
-    owner_signatures = (
-        "void printObservation()",
-        "void printConfig()",
-        "void printHealth()",
-        "void beginDriver()",
-        "bool safeOffVerified()",
-        "void scanBus()",
-        "bool restoreMaskVerified(",
-        "void runHil(",
-        "void runHilMaskChecks(",
-        "void runStress(",
-        "void processCommand(",
-        entry_signature,
-    )
-    executable = "\n".join(
-        function_body(text, signature, label, errors)
-        for signature in owner_signatures
-    )
-    for token in PUBLIC_SURFACE:
-        if token not in executable:
-            errors.append(
-                f"{label} CLI has no executable owner for public API: {token}"
-            )
-
-    run_hil = function_body(text, "void runHil(", label, errors)
-    mask_checks = function_body(text, "void runHilMaskChecks(", label, errors)
-    restore = function_body(text, "bool restoreMaskVerified(", label, errors)
-    scan = function_body(text, "void scanBus()", label, errors)
-    for token in (
-        "readChannelMask(originalMask)",
-        "runHilMaskChecks(counts, includeReset)",
-        "restoreMaskVerified(originalMask)",
-    ):
-        if token not in run_hil:
-            errors.append(f"{label} live selftest missing executable step: {token}")
-    if "index < TCA9548A::cmd::NUM_CHANNELS" not in mask_checks:
-        errors.append(f"{label} live selftest must check every channel")
-    if run_hil.count("restoreMaskVerified(originalMask)") != 1:
-        errors.append(f"{label} live selftest must have one mask-restoration exit")
-    for token in ("writeChannelMask(originalMask)", "readChannelMask(observed)"):
-        if token not in restore:
-            errors.append(f"{label} live selftest restore missing step: {token}")
-    if "readChannelMask(visibleMask)" not in scan:
-        errors.append(f"{label} scan does not observe active topology")
-    reset_seed = mask_checks.find('"hardReset seed readback"')
-    reset_call = mask_checks.find(".hardReset()")
-    if reset_seed < 0 or reset_call <= reset_seed:
-        errors.append(f"{label} RESET check must verify nonzero state before RESET")
 
 
 def main() -> int:
     errors: list[str] = []
-    arduino = read(ARDUINO_MAIN, errors)
-    idf = read(IDF_MAIN, errors)
-
-    for label, text, entry_signature in (
-        ("Arduino", arduino, "void loop()"),
-        ("ESP-IDF", idf, 'extern "C" void app_main(void)'),
-    ):
-        require_commands(label, text, errors)
-        require_executable_public_surface(
-            label, text, entry_signature, errors
-        )
-        for token in PARITY_OUTPUTS:
-            if token not in text:
-                errors.append(f"{label} CLI missing parity output/check: {token}")
-        color_tokens = (
-            ("cli::printSection", "cli::resultColor")
-            if label == "Arduino"
-            else ("COLOR_CYAN", "COLOR_GREEN", "COLOR_RED")
-        )
-        if any(token not in text for token in color_tokens):
-            errors.append(f"{label} CLI missing shared color formatting")
-        for token in ("=== Version Info ===", "=== Configuration ===", "=== Driver Health ==="):
-            title = token.removeprefix("=== ").removesuffix(" ===")
-            if title not in text:
-                errors.append(f"{label} CLI missing formatted section: {token}")
-
-    for path in (
-        ROOT / "examples" / "common" / "CliLineBuffer.h",
-        ROOT / "examples" / "common" / "CliShell.h",
-        ROOT / "examples" / "common" / "CliStyle.h",
-    ):
-        if not path.is_file():
-            errors.append(f"missing Arduino shared CLI helper: {path.name}")
-    if (
-        "cli_shell::pollLine" not in arduino
-        or "cli::printPrompt" not in arduino
-        or "FixedLineBuffer" not in read(
-            ROOT / "examples" / "common" / "CliShell.h", errors
-        )
-    ):
-        errors.append("Arduino CLI does not use the shared shell/style helpers")
-    if "char command[cli_shell::FixedLineBuffer::CAPACITY]" not in arduino:
-        errors.append("Arduino CLI must retain fixed command storage")
-    for path in (ARDUINO_MAIN, *sorted((ROOT / "examples" / "common").glob("*.h"))):
-        if re.search(r"\bSerial\s*\.", read(path, errors)):
-            errors.append(
-                f"{path.relative_to(ROOT).as_posix()}: console I/O bypasses LOG_SERIAL"
-            )
-    if "MAX_STRESS_COUNT = 1000" not in arduino:
-        errors.append("Arduino CLI must retain the strict 1000-operation stress cap")
-    for token in (
-        "char line[cli_shell::FixedLineBuffer::CAPACITY]",
-        "pollConsoleLine",
-        "FixedLineBuffer",
-        "getchar()",
-        "clearerr(stdin)",
-    ):
-        if token not in idf:
-            errors.append(f"ESP-IDF CLI missing bounded input token: {token}")
-    if "fgets(" in idf:
-        errors.append("ESP-IDF CLI must not dispatch partial nonblocking fgets input")
-    if "MAX_STRESS_COUNT = 1000" not in idf:
-        errors.append("ESP-IDF CLI must retain the strict 1000-operation stress cap")
-    for label, text in (("Arduino", arduino), ("ESP-IDF", idf)):
-        if "using cli_shell::parseUnsignedArgument;" not in text:
-            errors.append(f"{label} must use the shared unsigned argument parser")
-        for command in ("stress", "stress_mix"):
-            pattern = (
-                rf'parseUnsignedArgument\(\s*command,\s*"{command}",'
-                rf'\s*MAX_STRESS_COUNT,\s*value\s*\)\s*&&\s*value\s*>\s*0U'
-            )
-            if re.search(pattern, text) is None:
-                errors.append(
-                    f"{label} {command} parser is not strictly bounded to 1..1000"
-                )
-        if "completed < count" not in text:
-            errors.append(f"{label} stress loop is not count-bounded")
-    tests = read(
-        ROOT / "test" / "test_cli_line_buffer" / "test_cli_line_buffer.cpp", errors
-    )
-    if (
-        "RUN_TEST(test_fixed_cli_line_buffer_is_trimmed_bounded_and_recoverable)"
-        not in tests
-        or "../../examples/common/CliLineBuffer.h" not in tests
-    ):
-        errors.append("shared fixed-line parser lacks its native regression test")
-
+    text = CLI.read_text(encoding="utf-8")
+    dispatch = function_body(text, "void Cli::processCommand(", errors)
+    help_body = function_body(text, "void Cli::printHelp()", errors)
+    for command in COMMANDS:
+        if f'"{command}"' not in dispatch:
+            errors.append(f"shared dispatch missing command: {command}")
+        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(command)}(?![A-Za-z0-9_])", help_body) is None:
+            errors.append(f"shared help missing command: {command}")
+    for method in PUBLIC_SURFACE:
+        if f"_device.{method}(" not in text:
+            errors.append(f"shared CLI does not exercise public API: {method}")
+    for token in ("MAX_COUNT = 1000", "MAX_SOAK_SECONDS = 86400",
+                  "MAX_INTERVAL_MS = 60000", "%-32s", "Session transfers:",
+                  "final verified mask restore", "hardReset seed readback",
+                  "line parser rejects controls and overflow"):
+        if token not in text:
+            errors.append(f"shared CLI missing diagnostic contract: {token}")
+    for relative in ("examples/common/Tca9548aCli.h", "examples/common/Tca9548aCli.cpp"):
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        if re.search(r'#\s*include\s*[<"](?:Arduino|Wire|driver/|esp_|freertos/)', source):
+            errors.append(f"{relative} must remain framework-neutral")
+    for path in ADAPTERS:
+        source = path.read_text(encoding="utf-8")
+        for token in ("Tca9548aCli.h", ".feed(", ".tick(", "prepareAddress", "probeAddress"):
+            if token not in source:
+                errors.append(f"{path.relative_to(ROOT)} missing shared adapter hook: {token}")
+        if re.search(r"\bvoid\s+processCommand\s*\(", source):
+            errors.append(f"{path.relative_to(ROOT)} duplicates the shared dispatcher")
+    ini = (ROOT / "platformio.ini").read_text(encoding="utf-8")
+    cmake = (ROOT / "examples/espidf_basic/main/CMakeLists.txt").read_text(encoding="utf-8")
+    if "examples/common/Tca9548aCli.cpp" not in ini or "../../common/Tca9548aCli.cpp" not in cmake:
+        errors.append("both firmware builds must compile the shared CLI")
+    if "[env:native_cli_commands]" not in ini or not (ROOT / "test/test_cli_commands/test_cli_commands.cpp").is_file():
+        errors.append("shared command handlers lack their executable native test suite")
+    workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    if "-e native_cli_commands" not in workflow:
+        errors.append("CI does not execute the shared CLI command tests")
     if errors:
-        return fail(errors)
-    print("CLI contract PASSED (Arduino and native ESP-IDF parity)")
+        print("CLI contract FAILED:\n" + "\n".join(f"- {error}" for error in errors))
+        return 1
+    print("CLI contract PASSED (shared Arduino, native ESP-IDF, and host commands)")
     return 0
 
 
