@@ -126,14 +126,12 @@ def read(path: pathlib.Path, errors: list[str]) -> str:
 def function_body(
     text: str, signature: str, label: str, errors: list[str]
 ) -> str:
-    start = text.find(signature)
-    if start < 0:
-        errors.append(f"{label} missing function: {signature}")
+    # A forward declaration must not borrow the next function's body.
+    definition = re.search(re.escape(signature) + r"[^;{}]*\{", text)
+    if definition is None:
+        errors.append(f"{label} missing function definition: {signature}")
         return ""
-    opening = text.find("{", start)
-    if opening < 0:
-        errors.append(f"{label} function has no body: {signature}")
-        return ""
+    opening = definition.end() - 1
     depth = 0
     for index in range(opening, len(text)):
         if text[index] == "{":
@@ -182,6 +180,7 @@ def require_executable_public_surface(
         "void scanBus()",
         "bool restoreMaskVerified(",
         "void runHil(",
+        "void runHilMaskChecks(",
         "void runStress(",
         "void processCommand(",
         entry_signature,
@@ -197,22 +196,27 @@ def require_executable_public_surface(
             )
 
     run_hil = function_body(text, "void runHil(", label, errors)
+    mask_checks = function_body(text, "void runHilMaskChecks(", label, errors)
     restore = function_body(text, "bool restoreMaskVerified(", label, errors)
     scan = function_body(text, "void scanBus()", label, errors)
     for token in (
         "readChannelMask(originalMask)",
-        "index < TCA9548A::cmd::NUM_CHANNELS",
-        "finishHilRestored(counts, originalMask)",
+        "runHilMaskChecks(counts, includeReset)",
+        "restoreMaskVerified(originalMask)",
     ):
         if token not in run_hil:
             errors.append(f"{label} live selftest missing executable step: {token}")
+    if "index < TCA9548A::cmd::NUM_CHANNELS" not in mask_checks:
+        errors.append(f"{label} live selftest must check every channel")
+    if run_hil.count("restoreMaskVerified(originalMask)") != 1:
+        errors.append(f"{label} live selftest must have one mask-restoration exit")
     for token in ("writeChannelMask(originalMask)", "readChannelMask(observed)"):
         if token not in restore:
             errors.append(f"{label} live selftest restore missing step: {token}")
     if "readChannelMask(visibleMask)" not in scan:
         errors.append(f"{label} scan does not observe active topology")
-    reset_seed = run_hil.find('"hardReset seed readback"')
-    reset_call = run_hil.find(".hardReset()")
+    reset_seed = mask_checks.find('"hardReset seed readback"')
+    reset_call = mask_checks.find(".hardReset()")
     if reset_seed < 0 or reset_call <= reset_seed:
         errors.append(f"{label} RESET check must verify nonzero state before RESET")
 
@@ -260,7 +264,7 @@ def main() -> int:
         )
     ):
         errors.append("Arduino CLI does not use the shared shell/style helpers")
-    if "char command[128]" not in arduino:
+    if "char command[cli_shell::FixedLineBuffer::CAPACITY]" not in arduino:
         errors.append("Arduino CLI must retain fixed command storage")
     for path in (ARDUINO_MAIN, *sorted((ROOT / "examples" / "common").glob("*.h"))):
         if re.search(r"\bSerial\s*\.", read(path, errors)):
@@ -270,7 +274,7 @@ def main() -> int:
     if "MAX_STRESS_COUNT = 1000" not in arduino:
         errors.append("Arduino CLI must retain the strict 1000-operation stress cap")
     for token in (
-        "char line[LINE_LEN]",
+        "char line[cli_shell::FixedLineBuffer::CAPACITY]",
         "pollConsoleLine",
         "FixedLineBuffer",
         "getchar()",

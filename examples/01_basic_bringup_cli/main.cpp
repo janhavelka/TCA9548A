@@ -363,18 +363,112 @@ bool restoreMaskVerified(TCA9548A::ChannelMask originalMask) {
   return writeStatus.ok() && matched;
 }
 
-void finishHilRestored(HilCounts& counts,
-                       TCA9548A::ChannelMask originalMask) {
-  reportCheck(counts, "final verified mask restore",
-              restoreMaskVerified(originalMask));
-  printHilResult(counts);
+void runHilMaskChecks(HilCounts& counts, bool includeReset) {
+  auto status = device.disableAll();
+  const bool disableOk = status.ok();
+  reportCheck(counts, "disableAll write", disableOk, errorName(status.code));
+  if (!disableOk) {
+    return;
+  }
+  TCA9548A::ChannelMask observed;
+  status = device.readChannelMask(observed);
+  const bool disableVerified = status.ok() && observed.isNone();
+  reportCheck(counts, "disableAll readback", disableVerified,
+              errorName(status.code));
+  if (!disableVerified) {
+    return;
+  }
+
+  bool allOneHotVerified = true;
+  char oneHotDetail[48] = {};
+  for (uint8_t index = 0U; index < TCA9548A::cmd::NUM_CHANNELS; ++index) {
+    const auto channel = static_cast<TCA9548A::Channel>(index);
+    status = device.selectChannel(channel);
+    if (!status.ok()) {
+      std::snprintf(oneHotDetail, sizeof(oneHotDetail), "CH%u write: %s",
+                    static_cast<unsigned>(index), errorName(status.code));
+      allOneHotVerified = false;
+      break;
+    }
+    status = device.readChannelMask(observed);
+    if (!status.ok() ||
+        observed.raw() != TCA9548A::ChannelMask::one(channel).raw()) {
+      std::snprintf(oneHotDetail, sizeof(oneHotDetail),
+                    "CH%u readback: %s", static_cast<unsigned>(index),
+                    status.ok() ? "MISMATCH" : errorName(status.code));
+      allOneHotVerified = false;
+      break;
+    }
+  }
+  reportCheck(counts, "all eight one-hot channels", allOneHotVerified,
+              oneHotDetail);
+  if (!allOneHotVerified) {
+    return;
+  }
+
+  status = device.writeChannelMask(TCA9548A::ChannelMask::fromRaw(0xA5U));
+  const bool maskWriteOk = status.ok();
+  reportCheck(counts, "write mask 0xA5", maskWriteOk,
+              errorName(status.code));
+  if (!maskWriteOk) {
+    return;
+  }
+  status = device.readChannelMask(observed);
+  const bool maskVerified = status.ok() && observed.raw() == 0xA5U;
+  reportCheck(counts, "read mask 0xA5", maskVerified,
+              errorName(status.code));
+  if (!maskVerified) {
+    return;
+  }
+
+  status = device.recover();
+  const bool recoverOk = status.ok();
+  reportCheck(counts, "recover safe-off write", recoverOk,
+              errorName(status.code));
+  if (!recoverOk) {
+    return;
+  }
+  status = device.readChannelMask(observed);
+  const bool recoverVerified = status.ok() && observed.isNone();
+  reportCheck(counts, "recover readback 0x00", recoverVerified,
+              errorName(status.code));
+  if (!recoverVerified) {
+    return;
+  }
+
+  if (!includeReset) {
+    reportSkip(counts, "hardReset", "use 'hil run reset' to include RESET");
+    return;
+  }
+  if (config.hardReset == nullptr) {
+    reportCheck(counts, "hardReset", false, "callback not configured");
+    return;
+  }
+
+  // Start from verified nonzero state so an unwired RESET cannot pass.
+  status = device.selectChannel(TCA9548A::Channel::CH0);
+  reportCheck(counts, "hardReset seed write", status.ok(),
+              errorName(status.code));
+  if (!status.ok()) {
+    return;
+  }
+  status = device.readChannelMask(observed);
+  const bool seedVerified = status.ok() && observed.raw() == 0x01U;
+  reportCheck(counts, "hardReset seed readback", seedVerified,
+              errorName(status.code));
+  if (!seedVerified) {
+    return;
+  }
+  status = device.hardReset();
+  reportCheck(counts, "hardReset exact-zero verification", status.ok(),
+              errorName(status.code));
+  const auto resetObservation = device.channelMaskObservation();
+  reportCheck(counts, "hardReset leaves verified all-off",
+              resetObservation.verified() && resetObservation.mask.isNone());
 }
 
 void runHil(bool dryRun, bool includeReset) {
-  char title[40];
-  std::snprintf(title, sizeof(title), "TCA9548A HIL %s",
-                dryRun ? "DRY-RUN" : "RUN");
-  cli::printSection(title);
+  cli::printSection(dryRun ? "TCA9548A HIL DRY-RUN" : "TCA9548A HIL RUN");
   HilCounts counts;
 
   reportCheck(counts, "typed ChannelMask is one byte",
@@ -418,123 +512,11 @@ void runHil(bool dryRun, bool includeReset) {
     return;
   }
 
-  status = device.disableAll();
-  const bool disableOk = status.ok();
-  reportCheck(counts, "disableAll write", disableOk, errorName(status.code));
-  if (!disableOk) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-  TCA9548A::ChannelMask observed;
-  status = device.readChannelMask(observed);
-  const bool disableVerified = status.ok() && observed.isNone();
-  reportCheck(counts, "disableAll readback", disableVerified,
-              errorName(status.code));
-  if (!disableVerified) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-
-  bool allOneHotVerified = true;
-  char oneHotDetail[48] = {};
-  for (uint8_t index = 0U; index < TCA9548A::cmd::NUM_CHANNELS; ++index) {
-    const auto channel = static_cast<TCA9548A::Channel>(index);
-    status = device.selectChannel(channel);
-    if (!status.ok()) {
-      std::snprintf(oneHotDetail, sizeof(oneHotDetail), "CH%u write: %s",
-                    static_cast<unsigned>(index), errorName(status.code));
-      allOneHotVerified = false;
-      break;
-    }
-    status = device.readChannelMask(observed);
-    if (!status.ok() ||
-        observed.raw() != TCA9548A::ChannelMask::one(channel).raw()) {
-      std::snprintf(oneHotDetail, sizeof(oneHotDetail),
-                    "CH%u readback: %s", static_cast<unsigned>(index),
-                    status.ok() ? "MISMATCH" : errorName(status.code));
-      allOneHotVerified = false;
-      break;
-    }
-  }
-  reportCheck(counts, "all eight one-hot channels", allOneHotVerified,
-              oneHotDetail);
-  if (!allOneHotVerified) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-
-  status = device.writeChannelMask(TCA9548A::ChannelMask::fromRaw(0xA5U));
-  const bool maskWriteOk = status.ok();
-  reportCheck(counts, "write mask 0xA5", maskWriteOk,
-              errorName(status.code));
-  if (!maskWriteOk) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-  status = device.readChannelMask(observed);
-  const bool maskVerified = status.ok() && observed.raw() == 0xA5U;
-  reportCheck(counts, "read mask 0xA5", maskVerified,
-              errorName(status.code));
-  if (!maskVerified) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-
-  status = device.recover();
-  const bool recoverOk = status.ok();
-  reportCheck(counts, "recover safe-off write", recoverOk,
-              errorName(status.code));
-  if (!recoverOk) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-  status = device.readChannelMask(observed);
-  const bool recoverVerified = status.ok() && observed.isNone();
-  reportCheck(counts, "recover readback 0x00", recoverVerified,
-              errorName(status.code));
-  if (!recoverVerified) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-
-  if (includeReset) {
-    if (config.hardReset == nullptr) {
-      reportCheck(counts, "hardReset", false, "callback not configured");
-    } else {
-      // Start from verified nonzero state so an unwired RESET cannot pass.
-        status = device.selectChannel(TCA9548A::Channel::CH0);
-        reportCheck(counts, "hardReset seed write", status.ok(),
-                    errorName(status.code));
-        if (!status.ok()) {
-          finishHilRestored(counts, originalMask);
-          return;
-        }
-        status = device.readChannelMask(observed);
-        const bool seedVerified = status.ok() && observed.raw() == 0x01U;
-        reportCheck(counts, "hardReset seed readback", seedVerified,
-                    errorName(status.code));
-        if (!seedVerified) {
-          finishHilRestored(counts, originalMask);
-          return;
-        }
-        status = device.hardReset();
-      const bool resetOk = status.ok();
-      reportCheck(counts, "hardReset exact-zero verification", resetOk,
-                  errorName(status.code));
-      const auto resetObservation = device.channelMaskObservation();
-      const bool resetVerified = resetObservation.verified() &&
-                                 resetObservation.mask.isNone();
-      reportCheck(counts, "hardReset leaves verified all-off", resetVerified);
-      if (!resetOk || !resetVerified) {
-        finishHilRestored(counts, originalMask);
-        return;
-      }
-    }
-  } else {
-    reportSkip(counts, "hardReset", "use 'hil run reset' to include RESET");
-  }
-
-  finishHilRestored(counts, originalMask);
+  // Every mutating check returns here, including failures, before restoration.
+  runHilMaskChecks(counts, includeReset);
+  reportCheck(counts, "final verified mask restore",
+              restoreMaskVerified(originalMask));
+  printHilResult(counts);
 }
 
 void runStress(unsigned long count, bool mixed) {
@@ -718,7 +700,7 @@ void setup() {
 void loop() {
   device.tick(millis());
 
-  char command[128];
+  char command[cli_shell::FixedLineBuffer::CAPACITY];
   const cli_shell::LineResult lineResult =
       cli_shell::pollLine(command, sizeof(command));
   if (lineResult == cli_shell::LineResult::READY) {

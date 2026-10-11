@@ -3,7 +3,6 @@
  * @brief Native ESP-IDF bring-up CLI for TCA9548A.
  */
 
-#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -32,7 +31,6 @@ static constexpr uint32_t I2C_FREQ_HZ = 400000U;
 static constexpr uint32_t I2C_TIMEOUT_MS = TCA9548A::Config{}.i2cTimeoutMs;
 static constexpr uint32_t RESET_TIMEOUT_MS = 10U;
 static constexpr uint32_t MAX_STRESS_COUNT = 1000U;
-static constexpr size_t LINE_LEN = 128U;
 
 static constexpr const char* COLOR_RESET = "\033[0m";
 static constexpr const char* COLOR_RED = "\033[31m";
@@ -44,7 +42,6 @@ static constexpr const char* COLOR_GRAY = "\033[90m";
 struct NativeBus {
   i2c_master_bus_handle_t bus = nullptr;
   i2c_master_dev_handle_t device = nullptr;
-  uint8_t deviceAddress = 0U;
   bool receiveFaulted = false;
 };
 
@@ -106,12 +103,6 @@ uint32_t nowMs(void*) {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000LL);
 }
 
-int timeoutArg(uint32_t timeoutMs) {
-  return timeoutMs > static_cast<uint32_t>(INT_MAX)
-             ? INT_MAX
-             : static_cast<int>(timeoutMs);
-}
-
 TCA9548A::TransportStatus mapI2c(esp_err_t error) {
   if (error == ESP_OK) {
     return TCA9548A::TransportStatus::Ok();
@@ -131,7 +122,7 @@ TCA9548A::TransportStatus i2cWrite(uint8_t address, const uint8_t* data,
                                    void* user) {
   auto* bus = static_cast<NativeBus*>(user);
   if (bus == nullptr || bus->bus == nullptr || bus->device == nullptr ||
-      address != bus->deviceAddress || data == nullptr || length != 1U ||
+      address != I2C_ADDRESS || data == nullptr || length != 1U ||
       timeoutMs == 0U) {
     return TCA9548A::TransportStatus::Error(TCA9548A::TransportErr::OTHER,
                                             ESP_ERR_INVALID_ARG);
@@ -141,7 +132,7 @@ TCA9548A::TransportStatus i2cWrite(uint8_t address, const uint8_t* data,
                                            ESP_ERR_INVALID_STATE);
   }
   const esp_err_t error = i2c_master_transmit(
-      bus->device, data, length, timeoutArg(timeoutMs));
+      bus->device, data, length, static_cast<int>(timeoutMs));
   return mapI2c(error);
 }
 
@@ -150,7 +141,7 @@ TCA9548A::TransportStatus i2cWriteRead(
     size_t rxLength, uint32_t timeoutMs, void* user) {
   auto* bus = static_cast<NativeBus*>(user);
   if (bus == nullptr || bus->bus == nullptr || bus->device == nullptr ||
-      address != bus->deviceAddress || rxData == nullptr || rxLength != 1U ||
+      address != I2C_ADDRESS || rxData == nullptr || rxLength != 1U ||
       txData != nullptr || txLength != 0U || timeoutMs == 0U) {
     return TCA9548A::TransportStatus::Error(TCA9548A::TransportErr::OTHER,
                                             ESP_ERR_INVALID_ARG);
@@ -162,7 +153,7 @@ TCA9548A::TransportStatus i2cWriteRead(
   // The control byte has no register-pointer phase. The earlier write must
   // have completed STOP before this independent START-to-STOP read.
   const esp_err_t error = i2c_master_receive(
-      bus->device, rxData, rxLength, timeoutArg(timeoutMs));
+      bus->device, rxData, rxLength, static_cast<int>(timeoutMs));
   // IDF 5.5.5 can retain ISR-visible receive state after a failed read; a
   // following probe can then access its stack-local operation descriptors
   // with stale indices. This bring-up owner stops using that controller
@@ -230,7 +221,6 @@ bool initBus() {
     }
     return false;
   }
-  gBus.deviceAddress = I2C_ADDRESS;
   return true;
 }
 
@@ -438,7 +428,7 @@ void scanBus() {
   unsigned errors = 0U;
   for (uint16_t address = 0x08U; address <= 0x77U; ++address) {
     const esp_err_t error = i2c_master_probe(
-        gBus.bus, static_cast<uint16_t>(address), timeoutArg(I2C_TIMEOUT_MS));
+        gBus.bus, static_cast<uint16_t>(address), static_cast<int>(I2C_TIMEOUT_MS));
     if (error == ESP_OK) {
       printf("  Found device at 0x%02X\n", static_cast<unsigned>(address));
       ++found;
@@ -510,18 +500,112 @@ bool restoreMaskVerified(TCA9548A::ChannelMask originalMask) {
   return writeStatus.ok() && matched;
 }
 
-void finishHilRestored(HilCounts& counts,
-                       TCA9548A::ChannelMask originalMask) {
-  reportCheck(counts, "final verified mask restore",
-              restoreMaskVerified(originalMask));
-  printHilResult(counts);
+void runHilMaskChecks(HilCounts& counts, bool includeReset) {
+  auto status = gDevice.disableAll();
+  const bool disableOk = status.ok();
+  reportCheck(counts, "disableAll write", disableOk, errorName(status.code));
+  if (!disableOk) {
+    return;
+  }
+  TCA9548A::ChannelMask observed;
+  status = gDevice.readChannelMask(observed);
+  const bool disableVerified = status.ok() && observed.isNone();
+  reportCheck(counts, "disableAll readback", disableVerified,
+              errorName(status.code));
+  if (!disableVerified) {
+    return;
+  }
+
+  bool allOneHotVerified = true;
+  char oneHotDetail[48] = {};
+  for (uint8_t index = 0U; index < TCA9548A::cmd::NUM_CHANNELS; ++index) {
+    const auto channel = static_cast<TCA9548A::Channel>(index);
+    status = gDevice.selectChannel(channel);
+    if (!status.ok()) {
+      snprintf(oneHotDetail, sizeof(oneHotDetail), "CH%u write: %s",
+               static_cast<unsigned>(index), errorName(status.code));
+      allOneHotVerified = false;
+      break;
+    }
+    status = gDevice.readChannelMask(observed);
+    if (!status.ok() ||
+        observed.raw() != TCA9548A::ChannelMask::one(channel).raw()) {
+      snprintf(oneHotDetail, sizeof(oneHotDetail), "CH%u readback: %s",
+               static_cast<unsigned>(index),
+               status.ok() ? "MISMATCH" : errorName(status.code));
+      allOneHotVerified = false;
+      break;
+    }
+  }
+  reportCheck(counts, "all eight one-hot channels", allOneHotVerified,
+              oneHotDetail);
+  if (!allOneHotVerified) {
+    return;
+  }
+
+  status = gDevice.writeChannelMask(TCA9548A::ChannelMask::fromRaw(0xA5U));
+  const bool maskWriteOk = status.ok();
+  reportCheck(counts, "write mask 0xA5", maskWriteOk,
+              errorName(status.code));
+  if (!maskWriteOk) {
+    return;
+  }
+  status = gDevice.readChannelMask(observed);
+  const bool maskVerified = status.ok() && observed.raw() == 0xA5U;
+  reportCheck(counts, "read mask 0xA5", maskVerified,
+              errorName(status.code));
+  if (!maskVerified) {
+    return;
+  }
+
+  status = gDevice.recover();
+  const bool recoverOk = status.ok();
+  reportCheck(counts, "recover safe-off write", recoverOk,
+              errorName(status.code));
+  if (!recoverOk) {
+    return;
+  }
+  status = gDevice.readChannelMask(observed);
+  const bool recoverVerified = status.ok() && observed.isNone();
+  reportCheck(counts, "recover readback 0x00", recoverVerified,
+              errorName(status.code));
+  if (!recoverVerified) {
+    return;
+  }
+
+  if (!includeReset) {
+    reportSkip(counts, "hardReset", "use 'hil run reset' to include RESET");
+    return;
+  }
+  if (gConfig.hardReset == nullptr) {
+    reportCheck(counts, "hardReset", false, "callback not configured");
+    return;
+  }
+
+  // Start from verified nonzero state so an unwired RESET cannot pass.
+  status = gDevice.selectChannel(TCA9548A::Channel::CH0);
+  reportCheck(counts, "hardReset seed write", status.ok(),
+              errorName(status.code));
+  if (!status.ok()) {
+    return;
+  }
+  status = gDevice.readChannelMask(observed);
+  const bool seedVerified = status.ok() && observed.raw() == 0x01U;
+  reportCheck(counts, "hardReset seed readback", seedVerified,
+              errorName(status.code));
+  if (!seedVerified) {
+    return;
+  }
+  status = gDevice.hardReset();
+  reportCheck(counts, "hardReset exact-zero verification", status.ok(),
+              errorName(status.code));
+  const auto resetObservation = gDevice.channelMaskObservation();
+  reportCheck(counts, "hardReset leaves verified all-off",
+              resetObservation.verified() && resetObservation.mask.isNone());
 }
 
 void runHil(bool dryRun, bool includeReset) {
-  char title[40] = {};
-  snprintf(title, sizeof(title), "TCA9548A HIL %s",
-           dryRun ? "DRY-RUN" : "RUN");
-  printSection(title);
+  printSection(dryRun ? "TCA9548A HIL DRY-RUN" : "TCA9548A HIL RUN");
   HilCounts counts;
   reportCheck(counts, "typed ChannelMask is one byte",
               sizeof(TCA9548A::ChannelMask) == sizeof(uint8_t));
@@ -563,122 +647,11 @@ void runHil(bool dryRun, bool includeReset) {
     return;
   }
 
-  status = gDevice.disableAll();
-  const bool disableOk = status.ok();
-  reportCheck(counts, "disableAll write", disableOk, errorName(status.code));
-  if (!disableOk) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-  TCA9548A::ChannelMask observed;
-  status = gDevice.readChannelMask(observed);
-  const bool disableVerified = status.ok() && observed.isNone();
-  reportCheck(counts, "disableAll readback", disableVerified,
-              errorName(status.code));
-  if (!disableVerified) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-
-  bool allOneHotVerified = true;
-  char oneHotDetail[48] = {};
-  for (uint8_t index = 0U; index < TCA9548A::cmd::NUM_CHANNELS; ++index) {
-    const auto channel = static_cast<TCA9548A::Channel>(index);
-    status = gDevice.selectChannel(channel);
-    if (!status.ok()) {
-      snprintf(oneHotDetail, sizeof(oneHotDetail), "CH%u write: %s",
-               static_cast<unsigned>(index), errorName(status.code));
-      allOneHotVerified = false;
-      break;
-    }
-    status = gDevice.readChannelMask(observed);
-    if (!status.ok() ||
-        observed.raw() != TCA9548A::ChannelMask::one(channel).raw()) {
-      snprintf(oneHotDetail, sizeof(oneHotDetail), "CH%u readback: %s",
-               static_cast<unsigned>(index),
-               status.ok() ? "MISMATCH" : errorName(status.code));
-      allOneHotVerified = false;
-      break;
-    }
-  }
-  reportCheck(counts, "all eight one-hot channels", allOneHotVerified,
-              oneHotDetail);
-  if (!allOneHotVerified) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-
-  status = gDevice.writeChannelMask(TCA9548A::ChannelMask::fromRaw(0xA5U));
-  const bool maskWriteOk = status.ok();
-  reportCheck(counts, "write mask 0xA5", maskWriteOk,
-              errorName(status.code));
-  if (!maskWriteOk) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-  status = gDevice.readChannelMask(observed);
-  const bool maskVerified = status.ok() && observed.raw() == 0xA5U;
-  reportCheck(counts, "read mask 0xA5", maskVerified,
-              errorName(status.code));
-  if (!maskVerified) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-
-  status = gDevice.recover();
-  const bool recoverOk = status.ok();
-  reportCheck(counts, "recover safe-off write", recoverOk,
-              errorName(status.code));
-  if (!recoverOk) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-  status = gDevice.readChannelMask(observed);
-  const bool recoverVerified = status.ok() && observed.isNone();
-  reportCheck(counts, "recover readback 0x00", recoverVerified,
-              errorName(status.code));
-  if (!recoverVerified) {
-    finishHilRestored(counts, originalMask);
-    return;
-  }
-
-  if (includeReset) {
-    if (gConfig.hardReset == nullptr) {
-      reportCheck(counts, "hardReset", false, "callback not configured");
-    } else {
-      // Start from verified nonzero state so an unwired RESET cannot pass.
-      status = gDevice.selectChannel(TCA9548A::Channel::CH0);
-      reportCheck(counts, "hardReset seed write", status.ok(),
-                  errorName(status.code));
-      if (!status.ok()) {
-        finishHilRestored(counts, originalMask);
-        return;
-      }
-      status = gDevice.readChannelMask(observed);
-      const bool seedVerified = status.ok() && observed.raw() == 0x01U;
-      reportCheck(counts, "hardReset seed readback", seedVerified,
-                  errorName(status.code));
-      if (!seedVerified) {
-        finishHilRestored(counts, originalMask);
-        return;
-      }
-      status = gDevice.hardReset();
-      const bool resetOk = status.ok();
-      reportCheck(counts, "hardReset exact-zero verification", resetOk,
-                  errorName(status.code));
-      const auto resetObservation = gDevice.channelMaskObservation();
-      const bool resetVerified =
-          resetObservation.verified() && resetObservation.mask.isNone();
-      reportCheck(counts, "hardReset leaves verified all-off", resetVerified);
-      if (!resetOk || !resetVerified) {
-        finishHilRestored(counts, originalMask);
-        return;
-      }
-    }
-  } else {
-    reportSkip(counts, "hardReset", "use 'hil run reset' to include RESET");
-  }
-  finishHilRestored(counts, originalMask);
+  // Every mutating check returns here, including failures, before restoration.
+  runHilMaskChecks(counts, includeReset);
+  reportCheck(counts, "final verified mask restore",
+              restoreMaskVerified(originalMask));
+  printHilResult(counts);
 }
 
 void runStress(uint32_t count, bool mixed) {
@@ -835,7 +808,7 @@ extern "C" void app_main(void) {
   beginDriver();
   printHelp();
 
-  char line[LINE_LEN] = {};
+  char line[cli_shell::FixedLineBuffer::CAPACITY] = {};
   putchar('\n');
   printPrompt();
   while (true) {

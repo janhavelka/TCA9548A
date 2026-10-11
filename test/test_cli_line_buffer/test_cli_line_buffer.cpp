@@ -41,7 +41,7 @@ void test_numeric_arguments_reject_sign_wrap_overflow_and_trailing_input() {
 void test_control_bytes_discard_whole_line_without_dispatching_prefix() {
   for (char invalid : {'\0', '\x01', '\x1b'}) {
     cli_shell::FixedLineBuffer input;
-    char command[128] = "unchanged";
+    char command[cli_shell::FixedLineBuffer::CAPACITY] = "unchanged";
     for (char value : {'o', 'f', 'f', invalid, 'x'}) {
       TEST_ASSERT_EQUAL_INT(static_cast<int>(cli_shell::LineResult::NONE),
           static_cast<int>(input.push(value, command, sizeof(command))));

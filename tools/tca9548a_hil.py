@@ -62,7 +62,6 @@ class Step:
     expected: str
     expected_tokens: tuple[str, ...]
     failure_patterns: tuple[str, ...] = COMMON_FAILURE_PATTERNS
-    live_required: bool = True
     expected_mask: int | None = None
 
 
@@ -99,11 +98,6 @@ def short_observed(text: str, limit: int = 120) -> str:
     return clean[: limit - 3] + "..."
 
 
-def contains_all(text: str, tokens: Iterable[str]) -> bool:
-    clean = strip_ansi(text)
-    return all(token in clean for token in tokens)
-
-
 def first_failure(text: str, patterns: Iterable[str]) -> str | None:
     clean = strip_ansi(text)
     for pattern in patterns:
@@ -119,7 +113,7 @@ def classify(text: str, step: Step, completion: str = "prompt") -> tuple[str, st
     if failure is not None:
         return FAIL, f"failure pattern matched: {failure}"
     clean = strip_ansi(text)
-    if not contains_all(clean, step.expected_tokens):
+    if not all(token in clean for token in step.expected_tokens):
         if clean.strip():
             return UNKNOWN, "expected tokens missing"
         return UNKNOWN, "no response before timeout"
@@ -382,16 +376,11 @@ def status_counts(results: Iterable[Result]) -> dict[str, int]:
 def result_exit_code(
     results: Iterable[Result], *, dry_run: bool, allow_not_run: bool
 ) -> int:
-    result_list = list(results)
-    counts = status_counts(result_list)
+    counts = status_counts(results)
     if counts[FAIL] or counts[UNKNOWN]:
         return 1
 
-    required_not_run = any(
-        result.status == NOT_RUN and result.step.live_required
-        for result in result_list
-    )
-    if required_not_run and not dry_run and not allow_not_run:
+    if counts[NOT_RUN] and not dry_run and not allow_not_run:
         return 1
     return 0
 

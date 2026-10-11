@@ -31,6 +31,12 @@ Entries describe changes relative to the previous release.
 
 ### Changed
 
+- Simplified example HIL cleanup to one mask-restoration exit, reused existing
+  channel validation, and removed unused test support and host-runner metadata.
+  Shared Arduino source filters replace duplicate PlatformIO configuration.
+- Clarified shared-owner routing: selector callbacks use the private physical
+  transfer path, and parked device operations re-establish their route before
+  resuming. Scheduling and device-wait policy remain application-owned.
 - Reduced the default I2C timeout from 50 ms to 20 ms. Both firmware examples
   now inherit the library default. Explicit timeout settings remain supported
   from 1 to 60000 ms; the RESET callback default remains 10 ms.
@@ -42,6 +48,8 @@ Entries describe changes relative to the previous release.
 
 ### Fixed
 
+- CLI contract checks now skip forward declarations when locating function
+  bodies, so a declaration cannot hide a missing implementation.
 - RESET HIL now verifies a nonzero seed before the pulse, preventing an
   unwired RESET from passing on an already-disabled mux. Mixed stress checks
   mask values as well as transport success.

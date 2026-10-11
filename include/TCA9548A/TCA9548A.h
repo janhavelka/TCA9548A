@@ -63,8 +63,7 @@ public:
   /// @param channel Typed downstream channel.
   /// @return true when the channel is valid and its bit is set.
   constexpr bool contains(Channel channel) const {
-    return static_cast<uint8_t>(channel) < cmd::NUM_CHANNELS &&
-           (_value & one(channel)._value) != 0;
+    return (_value & one(channel)._value) != 0;
   }
 
   /// Test whether all channels are disabled.

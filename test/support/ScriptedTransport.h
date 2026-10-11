@@ -49,11 +49,6 @@ public:
     _overflow = false;
   }
 
-  void clearScript() {
-    _scriptCount = 0;
-    _scriptIndex = 0;
-  }
-
   void setDefaultResponse(const ScriptedResponse& response) {
     _defaultResponse = response;
   }

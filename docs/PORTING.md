@@ -82,7 +82,8 @@ the individual transfers. Check each result, including cleanup. No task,
 queue, fixed transfer budget, or polling cadence is required by the library.
 
 An application with a cooperative scheduler may instead stage a routed
-operation across polls, retaining exclusive route ownership throughout:
+operation across polls. One simple policy retains exclusive route ownership
+throughout:
 
 1. write the required TCA9548A mask;
 2. on a later owner poll, advance the downstream device operation;
@@ -90,6 +91,13 @@ operation across polls, retaining exclusive route ownership throughout:
    mask, commonly all-off;
 4. if cleanup is ambiguous, invalidate the library observation and reconcile by
    readback or board-level recovery.
+
+An owner may also release the bus during a downstream device's bus-silent
+conversion or programming wait, when that device's contract permits it. Keep
+the operation's identity, deadline, and device state while parked. Re-establish
+the required route, with readback when the owner requires verification, before
+each continuation. Serialize route setup and its dependent downstream transfer
+against other callers; a saved mask alone does not reserve the route.
 
 The library has no queue, worker, retries, deadlines above the per-transfer
 timeout, cancellation, or result identity. Those remain owner policy. External
@@ -146,6 +154,11 @@ Map the two callbacks directly to the owner's existing single-transfer path:
 | `i2cWrite` | 1 | 0 | exactly one written byte, completed STOP, committed write if the backend reports write effects |
 | `i2cWriteRead` | 0, null pointer | 1 | exactly one received byte and completed NACK/STOP |
 
+Selector callbacks must use the owner's private physical-transfer path. Calling
+the routed dispatcher from a selector callback can recursively select the same
+mux. Perform route setup before invoking a downstream driver's callback, so
+that callback still represents only its own single transfer.
+
 An address-only probe does not replace the read. Do not synthesize a register
 pointer or combine mux selection and a downstream transaction. If the owner
 requires a registered device identity, pass the configured mux identity through
@@ -178,10 +191,11 @@ owner already knows is expired or cancelled.
 
 The application retains each downstream device's mux address/channel mapping.
 Select the route before its first probe or transfer and prevent other callers
-from changing it until that routed operation finishes. Selection, target work,
-idle-mask cleanup, and optional verification can each occupy separate owner
-steps. The existing primitives suffice; no chip-specific scheduler is needed
-inside the library.
+from changing it through the dependent downstream step. Repeat route setup
+before resuming any operation that released the bus during a device wait.
+Selection, target work, idle-mask cleanup, and optional verification can each
+occupy separate owner steps. The existing primitives suffice; no chip-specific
+scheduler is needed inside the library.
 
 After timeout or cancellation, the original operation deadline may be unusable
 for cleanup. Keep downstream access blocked and schedule cleanup with its own

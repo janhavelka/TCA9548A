@@ -5,6 +5,10 @@ application owns the bus, serialization, pins, scheduling,
 timeouts, retry, and recovery policy; the library owns only the chip's one-byte
 control protocol and truthful local diagnostics.
 
+For a shared bus owner, the [porting guide](docs/PORTING.md#owner-integration-pattern)
+covers serialized route setup, downstream work, and resuming devices after
+bus-silent waits without adding a scheduler to the driver.
+
 ## Highlights
 
 - Injected, non-owning I2C transport; no `Wire`, Arduino, ESP-IDF, task, or
